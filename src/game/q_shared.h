@@ -215,15 +215,16 @@ void Sys_PumpEvents( void );
 
 typedef unsigned char byte;
 
-typedef enum {qfalse, qtrue}    qboolean;
-#if defined( __MACOS__ )
-#define qboolean int    //DAJ
-#endif
+typedef int    qboolean;
+#define qfalse 0
+#define qtrue 1
 
 typedef int qhandle_t;
 typedef int sfxHandle_t;
 typedef int fileHandle_t;
 typedef int clipHandle_t;
+
+typedef intptr_t dllhandle_t;
 
 #ifndef ID_INLINE
 #ifdef _WIN32
@@ -1387,7 +1388,7 @@ typedef struct entityState_s {
 	int clientNum;          // 0 to (MAX_CLIENTS - 1), for players and corpses
 	int frame;
 
-	int solid;              // for client side prediction, trap_linkentity sets this properly
+	int solid;              // for client side prediction, sys->linkentity sets this properly
 
 	// old style events, in for compatibility only
 	int event;

@@ -15,160 +15,157 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ai_cast.c">
+    <ClCompile Include="ai_cast.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_characters.c">
+    <ClCompile Include="ai_cast_characters.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_debug.c">
+    <ClCompile Include="ai_cast_debug.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_events.c">
+    <ClCompile Include="ai_cast_events.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_fight.c">
+    <ClCompile Include="ai_cast_fight.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_func_attack.c">
+    <ClCompile Include="ai_cast_func_attack.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_func_boss1.c">
+    <ClCompile Include="ai_cast_func_boss1.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_funcs.c">
+    <ClCompile Include="ai_cast_funcs.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_script.c">
+    <ClCompile Include="ai_cast_script.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_script_actions.c">
+    <ClCompile Include="ai_cast_script_actions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_script_ents.c">
+    <ClCompile Include="ai_cast_script_ents.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_sight.c">
+    <ClCompile Include="ai_cast_sight.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ai_cast_think.c">
+    <ClCompile Include="ai_cast_think.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\botai\ai_chat.c">
+    <ClCompile Include="..\botai\ai_chat.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\botai\ai_cmd.c">
+    <ClCompile Include="..\botai\ai_cmd.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\botai\ai_dmnet.c">
+    <ClCompile Include="..\botai\ai_dmnet.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\botai\ai_dmq3.c">
+    <ClCompile Include="..\botai\ai_dmq3.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\botai\ai_main.c">
+    <ClCompile Include="..\botai\ai_main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\botai\ai_team.c">
+    <ClCompile Include="..\botai\ai_team.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="bg_animation.c">
+    <ClCompile Include="bg_animation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="bg_lib.c">
+    <ClCompile Include="bg_misc.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="bg_misc.c">
+    <ClCompile Include="bg_pmove.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="bg_pmove.c">
+    <ClCompile Include="bg_slidemove.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="bg_slidemove.c">
+    <ClCompile Include="g_active.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_active.c">
+    <ClCompile Include="g_alarm.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_alarm.c">
+    <ClCompile Include="g_bot.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_bot.c">
+    <ClCompile Include="g_client.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_client.c">
+    <ClCompile Include="g_cmds.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_cmds.c">
+    <ClCompile Include="g_combat.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_combat.c">
+    <ClCompile Include="g_items.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_items.c">
+    <ClCompile Include="g_main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_main.c">
+    <ClCompile Include="g_mem.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_mem.c">
+    <ClCompile Include="g_misc.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_misc.c">
+    <ClCompile Include="g_missile.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_missile.c">
+    <ClCompile Include="g_mover.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_mover.c">
+    <ClCompile Include="g_props.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_props.c">
+    <ClCompile Include="g_save.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_save.c">
+    <ClCompile Include="g_script.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_script.c">
+    <ClCompile Include="g_script_actions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_script_actions.c">
+    <ClCompile Include="g_session.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_session.c">
+    <ClCompile Include="g_spawn.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_spawn.c">
+    <ClCompile Include="g_svcmds.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_svcmds.c">
+    <ClCompile Include="g_syscalls.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_syscalls.c">
+    <ClCompile Include="g_target.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_target.c">
+    <ClCompile Include="g_team.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_team.c">
+    <ClCompile Include="g_tramcar.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_tramcar.c">
+    <ClCompile Include="g_trigger.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_trigger.c">
+    <ClCompile Include="g_utils.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_utils.c">
+    <ClCompile Include="g_weapon.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="g_weapon.c">
+    <ClCompile Include="q_math.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="q_math.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="q_shared.c">
+    <ClCompile Include="q_shared.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -266,6 +263,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\botai\syn.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="g_func_decs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="g_funcs.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

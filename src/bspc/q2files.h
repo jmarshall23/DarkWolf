@@ -115,8 +115,8 @@ typedef struct
 
 typedef struct
 {
-	byte v[3];              // scaled byte to fit in frame mins/maxs
-	byte lightnormalindex;
+	unsigned char v[3];              // scaled byte to fit in frame mins/maxs
+	unsigned char lightnormalindex;
 } dtrivertx_t;
 
 #define DTRIVERTX_V0   0
@@ -429,7 +429,7 @@ typedef struct
 	short texinfo;
 
 // lighting info
-	byte styles[MAXLIGHTMAPS];
+	unsigned char styles[MAXLIGHTMAPS];
 	int lightofs;               // start of [numstyles*surfsize] samples
 } dface_t;
 

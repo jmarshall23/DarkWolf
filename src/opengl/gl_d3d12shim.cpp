@@ -3679,3 +3679,33 @@ extern "C" void APIENTRY glFogiv(GLenum pname, const GLint* params)
         break;
     }
 }
+
+extern "C" ID3D12Device* QD3D12_GetDevice(void)
+{
+    return g_gl.device.Get();
+}
+
+extern "C" ID3D12CommandQueue* QD3D12_GetQueue(void)
+{
+    return g_gl.queue.Get();
+}
+
+extern "C" ID3D12GraphicsCommandList* QD3D12_GetCommandList(void)
+{
+    return g_gl.cmdList.Get();
+}
+
+extern "C" ID3D12CommandAllocator* QD3D12_GetFrameCommandAllocator(void)
+{
+    return g_gl.frames[g_gl.frameIndex].cmdAlloc.Get();
+}
+
+extern "C" UINT QD3D12_GetFrameIndex(void)
+{
+    return g_gl.frameIndex;
+}
+
+extern "C" void QD3D12_WaitForGPU_External(void)
+{
+    QD3D12_WaitForGPU();
+}

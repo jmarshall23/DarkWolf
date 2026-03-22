@@ -29,7 +29,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "q_splineshared.h"
 #include "splines.h"
 
-extern "C" {
+
 int FS_Write( const void *buffer, int len, fileHandle_t h );
 int FS_ReadFile( const char *qpath, void **buffer );
 void FS_FreeFile( void *buffer );
@@ -37,13 +37,9 @@ fileHandle_t FS_FOpenFileWrite( const char *filename );
 void FS_FCloseFile( fileHandle_t f );
 void Cbuf_AddText( const char *text );
 void Cbuf_Execute( void );
-}
 
-float Q_fabs( float f ) {
-	int tmp = *( int * ) &f;
-	tmp &= 0x7FFFFFFF;
-	return *( float * ) &tmp;
-}
+
+float Q_fabs(float f);
 
 // (SA) making a list of cameras so I can use
 //		the splines as targets for other things.
@@ -54,7 +50,7 @@ float Q_fabs( float f ) {
 
 idCameraDef camera[MAX_CAMERAS];
 
-extern "C" {
+
 qboolean loadCamera( int camNum, const char *name ) {
 	if ( camNum < 0 || camNum >= MAX_CAMERAS ) {
 		return qfalse;
@@ -90,7 +86,7 @@ void startCamera( int camNum, int time ) {
 	camera[camNum].startCamera( time );
 }
 
-}
+
 
 
 //#include "../shared/windings.h"

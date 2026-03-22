@@ -239,11 +239,11 @@
     </Bscmake>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="extractfuncs.c" />
-    <ClCompile Include="l_log.c" />
-    <ClCompile Include="l_memory.c" />
-    <ClCompile Include="l_precomp.c" />
-    <ClCompile Include="l_script.c" />
+    <ClCompile Include="extractfuncs.cpp" />
+    <ClCompile Include="l_log.cpp" />
+    <ClCompile Include="l_memory.cpp" />
+    <ClCompile Include="l_precomp.cpp" />
+    <ClCompile Include="l_script.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\botlib\be_interface.h" />

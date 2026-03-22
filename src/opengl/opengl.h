@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -670,4 +671,50 @@ extern "C" {
 
 #ifdef __cplusplus
 }
+#endif
+typedef struct Q3Vec3
+{
+    float x, y, z;
+} Q3Vec3;
+
+typedef struct Q3Triangle
+{
+    Q3Vec3 a, b, c;
+} Q3Triangle;
+
+typedef struct Q3AABB
+{
+    Q3Vec3 mins;
+    Q3Vec3 maxs;
+} Q3AABB;
+
+typedef struct Q3Ray
+{
+    Q3Vec3 origin;
+    Q3Vec3 dir;      /* should be normalized by caller or helper */
+    float   tMin;
+    float   tMax;
+    uint32_t mask;
+} Q3Ray;
+
+typedef struct Q3HitResult
+{
+    int      hit;
+    int      hitWorld;
+    uint32_t entityId;        /* 0xFFFFFFFF if world */
+    float    t;
+    Q3Vec3   position;
+    Q3Vec3   barycentrics;    /* x = bary.x, y = bary.y, z unused */
+    uint32_t primitiveIndex;
+    uint32_t instanceIndex;
+    uint32_t geometryIndex;
+} Q3HitResult;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+    
+
+#ifdef __cplusplus
+};
 #endif

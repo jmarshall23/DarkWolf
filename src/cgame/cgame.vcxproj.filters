@@ -11,97 +11,97 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\game\bg_animation.c">
+    <ClCompile Include="..\game\bg_animation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\bg_misc.c">
+    <ClCompile Include="..\game\bg_misc.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\bg_pmove.c">
+    <ClCompile Include="..\game\bg_pmove.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\bg_slidemove.c">
+    <ClCompile Include="..\game\bg_slidemove.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_consolecmds.c">
+    <ClCompile Include="cg_consolecmds.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_draw.c">
+    <ClCompile Include="cg_draw.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_drawtools.c">
+    <ClCompile Include="cg_drawtools.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_effects.c">
+    <ClCompile Include="cg_effects.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_ents.c">
+    <ClCompile Include="cg_ents.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_event.c">
+    <ClCompile Include="cg_event.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_flamethrower.c">
+    <ClCompile Include="cg_flamethrower.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_info.c">
+    <ClCompile Include="cg_info.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_localents.c">
+    <ClCompile Include="cg_localents.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_main.c">
+    <ClCompile Include="cg_main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_marks.c">
+    <ClCompile Include="cg_marks.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_newDraw.c">
+    <ClCompile Include="cg_newDraw.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_particles.c">
+    <ClCompile Include="cg_particles.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_players.c">
+    <ClCompile Include="cg_players.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_playerstate.c">
+    <ClCompile Include="cg_playerstate.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_predict.c">
+    <ClCompile Include="cg_predict.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_scoreboard.c">
+    <ClCompile Include="cg_scoreboard.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_servercmds.c">
+    <ClCompile Include="cg_servercmds.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_snapshot.c">
+    <ClCompile Include="cg_snapshot.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_sound.c">
+    <ClCompile Include="cg_sound.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_syscalls.c">
+    <ClCompile Include="cg_syscalls.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_trails.c">
+    <ClCompile Include="cg_trails.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_view.c">
+    <ClCompile Include="cg_view.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="cg_weapons.c">
+    <ClCompile Include="cg_weapons.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\q_math.c">
+    <ClCompile Include="..\game\q_math.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\q_shared.c">
+    <ClCompile Include="..\game\q_shared.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\ui\ui_shared.c">
+    <ClCompile Include="..\ui\ui_shared.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

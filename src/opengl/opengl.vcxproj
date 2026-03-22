@@ -19,6 +19,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="gl_d3d12collision.cpp" />
     <ClCompile Include="gl_d3d12shim.cpp" />
     <ClCompile Include="gl_d3d12wgl.cpp" />
   </ItemGroup>

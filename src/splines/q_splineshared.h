@@ -149,14 +149,14 @@ If you have questions concerning this license or the applicable additional terms
 #define ALIGN_OFF       # pragma align()
 
 #ifdef __cplusplus
-extern "C" {
+
 #endif
 
 void *osxAllocateMemory( long size );
 void osxFreeMemory( void *pointer );
 
 #ifdef __cplusplus
-}
+
 #endif
 
 #endif
@@ -216,8 +216,9 @@ void Sys_PumpEvents( void );
 
 
 
-typedef enum {qfalse, qtrue}    qboolean;
-
+typedef int    qboolean;
+#define qfalse 0
+#define qtrue 1
 typedef unsigned char byte;
 
 #define EQUAL_EPSILON   0.001
@@ -604,7 +605,7 @@ void Com_Parse3DMatrix( const char *( *buf_p ), int z, int y, int x, float *m );
 
 //=====================================================================================
 #ifdef __cplusplus
-extern "C" {
+
 #endif
 
 void QDECL Com_sprintf( char *dest, int size, const char *fmt, ... );
@@ -665,7 +666,7 @@ void    Swap_Init( void );
 char    * QDECL va( char *format, ... );
 
 #ifdef __cplusplus
-}
+
 #endif
 
 
@@ -762,7 +763,7 @@ drawVertMesh_t *SubdivideMapPatch( const mapPatch_t *patch, float maxError );
 //=========================================
 
 #ifdef __cplusplus
-extern "C" {
+
 #endif
 
 void QDECL Com_Error( int level, const char *error, ... );
@@ -770,7 +771,7 @@ void QDECL Com_Printf( const char *msg, ... );
 void QDECL Com_DPrintf( const char *msg, ... );
 
 #ifdef __cplusplus
-}
+
 #endif
 
 

@@ -52,11 +52,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <time.h>
 #include <stdarg.h>
 
-#ifndef __BYTEBOOL__
-#define __BYTEBOOL__
-typedef enum {false, true} qboolean;
-typedef unsigned char byte;
-#endif
+typedef int qboolean;
 
 // the dec offsetof macro doesnt work very well...
 #define myoffsetof( type,identifier ) ( (size_t)&( (type *)0 )->identifier )
@@ -137,7 +133,7 @@ char *copystring( char *s );
 
 
 void CRC_Init( unsigned short *crcvalue );
-void CRC_ProcessByte( unsigned short *crcvalue, byte data );
+void CRC_ProcessByte( unsigned short *crcvalue, unsigned char data );
 unsigned short CRC_Value( unsigned short crcvalue );
 
 void    CreatePath( char *path );
@@ -156,7 +152,7 @@ void ExpandWildcards( int *argc, char ***argv );
 // for compression routines
 typedef struct
 {
-	byte    *data;
+	unsigned char    *data;
 	int count;
 } cblock_t;
 
