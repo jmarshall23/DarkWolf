@@ -1029,6 +1029,8 @@ extern "C" {
     void                          glRaytracingLightingEnableHalfLambert(int enable);
     void                          glRaytracingLightingSetShadowBias(float bias);
 
+    int                          glRaytracingBuildSceneIfDirty(void);
+
     bool                          glRaytracingLightingExecute(const glRaytracingLightingPassDesc_t* pass);
 
     glRaytracingLight_t           glRaytracingLightingMakePointLight(

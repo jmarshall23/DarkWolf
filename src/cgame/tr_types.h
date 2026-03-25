@@ -156,7 +156,10 @@ typedef struct {
 	int reFlags;
 
 	int entityNum;                  // currentState.number, so we can attach rendering effects to specific entities (Zombie)
-
+// jmarshall
+	int raytraceMeshHandle;
+	int raytraceInstanceHandle;
+// jmarshall end
 } refEntity_t;
 
 //----(SA)

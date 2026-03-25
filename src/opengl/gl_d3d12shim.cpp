@@ -768,7 +768,7 @@ PSOut PSMain(VSOut i)
 {
     PSOut o;
     o.color = BuildTexturedColor(i);
-    o.normal = float4(i.normal * 0.5 + 0.5, 1.0);
+    o.normal = float4(i.normal, 1.0);
     o.position = float4(i.objPos, 1.0);
     return o;
 }
@@ -778,7 +778,7 @@ PSOut PSMainAlphaTest(VSOut i)
     PSOut o;
     o.color = BuildTexturedColor(i);
     clip(o.color.a - gAlphaRef);
-    o.normal = float4(i.normal * 0.5 + 0.5, 1.0);
+    o.normal = float4(i.normal, 1.0);
     o.position = float4(i.objPos, 1.0);
     return o;
 }
@@ -787,7 +787,7 @@ PSOut PSMainUntextured(VSOut i)
 {
     PSOut o;
     o.color = ApplyFog(i.col, i.fogCoord);
-    o.normal = float4(i.normal * 0.5 + 0.5, 1.0);
+    o.normal = float4(i.normal, 1.0);
     o.position = float4(i.objPos, 1.0);
     return o;
 }

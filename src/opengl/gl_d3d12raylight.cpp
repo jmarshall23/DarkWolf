@@ -922,7 +922,6 @@ struct glRaytracingLightingState_t
 };
 
 static glRaytracingLightingState_t g_glRaytracingLighting;
-
 static const char* g_glRaytracingLightingHlsl = R"(
 struct Light
 {
@@ -969,8 +968,7 @@ float3 LoadSceneNormal(uint2 pixel)
 {
     float4 nSample = gNormalTex.Load(int3(pixel, 0));
     float3 N = nSample.xyz;
-
-    return N;
+    return normalize(N);
 }
 
 [shader("miss")]
@@ -1008,6 +1006,7 @@ float TraceShadow(float3 origin, float3 dir, float maxT)
 
     return (payload.hit != 0) ? 0.0 : 1.0;
 }
+
 float Hash12(float2 p)
 {
     float3 p3 = frac(float3(p.xyx) * 0.1031);
@@ -1059,6 +1058,13 @@ void BuildOrthonormalBasis(float3 n, out float3 t, out float3 b)
     b = cross(n, t);
 }
 
+float3 CosineSampleHemisphere(float2 u)
+{
+    float2 d = ConcentricSampleDisk(u);
+    float z = sqrt(saturate(1.0 - dot(d, d)));
+    return float3(d.x, d.y, z);
+}
+
 float TraceSoftShadow(float3 worldPos, float3 N, Light Lgt, float3 toLight, float dist)
 {
     const uint SHADOW_SAMPLES = 8;
@@ -1068,8 +1074,6 @@ float TraceSoftShadow(float3 worldPos, float3 N, Light Lgt, float3 toLight, floa
     float3 tangent, bitangent;
     BuildOrthonormalBasis(L, tangent, bitangent);
 
-    // Controls softness.
-    // Increase for softer/larger penumbra.
     float areaRadius = max(Lgt.radius * 0.08, 2.0);
 
     float shadowAccum = 0.0;
@@ -1102,6 +1106,79 @@ float TraceSoftShadow(float3 worldPos, float3 N, Light Lgt, float3 toLight, floa
     return shadowAccum / (float)SHADOW_SAMPLES;
 }
 
+float ComputeAmbientOcclusion(float3 worldPos, float3 N, uint2 pixel)
+{
+    const uint AO_SAMPLES = 24;
+    const float AO_RADIUS = 32.0;
+
+    float3 tangent, bitangent;
+    BuildOrthonormalBasis(N, tangent, bitangent);
+
+    float rand = Hash12((float2)pixel + worldPos.xy + worldPos.zz);
+
+    float visibility = 0.0;
+
+    [unroll]
+    for (uint i = 0; i < AO_SAMPLES; ++i)
+    {
+        float2 xi = Hammersley2D(i, AO_SAMPLES, rand);
+        float3 h  = CosineSampleHemisphere(xi);
+
+        float3 aoDir =
+            tangent   * h.x +
+            bitangent * h.y +
+            N         * h.z;
+
+        aoDir = normalize(aoDir);
+
+        float3 aoOrigin = worldPos + N * (gShadowBias * 2.0) + aoDir * (gShadowBias * 1.5);
+
+        visibility += TraceShadow(aoOrigin, aoDir, AO_RADIUS);
+    }
+
+    visibility /= (float)AO_SAMPLES;
+    visibility = saturate(pow(visibility, 1.5));
+
+    return visibility;
+}
+
+float ComputeSkyVisibility(float3 worldPos, float3 N, uint2 pixel)
+{
+    const uint SKY_SAMPLES = 8;
+    const float SKY_TMAX   = 1000000.0;
+
+    float3 tangent, bitangent;
+    BuildOrthonormalBasis(N, tangent, bitangent);
+
+    float rand = Hash12((float2)pixel * 1.37 + worldPos.xy + float2(worldPos.z, dot(N.xy, N.xy)));
+
+    float vis = 0.0;
+
+    [unroll]
+    for (uint i = 0; i < SKY_SAMPLES; ++i)
+    {
+        float2 xi = Hammersley2D(i, SKY_SAMPLES, rand);
+        float3 h  = CosineSampleHemisphere(xi);
+
+        float3 skyDir =
+            tangent   * h.x +
+            bitangent * h.y +
+            N         * h.z;
+
+        skyDir = normalize(skyDir);
+
+        // only count rays that actually go upward/outside
+        if (skyDir.z <= 0.05)
+            continue;
+
+        float3 skyOrigin = worldPos + N * (gShadowBias * 2.0) + skyDir * (gShadowBias * 2.0);
+        vis += TraceShadow(skyOrigin, skyDir, SKY_TMAX);
+    }
+
+    vis /= (float)SKY_SAMPLES;
+    return saturate(vis);
+}
+
 [shader("raygeneration")]
 void RayGen()
 {
@@ -1124,7 +1201,19 @@ void RayGen()
     float3 N        = LoadSceneNormal(pixel);
     float3 V        = normalize(gCameraPos.xyz - worldPos);
 
-    float3 lightingAccum = albedo * gAmbientColor.rgb * gAmbientColor.a;
+    float ao      = ComputeAmbientOcclusion(worldPos, N, pixel);
+    float skyVis  = ComputeSkyVisibility(worldPos, N, pixel);
+
+    float upness = saturate(N.z * 0.5 + 0.5);
+
+    float3 skyColor =
+        float3(1, 1, 1) * (0.35 + 0.65 * upness);
+
+    float skyStrength = 2.0;
+
+    float3 lightingAccum = albedo * 0.03;
+
+    lightingAccum += albedo * skyColor * (skyStrength * skyVis);
 
     [loop]
     for (uint i = 0; i < gLightCount; ++i)
@@ -1138,9 +1227,7 @@ void RayGen()
 
         float radius = max(Lgt.radius, 1e-4);
 
-        // RTCW-style dlight attenuation
         float atten = saturate((radius - dist) / radius);
-
         float NdotL = saturate(dot(N, L));
 
         float shadow = 1.0;
@@ -1150,10 +1237,10 @@ void RayGen()
         }
 
         float3 diffuse = albedo * Lgt.color * (Lgt.intensity * atten * NdotL * shadow);
-        lightingAccum += diffuse * 2.0;
+        lightingAccum += diffuse;
     }
 
-    gOutputTex[pixel] = float4(lightingAccum, albedoSample.a);
+    gOutputTex[pixel] = float4(lightingAccum  * ao, albedoSample.a);
 }
 )";
 
@@ -1859,3 +1946,4 @@ extern "C" uint32_t glRaytracingLightingGetLightCount(void)
 {
     return (uint32_t)g_glRaytracingLighting.cpuLights.size();
 }
+

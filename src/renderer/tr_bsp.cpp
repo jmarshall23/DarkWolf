@@ -2348,10 +2348,22 @@ static void R_CreateRaytracingWorldMeshes(void) {
 	memset(s_bspRtMeshes, 0, sizeof(bspRaytracingMesh_t) * s_worldData.numsurfaces);
 
 	for (i = 0; i < s_worldData.numsurfaces; ++i) {
+		msurface_t* surf = &s_worldData.surfaces[i];
 		surfaceType_t* data = s_worldData.surfaces[i].data;
 		glRaytracingMeshHandle_t mesh = 0;
 
 		if (!data) {
+			continue;
+		}
+
+		// Skip nodraw surfaces entirely so they never get added to DXR.
+		// This catches planar faces / triangle soups, while ParseMesh already
+		// converts nodraw patches to SF_SKIP earlier.
+		if (surf->shader && (surf->shader->surfaceFlags & SURF_NODRAW)) {
+			continue;
+		}
+
+		if (surf->shader && surf->shader->isSky) {
 			continue;
 		}
 

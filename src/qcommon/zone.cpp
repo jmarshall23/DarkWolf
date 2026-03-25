@@ -12,9 +12,9 @@
 #endif
 
 #define MIN_DEDICATED_COMHUNKMEGS 1
-#define MIN_COMHUNKMEGS 54      // RF, optimizing
-#define DEF_COMHUNKMEGS "72"
-#define DEF_COMZONEMEGS "30"
+#define MIN_COMHUNKMEGS 554      // RF, optimizing
+#define DEF_COMHUNKMEGS "572"
+#define DEF_COMZONEMEGS "530"
 
 #define HUNK_MAGIC      0x89537892
 #define HUNK_FREE_MAGIC 0x89537893
