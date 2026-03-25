@@ -1354,6 +1354,9 @@ typedef enum {
 
 	ET_FLAMETHROWER_PROP,
 
+	ET_LIGHT,
+	ET_LIGHTJUNIOR,
+
 	ET_EVENTS               // any of the EV_* events can be added freestanding
 							// by setting eType to ET_EVENTS + eventNum
 							// this avoids having to set eFlags and eventNum

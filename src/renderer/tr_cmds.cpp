@@ -240,6 +240,19 @@ void    R_AddDrawSurfCmd( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	cmd->viewParms = tr.viewParms;
 }
 
+/*
+=============
+RE_RenderRaytracing
+=============
+*/
+void RE_RenderRaytracing(void) {
+	raytraceRenderCommand_t* cmd;
+	cmd = (raytraceRenderCommand_t*)R_GetCommandBuffer(sizeof(*cmd));
+	if (!cmd) {
+		return;
+	}
+	cmd->commandId = RC_RAYTRACE;
+}
 
 /*
 =============

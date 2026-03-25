@@ -519,64 +519,90 @@ Does NOT produce any GL calls
 Called by both the front end and the back end
 =================
 */
-void R_RotateForEntity( const trRefEntity_t *ent, const viewParms_t *viewParms,
-						orientationr_t *or ) {
+void R_RotateForEntity(const trRefEntity_t* ent, const viewParms_t* viewParms, orientationr_t* or ) {
 	float glMatrix[16];
 	vec3_t delta;
 	float axisLength;
 
-	if ( ent->e.reType != RT_MODEL ) {
-		*or = viewParms->world;
+	// If this is not a model, keep old behavior when viewParms is valid.
+	// If viewParms is NULL, return identity.
+	if (ent == NULL || ent->e.reType != RT_MODEL) {
+		if (viewParms) {
+			*or = viewParms->world;
+		}
+		else {
+			VectorClear(or ->origin);
+
+			VectorSet(or ->axis[0], 1.0f, 0.0f, 0.0f);
+			VectorSet(or ->axis[1], 0.0f, 1.0f, 0.0f);
+			VectorSet(or ->axis[2], 0.0f, 0.0f, 1.0f);
+
+			or ->modelMatrix[0] = 1.0f; or ->modelMatrix[4] = 0.0f; or ->modelMatrix[8] = 0.0f; or ->modelMatrix[12] = 0.0f;
+			or ->modelMatrix[1] = 0.0f; or ->modelMatrix[5] = 1.0f; or ->modelMatrix[9] = 0.0f; or ->modelMatrix[13] = 0.0f;
+			or ->modelMatrix[2] = 0.0f; or ->modelMatrix[6] = 0.0f; or ->modelMatrix[10] = 1.0f; or ->modelMatrix[14] = 0.0f;
+			or ->modelMatrix[3] = 0.0f; or ->modelMatrix[7] = 0.0f; or ->modelMatrix[11] = 0.0f; or ->modelMatrix[15] = 1.0f;
+
+			VectorClear(or ->viewOrigin);
+		}
 		return;
 	}
 
-	VectorCopy( ent->e.origin, or->origin );
+	VectorCopy(ent->e.origin, or ->origin);
 
-	VectorCopy( ent->e.axis[0], or->axis[0] );
-	VectorCopy( ent->e.axis[1], or->axis[1] );
-	VectorCopy( ent->e.axis[2], or->axis[2] );
+	VectorCopy(ent->e.axis[0], or ->axis[0]);
+	VectorCopy(ent->e.axis[1], or ->axis[1]);
+	VectorCopy(ent->e.axis[2], or ->axis[2]);
 
-	glMatrix[0] = or->axis[0][0];
-	glMatrix[4] = or->axis[1][0];
-	glMatrix[8] = or->axis[2][0];
-	glMatrix[12] = or->origin[0];
+	glMatrix[0] = or ->axis[0][0];
+	glMatrix[4] = or ->axis[1][0];
+	glMatrix[8] = or ->axis[2][0];
+	glMatrix[12] = or ->origin[0];
 
-	glMatrix[1] = or->axis[0][1];
-	glMatrix[5] = or->axis[1][1];
-	glMatrix[9] = or->axis[2][1];
-	glMatrix[13] = or->origin[1];
+	glMatrix[1] = or ->axis[0][1];
+	glMatrix[5] = or ->axis[1][1];
+	glMatrix[9] = or ->axis[2][1];
+	glMatrix[13] = or ->origin[1];
 
-	glMatrix[2] = or->axis[0][2];
-	glMatrix[6] = or->axis[1][2];
-	glMatrix[10] = or->axis[2][2];
-	glMatrix[14] = or->origin[2];
+	glMatrix[2] = or ->axis[0][2];
+	glMatrix[6] = or ->axis[1][2];
+	glMatrix[10] = or ->axis[2][2];
+	glMatrix[14] = or ->origin[2];
 
-	glMatrix[3] = 0;
-	glMatrix[7] = 0;
-	glMatrix[11] = 0;
-	glMatrix[15] = 1;
+	glMatrix[3] = 0.0f;
+	glMatrix[7] = 0.0f;
+	glMatrix[11] = 0.0f;
+	glMatrix[15] = 1.0f;
 
-	myGlMultMatrix( glMatrix, viewParms->world.modelMatrix, or->modelMatrix );
+	// If viewParms is NULL, just return the entity matrix.
+	if (viewParms) {
+		myGlMultMatrix(glMatrix, viewParms->world.modelMatrix, or ->modelMatrix);
 
-	// calculate the viewer origin in the model's space
-	// needed for fog, specular, and environment mapping
-	VectorSubtract( viewParms->or.origin, or->origin, delta );
+		// calculate the viewer origin in the model's space
+		// needed for fog, specular, and environment mapping
+		VectorSubtract(viewParms-> or .origin, or ->origin, delta);
 
-	// compensate for scale in the axes if necessary
-	if ( ent->e.nonNormalizedAxes ) {
-		axisLength = VectorLength( ent->e.axis[0] );
-		if ( !axisLength ) {
-			axisLength = 0;
-		} else {
-			axisLength = 1.0f / axisLength;
+		// compensate for scale in the axes if necessary
+		if (ent->e.nonNormalizedAxes) {
+			axisLength = VectorLength(ent->e.axis[0]);
+			if (!axisLength) {
+				axisLength = 0.0f;
+			}
+			else {
+				axisLength = 1.0f / axisLength;
+			}
 		}
-	} else {
-		axisLength = 1.0f;
-	}
+		else {
+			axisLength = 1.0f;
+		}
 
-	or->viewOrigin[0] = DotProduct( delta, or->axis[0] ) * axisLength;
-	or->viewOrigin[1] = DotProduct( delta, or->axis[1] ) * axisLength;
-	or->viewOrigin[2] = DotProduct( delta, or->axis[2] ) * axisLength;
+		or ->viewOrigin[0] = DotProduct(delta, or ->axis[0]) * axisLength;
+		or ->viewOrigin[1] = DotProduct(delta, or ->axis[1]) * axisLength;
+		or ->viewOrigin[2] = DotProduct(delta, or ->axis[2]) * axisLength;
+	}
+	else {
+		memcpy(or ->modelMatrix, glMatrix, sizeof(glMatrix));
+		VectorClear(or ->viewOrigin);
+	}
 }
 
 /*

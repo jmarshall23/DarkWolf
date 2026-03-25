@@ -2137,6 +2137,265 @@ qboolean R_GetEntityToken( char *buffer, int size ) {
 	}
 }
 
+// -----------------------------------------------------------------------------
+// Ray tracing BSP mesh storage
+// -----------------------------------------------------------------------------
+
+typedef struct bspRaytracingMesh_s
+{
+	glRaytracingMeshHandle_t handle;
+	int                      surfaceIndex;
+} bspRaytracingMesh_t;
+
+static bspRaytracingMesh_t* s_bspRtMeshes = NULL;
+static int                  s_numBspRtMeshes = 0;
+
+
+// -----------------------------------------------------------------------------
+// Helper: build a ray tracing mesh from an SF_FACE
+// -----------------------------------------------------------------------------
+static glRaytracingMeshHandle_t R_CreateRaytracingMeshFromFace(const srfSurfaceFace_t* face) {
+	if (!face || face->numPoints < 3 || face->numIndices < 3) {
+		return 0;
+	}
+
+	glRaytracingVertex_t* rtVerts =
+		(glRaytracingVertex_t*)ri.Hunk_AllocateTempMemory(sizeof(glRaytracingVertex_t) * face->numPoints);
+
+	uint32_t* rtIndices =
+		(uint32_t*)ri.Hunk_AllocateTempMemory(sizeof(uint32_t) * face->numIndices);
+
+	if (!rtVerts || !rtIndices) {
+		if (rtVerts) {
+			ri.Hunk_FreeTempMemory(rtVerts);
+		}
+		if (rtIndices) {
+			ri.Hunk_FreeTempMemory(rtIndices);
+		}
+		return 0;
+	}
+
+	for (int i = 0; i < face->numPoints; ++i) {
+		rtVerts[i].xyz[0] = face->points[i][0];
+		rtVerts[i].xyz[1] = face->points[i][1];
+		rtVerts[i].xyz[2] = face->points[i][2];
+	}
+
+	const int* indices = (const int*)((const byte*)face + face->ofsIndices);
+	for (int i = 0; i < face->numIndices; ++i) {
+		rtIndices[i] = (uint32_t)indices[i];
+	}
+
+	glRaytracingMeshDesc_t desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.vertices = rtVerts;
+	desc.vertexCount = (uint32_t)face->numPoints;
+	desc.indices = rtIndices;
+	desc.indexCount = (uint32_t)face->numIndices;
+	desc.allowUpdate = qfalse;
+	desc.opaque = qtrue;
+
+	glRaytracingMeshHandle_t mesh = glRaytracingCreateMesh(&desc);
+
+	ri.Hunk_FreeTempMemory(rtIndices);
+	ri.Hunk_FreeTempMemory(rtVerts);
+
+	return mesh;
+}
+
+
+// -----------------------------------------------------------------------------
+// Helper: build a ray tracing mesh from an SF_TRIANGLES
+// -----------------------------------------------------------------------------
+static glRaytracingMeshHandle_t R_CreateRaytracingMeshFromTriSurf(const srfTriangles_t* tri) {
+	if (!tri || tri->numVerts < 3 || tri->numIndexes < 3) {
+		return 0;
+	}
+
+	glRaytracingVertex_t* rtVerts =
+		(glRaytracingVertex_t*)ri.Hunk_AllocateTempMemory(sizeof(glRaytracingVertex_t) * tri->numVerts);
+
+	uint32_t* rtIndices =
+		(uint32_t*)ri.Hunk_AllocateTempMemory(sizeof(uint32_t) * tri->numIndexes);
+
+	if (!rtVerts || !rtIndices) {
+		if (rtVerts) {
+			ri.Hunk_FreeTempMemory(rtVerts);
+		}
+		if (rtIndices) {
+			ri.Hunk_FreeTempMemory(rtIndices);
+		}
+		return 0;
+	}
+
+	for (int i = 0; i < tri->numVerts; ++i) {
+		rtVerts[i].xyz[0] = tri->verts[i].xyz[0];
+		rtVerts[i].xyz[1] = tri->verts[i].xyz[1];
+		rtVerts[i].xyz[2] = tri->verts[i].xyz[2];
+	}
+
+	for (int i = 0; i < tri->numIndexes; ++i) {
+		rtIndices[i] = (uint32_t)tri->indexes[i];
+	}
+
+	glRaytracingMeshDesc_t desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.vertices = rtVerts;
+	desc.vertexCount = (uint32_t)tri->numVerts;
+	desc.indices = rtIndices;
+	desc.indexCount = (uint32_t)tri->numIndexes;
+	desc.allowUpdate = qfalse;
+	desc.opaque = qtrue;
+
+	glRaytracingMeshHandle_t mesh = glRaytracingCreateMesh(&desc);
+
+	ri.Hunk_FreeTempMemory(rtIndices);
+	ri.Hunk_FreeTempMemory(rtVerts);
+
+	return mesh;
+}
+
+
+// -----------------------------------------------------------------------------
+// Optional: build a ray tracing mesh from an SF_GRID
+// Triangulates the tessellated patch grid.
+// -----------------------------------------------------------------------------
+static glRaytracingMeshHandle_t R_CreateRaytracingMeshFromGrid(const srfGridMesh_t* grid) {
+	if (!grid || grid->width < 2 || grid->height < 2) {
+		return 0;
+	}
+
+	const int numVerts = grid->width * grid->height;
+	const int numQuads = (grid->width - 1) * (grid->height - 1);
+	const int numIndices = numQuads * 6;
+
+	glRaytracingVertex_t* rtVerts =
+		(glRaytracingVertex_t*)ri.Hunk_AllocateTempMemory(sizeof(glRaytracingVertex_t) * numVerts);
+
+	uint32_t* rtIndices =
+		(uint32_t*)ri.Hunk_AllocateTempMemory(sizeof(uint32_t) * numIndices);
+
+	if (!rtVerts || !rtIndices) {
+		if (rtVerts) {
+			ri.Hunk_FreeTempMemory(rtVerts);
+		}
+		if (rtIndices) {
+			ri.Hunk_FreeTempMemory(rtIndices);
+		}
+		return 0;
+	}
+
+	for (int y = 0; y < grid->height; ++y) {
+		for (int x = 0; x < grid->width; ++x) {
+			const int v = y * grid->width + x;
+			rtVerts[v].xyz[0] = grid->verts[v].xyz[0];
+			rtVerts[v].xyz[1] = grid->verts[v].xyz[1];
+			rtVerts[v].xyz[2] = grid->verts[v].xyz[2];
+		}
+	}
+
+	int idx = 0;
+	for (int y = 0; y < grid->height - 1; ++y) {
+		for (int x = 0; x < grid->width - 1; ++x) {
+			const uint32_t i0 = (uint32_t)(y * grid->width + x);
+			const uint32_t i1 = (uint32_t)(y * grid->width + x + 1);
+			const uint32_t i2 = (uint32_t)((y + 1) * grid->width + x);
+			const uint32_t i3 = (uint32_t)((y + 1) * grid->width + x + 1);
+
+			rtIndices[idx++] = i0;
+			rtIndices[idx++] = i2;
+			rtIndices[idx++] = i1;
+
+			rtIndices[idx++] = i1;
+			rtIndices[idx++] = i2;
+			rtIndices[idx++] = i3;
+		}
+	}
+
+	glRaytracingMeshDesc_t desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.vertices = rtVerts;
+	desc.vertexCount = (uint32_t)numVerts;
+	desc.indices = rtIndices;
+	desc.indexCount = (uint32_t)numIndices;
+	desc.allowUpdate = qfalse;
+	desc.opaque = qtrue;
+
+	glRaytracingMeshHandle_t mesh = glRaytracingCreateMesh(&desc);
+
+	ri.Hunk_FreeTempMemory(rtIndices);
+	ri.Hunk_FreeTempMemory(rtVerts);
+
+	return mesh;
+}
+
+
+// -----------------------------------------------------------------------------
+// Build ray tracing meshes for the loaded BSP world
+// -----------------------------------------------------------------------------
+static void R_CreateRaytracingWorldMeshes(void) {
+	int i;
+	int count = 0;
+
+	if (!s_worldData.surfaces || s_worldData.numsurfaces <= 0) {
+		return;
+	}
+
+	// worst case: one RT mesh per surface
+	s_bspRtMeshes = (bspRaytracingMesh_t*)ri.Hunk_Alloc(
+		sizeof(bspRaytracingMesh_t) * s_worldData.numsurfaces, h_low);
+
+	memset(s_bspRtMeshes, 0, sizeof(bspRaytracingMesh_t) * s_worldData.numsurfaces);
+
+	for (i = 0; i < s_worldData.numsurfaces; ++i) {
+		surfaceType_t* data = s_worldData.surfaces[i].data;
+		glRaytracingMeshHandle_t mesh = 0;
+
+		if (!data) {
+			continue;
+		}
+
+		switch (*data) {
+		case SF_FACE:
+			mesh = R_CreateRaytracingMeshFromFace((const srfSurfaceFace_t*)data);
+			break;
+
+		case SF_TRIANGLES:
+			mesh = R_CreateRaytracingMeshFromTriSurf((const srfTriangles_t*)data);
+			break;
+
+		case SF_GRID:
+			mesh = R_CreateRaytracingMeshFromGrid((const srfGridMesh_t*)data);
+			break;
+
+		default:
+			break;
+		}
+
+		if (mesh) {
+
+			glRaytracingInstanceDesc_t instDesc = {};
+			instDesc.meshHandle = mesh;
+			instDesc.instanceID = 0;
+			instDesc.mask = 0xFF;
+
+			instDesc.transform[0] = 1.0f; instDesc.transform[1] = 0.0f; instDesc.transform[2] = 0.0f; instDesc.transform[3] = 0.0f;
+			instDesc.transform[4] = 0.0f; instDesc.transform[5] = 1.0f; instDesc.transform[6] = 0.0f; instDesc.transform[7] = 0.0f;
+			instDesc.transform[8] = 0.0f; instDesc.transform[9] = 0.0f; instDesc.transform[10] = 1.0f; instDesc.transform[11] = 0.0f;
+
+			glRaytracingCreateInstance(&instDesc);
+
+			s_bspRtMeshes[count].handle = mesh;
+			s_bspRtMeshes[count].surfaceIndex = i;
+			++count;
+		}
+	}
+
+	s_numBspRtMeshes = count;
+
+	ri.Printf(PRINT_ALL, "...created %d ray tracing meshes from BSP world\n", s_numBspRtMeshes);
+}
+
 /*
 =================
 RE_LoadWorldMap
@@ -2240,6 +2499,10 @@ void RE_LoadWorldMap( const char *name ) {
 	ri.Cmd_ExecuteText( EXEC_NOW, "updatescreen\n" );
 	R_LoadLightGrid( &header->lumps[LUMP_LIGHTGRID] );
 	ri.Cmd_ExecuteText( EXEC_NOW, "updatescreen\n" );
+
+	glRaytracingClear();
+	R_CreateRaytracingWorldMeshes();
+	glRaytracingBuildScene();
 
 	s_worldData.dataSize = (byte *)ri.Hunk_Alloc( 0, h_low ) - startMarker;
 

@@ -1357,6 +1357,11 @@ typedef struct {
 //
 // NOTE: all fields in here must be 32 bits (or those within sub-structures)
 
+struct entityLighting_t {
+	int lightRadius;
+	vec3_t lightColor;
+};
+
 typedef struct entityState_s {
 	int number;             // entity index
 	int eType;              // entityType_t
@@ -1364,6 +1369,8 @@ typedef struct entityState_s {
 
 	trajectory_t pos;       // for calculating position
 	trajectory_t apos;      // for calculating angles
+
+	entityLighting_t light;
 
 	int time;
 	int time2;

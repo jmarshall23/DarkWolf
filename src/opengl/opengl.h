@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <d3d12.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -9,6 +10,235 @@
 #endif
 #include <windows.h>
 #endif
+
+#include <math.h>
+
+template<typename T>
+static T ClampValue(T v, T lo, T hi)
+{
+    return (v < lo) ? lo : ((v > hi) ? hi : v);
+}
+
+struct Mat4
+{
+    float m[16];
+
+    static Mat4 Identity()
+    {
+        Mat4 r{};
+        r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f;
+        return r;
+    }
+
+
+    static bool Invert(const Mat4* in, Mat4* out)
+    {
+        const float* m = in->m;
+        float inv[16];
+
+        inv[0] = m[5] * m[10] * m[15] -
+            m[5] * m[11] * m[14] -
+            m[9] * m[6] * m[15] +
+            m[9] * m[7] * m[14] +
+            m[13] * m[6] * m[11] -
+            m[13] * m[7] * m[10];
+
+        inv[4] = -m[4] * m[10] * m[15] +
+            m[4] * m[11] * m[14] +
+            m[8] * m[6] * m[15] -
+            m[8] * m[7] * m[14] -
+            m[12] * m[6] * m[11] +
+            m[12] * m[7] * m[10];
+
+        inv[8] = m[4] * m[9] * m[15] -
+            m[4] * m[11] * m[13] -
+            m[8] * m[5] * m[15] +
+            m[8] * m[7] * m[13] +
+            m[12] * m[5] * m[11] -
+            m[12] * m[7] * m[9];
+
+        inv[12] = -m[4] * m[9] * m[14] +
+            m[4] * m[10] * m[13] +
+            m[8] * m[5] * m[14] -
+            m[8] * m[6] * m[13] -
+            m[12] * m[5] * m[10] +
+            m[12] * m[6] * m[9];
+
+        inv[1] = -m[1] * m[10] * m[15] +
+            m[1] * m[11] * m[14] +
+            m[9] * m[2] * m[15] -
+            m[9] * m[3] * m[14] -
+            m[13] * m[2] * m[11] +
+            m[13] * m[3] * m[10];
+
+        inv[5] = m[0] * m[10] * m[15] -
+            m[0] * m[11] * m[14] -
+            m[8] * m[2] * m[15] +
+            m[8] * m[3] * m[14] +
+            m[12] * m[2] * m[11] -
+            m[12] * m[3] * m[10];
+
+        inv[9] = -m[0] * m[9] * m[15] +
+            m[0] * m[11] * m[13] +
+            m[8] * m[1] * m[15] -
+            m[8] * m[3] * m[13] -
+            m[12] * m[1] * m[11] +
+            m[12] * m[3] * m[9];
+
+        inv[13] = m[0] * m[9] * m[14] -
+            m[0] * m[10] * m[13] -
+            m[8] * m[1] * m[14] +
+            m[8] * m[2] * m[13] +
+            m[12] * m[1] * m[10] -
+            m[12] * m[2] * m[9];
+
+        inv[2] = m[1] * m[6] * m[15] -
+            m[1] * m[7] * m[14] -
+            m[5] * m[2] * m[15] +
+            m[5] * m[3] * m[14] +
+            m[13] * m[2] * m[7] -
+            m[13] * m[3] * m[6];
+
+        inv[6] = -m[0] * m[6] * m[15] +
+            m[0] * m[7] * m[14] +
+            m[4] * m[2] * m[15] -
+            m[4] * m[3] * m[14] -
+            m[12] * m[2] * m[7] +
+            m[12] * m[3] * m[6];
+
+        inv[10] = m[0] * m[5] * m[15] -
+            m[0] * m[7] * m[13] -
+            m[4] * m[1] * m[15] +
+            m[4] * m[3] * m[13] +
+            m[12] * m[1] * m[7] -
+            m[12] * m[3] * m[5];
+
+        inv[14] = -m[0] * m[5] * m[14] +
+            m[0] * m[6] * m[13] +
+            m[4] * m[1] * m[14] -
+            m[4] * m[2] * m[13] -
+            m[12] * m[1] * m[6] +
+            m[12] * m[2] * m[5];
+
+        inv[3] = -m[1] * m[6] * m[11] +
+            m[1] * m[7] * m[10] +
+            m[5] * m[2] * m[11] -
+            m[5] * m[3] * m[10] -
+            m[9] * m[2] * m[7] +
+            m[9] * m[3] * m[6];
+
+        inv[7] = m[0] * m[6] * m[11] -
+            m[0] * m[7] * m[10] -
+            m[4] * m[2] * m[11] +
+            m[4] * m[3] * m[10] +
+            m[8] * m[2] * m[7] -
+            m[8] * m[3] * m[6];
+
+        inv[11] = -m[0] * m[5] * m[11] +
+            m[0] * m[7] * m[9] +
+            m[4] * m[1] * m[11] -
+            m[4] * m[3] * m[9] -
+            m[8] * m[1] * m[7] +
+            m[8] * m[3] * m[5];
+
+        inv[15] = m[0] * m[5] * m[10] -
+            m[0] * m[6] * m[9] -
+            m[4] * m[1] * m[10] +
+            m[4] * m[2] * m[9] +
+            m[8] * m[1] * m[6] -
+            m[8] * m[2] * m[5];
+
+        float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+        if (det == 0.0f)
+            return false;
+
+        det = 1.0f / det;
+        for (int i = 0; i < 16; ++i)
+            out->m[i] = inv[i] * det;
+
+        return true;
+    }
+
+
+    static Mat4 Multiply(const Mat4& a, const Mat4& b)
+    {
+        Mat4 r{};
+
+        for (int col = 0; col < 4; ++col)
+        {
+            for (int row = 0; row < 4; ++row)
+            {
+                r.m[col * 4 + row] =
+                    a.m[0 * 4 + row] * b.m[col * 4 + 0] +
+                    a.m[1 * 4 + row] * b.m[col * 4 + 1] +
+                    a.m[2 * 4 + row] * b.m[col * 4 + 2] +
+                    a.m[3 * 4 + row] * b.m[col * 4 + 3];
+            }
+        }
+
+        return r;
+    }
+
+    static Mat4 Translation(float x, float y, float z)
+    {
+        Mat4 r = Identity();
+        r.m[12] = x;
+        r.m[13] = y;
+        r.m[14] = z;
+        return r;
+    }
+
+    static Mat4 Scale(float x, float y, float z)
+    {
+        Mat4 r{};
+        r.m[0] = x;
+        r.m[5] = y;
+        r.m[10] = z;
+        r.m[15] = 1.0f;
+        return r;
+    }
+
+    static Mat4 RotationAxisDeg(float angleDeg, float x, float y, float z)
+    {
+        float len = sqrtf(x * x + y * y + z * z);
+        if (len <= 0.000001f)
+            return Identity();
+
+        x /= len;
+        y /= len;
+        z /= len;
+
+        const float rad = angleDeg * 3.1415926535f / 180.0f;
+        const float c = cosf(rad);
+        const float s = sinf(rad);
+        const float t = 1.0f - c;
+
+        Mat4 r = Identity();
+        r.m[0] = t * x * x + c;
+        r.m[1] = t * x * y + s * z;
+        r.m[2] = t * x * z - s * y;
+        r.m[4] = t * x * y - s * z;
+        r.m[5] = t * y * y + c;
+        r.m[6] = t * y * z + s * x;
+        r.m[8] = t * x * z + s * y;
+        r.m[9] = t * y * z - s * x;
+        r.m[10] = t * z * z + c;
+        return r;
+    }
+
+    static Mat4 Ortho(double left, double right, double bottom, double top, double zNear, double zFar)
+    {
+        Mat4 r{};
+        r.m[0] = (float)(2.0 / (right - left));
+        r.m[5] = (float)(2.0 / (top - bottom));
+        r.m[10] = (float)(1.0 / (zFar - zNear));
+        r.m[12] = (float)(-(right + left) / (right - left));
+        r.m[13] = (float)(-(top + bottom) / (top - bottom));
+        r.m[14] = (float)(-zNear / (zFar - zNear));
+        r.m[15] = 1.0f;
+        return r;
+    }
+};
 
 #ifndef APIENTRY
 #define APIENTRY __stdcall
@@ -578,6 +808,7 @@ extern "C" {
 #ifndef QD3D12_NO_GL_PROTOTYPES
 
     WINGDIAPI void APIENTRY glLoadMatrixf(const GLfloat* m);
+    WINGDIAPI void APIENTRY glLoadModelMatrixf(const float* m16);
     WINGDIAPI void APIENTRY glGetFloatv(GLenum pname, GLfloat* params);
     WINGDIAPI void APIENTRY glGetIntegerv(GLenum pname, GLint* params);
     WINGDIAPI void APIENTRY glFrustum(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar);
@@ -643,6 +874,7 @@ extern "C" {
     WINGDIAPI void APIENTRY glEnableClientState(GLenum array);
     WINGDIAPI void APIENTRY glDisableClientState(GLenum array);
     WINGDIAPI void APIENTRY glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr);
+    WINGDIAPI void APIENTRY glNormalPointer(GLenum type, GLsizei stride, const void* pointer);
     WINGDIAPI void APIENTRY glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr);
     WINGDIAPI void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr);
     WINGDIAPI void APIENTRY glArrayElement(GLint i);
@@ -672,49 +904,148 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
-typedef struct Q3Vec3
-{
-    float x, y, z;
-} Q3Vec3;
 
-typedef struct Q3Triangle
-{
-    Q3Vec3 a, b, c;
-} Q3Triangle;
-
-typedef struct Q3AABB
-{
-    Q3Vec3 mins;
-    Q3Vec3 maxs;
-} Q3AABB;
-
-typedef struct Q3Ray
-{
-    Q3Vec3 origin;
-    Q3Vec3 dir;      /* should be normalized by caller or helper */
-    float   tMin;
-    float   tMax;
-    uint32_t mask;
-} Q3Ray;
-
-typedef struct Q3HitResult
-{
-    int      hit;
-    int      hitWorld;
-    uint32_t entityId;        /* 0xFFFFFFFF if world */
-    float    t;
-    Q3Vec3   position;
-    Q3Vec3   barycentrics;    /* x = bary.x, y = bary.y, z unused */
-    uint32_t primitiveIndex;
-    uint32_t instanceIndex;
-    uint32_t geometryIndex;
-} Q3HitResult;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-    
+    // ============================================================
+// Scene types
+// ============================================================
 
+    typedef struct glRaytracingVertex_s
+    {
+        float xyz[3];
+        float normal[3];
+        float st[2];
+    } glRaytracingVertex_t;
+
+    typedef struct glRaytracingMeshDesc_s
+    {
+        const glRaytracingVertex_t* vertices;
+        uint32_t                    vertexCount;
+
+        const uint32_t* indices;
+        uint32_t                    indexCount;
+
+        int                         allowUpdate;
+        int                         opaque;
+    } glRaytracingMeshDesc_t;
+
+    typedef struct glRaytracingInstanceDesc_s
+    {
+        uint32_t meshHandle;
+        uint32_t instanceID;
+        uint32_t mask;
+        float    transform[12]; // 3x4 row-major
+    } glRaytracingInstanceDesc_t;
+
+    typedef uint32_t glRaytracingMeshHandle_t;
+    typedef uint32_t glRaytracingInstanceHandle_t;
+
+    // ============================================================
+    // Lighting types
+    // ============================================================
+
+    static const uint32_t GL_RAYTRACING_MAX_LIGHTS = 256;
+
+    typedef struct glRaytracingVec3_s
+    {
+        float x, y, z;
+    } glRaytracingVec3_t;
+
+    typedef struct glRaytracingLight_s
+    {
+        glRaytracingVec3_t position;
+        float              radius;
+
+        glRaytracingVec3_t color;
+        float              intensity;
+    } glRaytracingLight_t;
+
+    typedef struct glRaytracingLightingPassDesc_s
+    {
+        ID3D12Resource* albedoTexture;
+        DXGI_FORMAT     albedoFormat;
+
+        ID3D12Resource* depthTexture;
+        DXGI_FORMAT     depthFormat;
+
+        ID3D12Resource* normalTexture;
+        DXGI_FORMAT     normalFormat;
+
+        ID3D12Resource* positionTexture;
+        DXGI_FORMAT     positionFormat;
+
+        ID3D12Resource* outputTexture;
+        DXGI_FORMAT     outputFormat;
+
+        ID3D12Resource* topLevelAS;
+
+        uint32_t        width;
+        uint32_t        height;
+    } glRaytracingLightingPassDesc_t;
+
+    // ============================================================
+    // Scene API
+    // ============================================================
+
+    int                           glRaytracingInit(void);
+    void                          glRaytracingShutdown(void);
+    void                          glRaytracingClear(void);
+
+    glRaytracingMeshHandle_t      glRaytracingCreateMesh(const glRaytracingMeshDesc_t* desc);
+    int                           glRaytracingUpdateMesh(glRaytracingMeshHandle_t meshHandle, const glRaytracingMeshDesc_t* desc);
+    void                          glRaytracingDeleteMesh(glRaytracingMeshHandle_t meshHandle);
+
+    glRaytracingInstanceHandle_t  glRaytracingCreateInstance(const glRaytracingInstanceDesc_t* desc);
+    int                           glRaytracingUpdateInstance(glRaytracingInstanceHandle_t instanceHandle, const glRaytracingInstanceDesc_t* desc);
+    void                          glRaytracingDeleteInstance(glRaytracingInstanceHandle_t instanceHandle);
+
+    int                           glRaytracingBuildMesh(glRaytracingMeshHandle_t meshHandle);
+    int                           glRaytracingBuildAllMeshes(void);
+    int                           glRaytracingBuildScene(void);
+
+    uint32_t                      glRaytracingGetMeshCount(void);
+    uint32_t                      glRaytracingGetInstanceCount(void);
+
+    // ============================================================
+    // Lighting API
+    // ============================================================
+
+    bool                          glRaytracingLightingInit(void);
+    void                          glRaytracingLightingShutdown(void);
+    bool                          glRaytracingLightingIsInitialized(void);
+
+    void                          glRaytracingLightingClearLights(void);
+    bool                          glRaytracingLightingAddLight(const glRaytracingLight_t* light);
+
+    void                          glRaytracingLightingSetAmbient(float r, float g, float b, float intensity);
+    void                          glRaytracingLightingSetCameraPosition(float x, float y, float z);
+    void                          glRaytracingLightingSetInvViewProjMatrix(const float* m16);
+   void                         glRaytracingLightingSetInvViewMatrix(const float* m16);
+    void                          glRaytracingLightingSetNormalReconstructSign(float signValue);
+    void                          glRaytracingLightingEnableSpecular(int enable);
+    void                          glRaytracingLightingEnableHalfLambert(int enable);
+    void                          glRaytracingLightingSetShadowBias(float bias);
+
+    bool                          glRaytracingLightingExecute(const glRaytracingLightingPassDesc_t* pass);
+
+    glRaytracingLight_t           glRaytracingLightingMakePointLight(
+        float px, float py, float pz,
+        float radius,
+        float r, float g, float b,
+        float intensity);
+
+    uint32_t                      glRaytracingLightingGetLightCount(void);
+
+    void glLightScene(void);
+
+    ID3D12Device* QD3D12_GetDevice(void);
+    ID3D12CommandQueue* QD3D12_GetQueue(void);
+    ID3D12GraphicsCommandList* QD3D12_GetCommandList(void);
+
+    ID3D12Resource* QD3D12_GetCurrentBackBuffer();
 #ifdef __cplusplus
 };
 #endif

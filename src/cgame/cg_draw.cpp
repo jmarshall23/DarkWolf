@@ -3601,6 +3601,8 @@ void CG_DrawActive( stereoFrame_t stereoView ) {
 
 	sys->R_RenderScene( &cg.refdef );
 
+	sys->RenderRaytracing();
+
 	// restore original viewpoint if running stereo
 	if ( separation != 0 ) {
 		VectorCopy( baseOrg, cg.refdef.vieworg );

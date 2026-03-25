@@ -341,6 +341,17 @@ void RE_AddLightToScene( const vec3_t org, float intensity, float r, float g, fl
 		}
 	}
 
+	glRaytracingLight_t light;
+	light.color.x = r;
+	light.color.y = g;
+	light.color.z = b;
+	light.radius = intensity;
+	light.intensity = 1;
+	light.position.x = org[0];
+	light.position.y = org[1];
+	light.position.z = org[2];
+	glRaytracingLightingAddLight(&light);
+#if 0
 	if ( r_dlightScale->value <= 0 ) { //----(SA)	added
 		return;
 	}
@@ -365,6 +376,7 @@ void RE_AddLightToScene( const vec3_t org, float intensity, float r, float g, fl
 	} else {
 		dl->overdraw = overdraw;
 	}
+#endif
 }
 // done.
 

@@ -876,6 +876,47 @@ void RB_ZombieFX( int part, drawSurf_t *drawSurf, int oldNumVerts, int oldNumInd
 
 #define MAC_EVENT_PUMP_MSEC     5
 
+void RB_BuildViewMatrixFromRefdef(const trRefdef_t* rd, Mat4 * outView)
+{
+	// Quake 3 stores camera axes in world space.
+	// For a view matrix, use the inverse camera transform.
+
+	const vec3_t& org = rd->vieworg;
+
+	// Quake 3 convention:
+	// viewaxis[0] = forward
+	// viewaxis[1] = right
+	// viewaxis[2] = up
+	//
+	// Depending on your renderer, you may need to negate one axis.
+	// Start with this version first.
+
+	const vec3_t& f = rd->viewaxis[0];
+	const vec3_t& r = rd->viewaxis[1];
+	const vec3_t& u = rd->viewaxis[2];
+
+	// Row-major view matrix
+	outView->m[0] = r[0];
+	outView->m[1] = u[0];
+	outView->m[2] = -f[0];
+	outView->m[3] = 0.0f;
+
+	outView->m[4] = r[1];
+	outView->m[5] = u[1];
+	outView->m[6] = -f[1];
+	outView->m[7] = 0.0f;
+
+	outView->m[8] = r[2];
+	outView->m[9] = u[2];
+	outView->m[10] = -f[2];
+	outView->m[11] = 0.0f;
+
+	outView->m[12] = -(org[0] * r[0] + org[1] * r[1] + org[2] * r[2]);
+	outView->m[13] = -(org[0] * u[0] + org[1] * u[1] + org[2] * u[2]);
+	outView->m[14] = (org[0] * f[0] + org[1] * f[1] + org[2] * f[2]);
+	outView->m[15] = 1.0f;
+}
+
 /*
 ==================
 RB_RenderDrawSurfList
@@ -903,6 +944,23 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	// we are going to check every shader change
 	macEventTime = ri.Milliseconds() + MAC_EVENT_PUMP_MSEC;
 #endif
+
+	Mat4 view, proj, viewProj, invViewProj;
+
+	RB_BuildViewMatrixFromRefdef(&backEnd.refdef, &view);
+	memcpy(proj.m, backEnd.viewParms.projectionMatrix, sizeof(float) * 16);
+	Mat4 invViewMatrix;	
+	Mat4::Invert(&view, &invViewMatrix);
+	viewProj = Mat4::Multiply(proj, view);
+	Mat4::Invert(&viewProj, &invViewProj);
+
+	glRaytracingLightingSetInvViewMatrix(invViewMatrix.m);
+	glRaytracingLightingSetInvViewProjMatrix(invViewProj.m);
+
+	glRaytracingLightingSetCameraPosition(
+		backEnd.refdef.vieworg[0],
+		backEnd.refdef.vieworg[1],
+		backEnd.refdef.vieworg[2]);
 
 	// save original time for entity shader offsets
 	originalTime = backEnd.refdef.floatTime;
@@ -978,11 +1036,21 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			oldAtiTess = atiTess;
 		}
 
+// jmarshall - in non skyportal passes we want to render raytracing, but just before the first bleding passes. 
+		if (shader->sort > SS_OPAQUE && !backEnd.raytraceRendered && !(backEnd.refdef.rdflags & RDF_SKYBOXPORTAL)) {
+			backEnd.raytraceRendered = true;
+			glFinish();
+			glLightScene();
+			glRaytracingLightingClearLights();
+		}
+// jmarshall end
 		//
 		// change the modelview matrix if needed
 		//
 		if ( entityNum != oldEntityNum ) {
 			depthRange = qfalse;
+
+			orientationr_t entityMatrix;
 
 			if ( entityNum != ENTITYNUM_WORLD ) {
 				backEnd.currentEntity = &backEnd.refdef.entities[entityNum];
@@ -1004,6 +1072,8 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 					// hack the depth range to prevent view model from poking into walls
 					depthRange = qtrue;
 				}
+
+				R_RotateForEntity(backEnd.currentEntity, NULL, &entityMatrix);
 			} else {
 				backEnd.currentEntity = &tr.worldEntity;
 				backEnd.refdef.floatTime = originalTime;
@@ -1012,11 +1082,12 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 				// we have to reset the shaderTime as well otherwise image animations on
 				// the world (like water) continue with the wrong frame
 //				tess.shaderTime = backEnd.refdef.floatTime - tess.shader->timeOffset;
-
+				R_RotateForEntity(NULL, NULL, &entityMatrix);
 				R_TransformDlights( backEnd.refdef.num_dlights, backEnd.refdef.dlights, &backEnd.or );
 			}
 
 			glLoadMatrixf( backEnd.or.modelMatrix );
+			glLoadModelMatrixf(entityMatrix.modelMatrix);
 
 			//
 			// change depthrange if needed
@@ -1056,6 +1127,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		tess.ATI_tess = ( oldAtiTess == ATI_TESS_TRUFORM );
 
 		RB_EndSurface();
+		glLoadModelMatrixf(NULL);
 	}
 
 	// go back to the world modelview matrix
@@ -1144,9 +1216,6 @@ void RE_StretchRaw( int x, int y, int w, int h, int cols, int rows, const byte *
 	}
 	R_SyncRenderThread();
 
-	// we definately want to sync every frame for the cinematics
-	glFinish();
-
 	start = end = 0;
 	if ( r_speeds->integer ) {
 		start = ri.Milliseconds();
@@ -1223,7 +1292,24 @@ void RE_UploadCinematic( int w, int h, int cols, int rows, const byte *data, int
 		}
 	}
 }
+/*
+=============
+RB_Raytrace
+=============
+*/
+const void* RB_Raytrace(const void* data) {
+	const raytraceRenderCommand_t* cmd;
+	cmd = (const raytraceRenderCommand_t*)data;
 
+	if (!backEnd.raytraceRendered) {
+		backEnd.raytraceRendered = true;
+		glFinish();
+		glLightScene();
+		glRaytracingLightingClearLights();
+	}
+
+	return (const void*)(cmd + 1);
+}
 
 /*
 =============
@@ -1471,9 +1557,6 @@ void RB_ShowImages( void ) {
 
 	glClear( GL_COLOR_BUFFER_BIT );
 
-	glFinish();
-
-
 	start = ri.Milliseconds();
 
 	for ( i = 0 ; i < tr.numImages ; i++ ) {
@@ -1503,8 +1586,6 @@ void RB_ShowImages( void ) {
 		glVertex2f( x, y + h );
 		glEnd();
 	}
-
-	glFinish();
 
 	end = ri.Milliseconds();
 	ri.Printf( PRINT_ALL, "%i msec to draw all images\n", end - start );
@@ -1551,11 +1632,6 @@ const void  *RB_SwapBuffers( const void *data ) {
 		ri.Hunk_FreeTempMemory( stencilReadback );
 	}
 
-
-	if ( !glState.finishCalled ) {
-		glFinish();
-	}
-
 	GLimp_LogComment( "***************** RB_SwapBuffers *****************\n\n\n" );
 
 	GLimp_EndFrame();
@@ -1584,8 +1660,13 @@ void RB_ExecuteRenderCommands( const void *data ) {
 		backEnd.smpFrame = 1;
 	}
 
+	backEnd.raytraceRendered = qfalse;
+
 	while ( 1 ) {
 		switch ( *(const int *)data ) {
+		case RC_RAYTRACE:
+			data = RB_Raytrace(data);
+			break;
 		case RC_SET_COLOR:
 			data = RB_SetColor( data );
 			break;

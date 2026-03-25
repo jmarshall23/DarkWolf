@@ -318,6 +318,7 @@
     <ClCompile Include="g_cmds.cpp" />
     <ClCompile Include="g_combat.cpp" />
     <ClCompile Include="g_items.cpp" />
+    <ClCompile Include="g_light.cpp" />
     <ClCompile Include="g_main.cpp" />
     <ClCompile Include="g_mem.cpp" />
     <ClCompile Include="g_misc.cpp" />

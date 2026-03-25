@@ -947,6 +947,10 @@ netField_t entityStateFields[] =
 {
 	{ NETF( eType ), 8 },
 	{ NETF( eFlags ), 32 },
+	{ NETF( light.lightRadius ), 32 },
+	{ NETF(light.lightColor[0]), 0 },
+	{ NETF(light.lightColor[1]), 0 },
+	{ NETF(light.lightColor[2]), 0 },
 	{ NETF( pos.trType ), 8 },
 	{ NETF( pos.trTime ), 32 },
 	{ NETF( pos.trDuration ), 32 },

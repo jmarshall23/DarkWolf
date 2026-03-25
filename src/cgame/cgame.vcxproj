@@ -287,6 +287,7 @@
     <ClCompile Include="cg_event.cpp" />
     <ClCompile Include="cg_flamethrower.cpp" />
     <ClCompile Include="cg_info.cpp" />
+    <ClCompile Include="cg_light.cpp" />
     <ClCompile Include="cg_localents.cpp" />
     <ClCompile Include="cg_main.cpp" />
     <ClCompile Include="cg_marks.cpp" />

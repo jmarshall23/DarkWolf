@@ -440,6 +440,11 @@ public:
 		return ::Sys_Milliseconds();
 	}
 
+	virtual void RenderRaytracing(void) override
+	{
+		re.RenderRaytracing();
+	}
+
 	virtual void Cvar_Register(vmCvar_t* vmCvar, const char* varName, const char* defaultValue, int flags) override
 	{
 		::Cvar_Register(vmCvar, varName, defaultValue, flags);

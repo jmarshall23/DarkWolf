@@ -1300,6 +1300,9 @@ void RB_StageIteratorGeneric( void ) {
 		glTexCoordPointer( 2, GL_FLOAT, 0, tess.svars.texcoords[0] );
 	}
 
+	glEnableClientState(GL_NORMAL_ARRAY);
+	glNormalPointer(GL_FLOAT, 16, input->normal);
+
 	//
 	// lock XYZ
 	//
@@ -1351,6 +1354,8 @@ void RB_StageIteratorGeneric( void ) {
 	if ( input->shader->polygonOffset ) {
 		glDisable( GL_POLYGON_OFFSET_FILL );
 	}
+
+	glDisableClientState(GL_NORMAL_ARRAY);
 }
 
 
@@ -1393,11 +1398,13 @@ void RB_StageIteratorVertexLitTexture( void ) {
 	//
 	glEnableClientState( GL_COLOR_ARRAY );
 	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	glEnableClientState(GL_NORMAL_ARRAY);
 
 	glColorPointer( 4, GL_UNSIGNED_BYTE, 0, tess.svars.colors );
 	glTexCoordPointer( 2, GL_FLOAT, 16, tess.texCoords[0][0] );
 	glVertexPointer( 3, GL_FLOAT, 16, input->xyz );
 
+	glNormalPointer(GL_FLOAT, 16, input->normal);
 
 	if ( glLockArraysEXT ) {
 		glLockArraysEXT( 0, input->numVertexes );
@@ -1432,6 +1439,8 @@ void RB_StageIteratorVertexLitTexture( void ) {
 		glUnlockArraysEXT();
 		GLimp_LogComment( "glUnlockArraysEXT\n" );
 	}
+
+	glDisableClientState(GL_NORMAL_ARRAY);
 }
 
 //define	REPLACE_MODE
@@ -1463,6 +1472,9 @@ void RB_StageIteratorLightmappedMultitexture( void ) {
 	//
 	GL_State( GLS_DEFAULT );
 	glVertexPointer( 3, GL_FLOAT, 16, input->xyz );
+
+	glEnableClientState(GL_NORMAL_ARRAY);
+	glNormalPointer(GL_FLOAT, 16, input->normal);
 
 #ifdef REPLACE_MODE
 	glDisableClientState( GL_COLOR_ARRAY );
@@ -1546,6 +1558,8 @@ void RB_StageIteratorLightmappedMultitexture( void ) {
 		glUnlockArraysEXT();
 		GLimp_LogComment( "glUnlockArraysEXT\n" );
 	}
+
+	glDisableClientState(GL_NORMAL_ARRAY);
 }
 
 /*

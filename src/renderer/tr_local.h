@@ -931,6 +931,7 @@ typedef struct {
 	byte color2D[4];
 	qboolean vertexes2D;        // shader needs to be finished
 	trRefEntity_t entity2D;     // currentEntity will point at this when doing 2D rendering
+	qboolean raytraceRendered;
 } backEndState_t;
 
 /*
@@ -1652,6 +1653,10 @@ typedef struct {
 
 typedef struct {
 	int commandId;
+} raytraceRenderCommand_t;
+
+typedef struct {
+	int commandId;
 	int buffer;
 } drawBufferCommand_t;
 
@@ -1699,6 +1704,7 @@ typedef enum {
 	RC_STRETCH_PIC_GRADIENT,    // (SA) added
 	RC_DRAW_SURFS,
 	RC_DRAW_BUFFER,
+	RC_RAYTRACE,
 	RC_SWAP_BUFFERS
 } renderCommand_t;
 
@@ -1749,6 +1755,7 @@ void R_SyncRenderThread( void );
 void R_AddDrawSurfCmd( drawSurf_t *drawSurfs, int numDrawSurfs );
 
 void RE_SetColor( const float *rgba );
+void RE_RenderRaytracing(void);
 void RE_StretchPic( float x, float y, float w, float h,
 					float s1, float t1, float s2, float t2, qhandle_t hShader );
 void RE_StretchPicGradient( float x, float y, float w, float h,

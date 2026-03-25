@@ -19,8 +19,6 @@
 #include "jversion.h"
 #include "jerror.h"
 
-#include "../renderer/tr_local.h"
-
 #ifndef EXIT_FAILURE		/* define exit() codes if not provided */
 #define EXIT_FAILURE  1
 #endif

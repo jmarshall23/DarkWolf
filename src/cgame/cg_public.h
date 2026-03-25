@@ -87,6 +87,8 @@ public:
 	virtual void Error(const char* fmt) = 0;
 	virtual int Milliseconds(void) = 0;
 
+	virtual void RenderRaytracing(void) = 0;
+
 	virtual void Cvar_Register(vmCvar_t* vmCvar, const char* varName, const char* defaultValue, int flags) = 0;
 	virtual void Cvar_Update(vmCvar_t* vmCvar) = 0;
 	virtual void Cvar_Set(const char* var_name, const char* value) = 0;

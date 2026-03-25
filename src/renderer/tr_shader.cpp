@@ -618,7 +618,9 @@ static qboolean ParseStage( shaderStage_t *stage, char **text ) {
 				if ( shader.lightmapIndex < 0 ) {
 					stage->bundle[0].image[0] = tr.whiteImage;
 				} else {
-					stage->bundle[0].image[0] = tr.lightmaps[shader.lightmapIndex];
+// jmarshall - disable legacy lightmap code. 
+					//stage->bundle[0].image[0] = tr.lightmaps[shader.lightmapIndex];
+					stage->bundle[0].image[0] = tr.whiteImage;
 				}
 				continue;
 			} else

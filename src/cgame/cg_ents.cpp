@@ -40,7 +40,8 @@ If you have questions concerning this license or the applicable additional terms
 extern int propellerModel;
 ///////////////////////
 
-
+void CG_Light(centity_t* cent);
+void CG_LightJunior(centity_t* cent);
 
 /*
 ======================
@@ -2358,6 +2359,12 @@ static void CG_ProcessEntity( centity_t *cent ) {
 	switch ( cent->currentState.eType ) {
 	default:
 		CG_Error( "Bad entity type: %i\n", cent->currentState.eType );
+		break;
+	case ET_LIGHT:
+		CG_Light(cent);
+		break;
+	case ET_LIGHTJUNIOR:
+		CG_LightJunior(cent);
 		break;
 	case ET_CAMERA:
 	case ET_INVISIBLE:
