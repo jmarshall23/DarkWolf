@@ -2367,6 +2367,10 @@ static void R_CreateRaytracingWorldMeshes(void) {
 			continue;
 		}
 
+		if (surf->shader && (surf->shader->contentFlags & CONTENTS_FOG)) {
+			continue;
+		}
+
 		switch (*data) {
 		case SF_FACE:
 			mesh = R_CreateRaytracingMeshFromFace((const srfSurfaceFace_t*)data);

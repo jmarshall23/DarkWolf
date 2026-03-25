@@ -810,9 +810,9 @@ void RB_ZombieFX( int part, drawSurf_t *drawSurf, int oldNumVerts, int oldNumInd
 // disabled for E3, are we still going to use this?
 	return;
 
-	if ( *drawSurf->surface == SF_MD3 ) {
+	if ( drawSurf->surface->surfaceType == SF_MD3 ) {
 		surfName = ( (md3Surface_t *)drawSurf->surface )->name;
-	} else if ( *drawSurf->surface == SF_MDC ) {
+	} else if ( drawSurf->surface->surfaceType == SF_MDC ) {
 		surfName = ( (mdcSurface_t *)drawSurf->surface )->name;
 	} else {
 		Com_Printf( "RB_ZombieFX: unknown surface type\n" );
@@ -873,6 +873,73 @@ void RB_ZombieFX( int part, drawSurf_t *drawSurf, int oldNumVerts, int oldNumInd
 
 }
 
+static void RB_CopyModelMatrixToDXRTransform(const float* modelMatrix, float outTransform[12])
+{
+	if (!modelMatrix)
+	{
+		// identity 3x4 row-major
+		outTransform[0] = 1.0f; outTransform[1] = 0.0f; outTransform[2] = 0.0f; outTransform[3] = 0.0f;
+		outTransform[4] = 0.0f; outTransform[5] = 1.0f; outTransform[6] = 0.0f; outTransform[7] = 0.0f;
+		outTransform[8] = 0.0f; outTransform[9] = 0.0f; outTransform[10] = 1.0f; outTransform[11] = 0.0f;
+		return;
+	}
+
+	// OpenGL-style 4x4 column-major -> 3x4 row-major
+	outTransform[0] = modelMatrix[0];
+	outTransform[1] = modelMatrix[4];
+	outTransform[2] = modelMatrix[8];
+	outTransform[3] = modelMatrix[12];
+
+	outTransform[4] = modelMatrix[1];
+	outTransform[5] = modelMatrix[5];
+	outTransform[6] = modelMatrix[9];
+	outTransform[7] = modelMatrix[13];
+
+	outTransform[8] = modelMatrix[2];
+	outTransform[9] = modelMatrix[6];
+	outTransform[10] = modelMatrix[10];
+	outTransform[11] = modelMatrix[14];
+}
+
+void RB_UpdateDXRInstance(trDXRMesh_t* mesh, int surfaceId, uint32_t instanceID, const float* modelMatrix)
+{
+	if (!mesh)
+	{
+		return;
+	}
+
+	if (surfaceId < 0 || surfaceId >= MAX_DXR_SURFACES)
+	{
+		return;
+	}
+
+	trDXRSurface_t* surf = &mesh->dxrSurfaces[surfaceId];
+
+	if (!surf->dxrMeshHandle)
+	{
+		return;
+	}
+
+	glRaytracingInstanceDesc_t desc = {};
+	desc.meshHandle = (uint32_t)surf->dxrMeshHandle;
+	desc.instanceID = instanceID;
+	desc.mask = 0xFF;
+
+	RB_CopyModelMatrixToDXRTransform(modelMatrix, desc.transform);
+
+	if (!surf->dxrInstanceHandle)
+	{
+		surf->dxrInstanceHandle = glRaytracingCreateInstance(&desc);
+	}
+	else
+	{
+		if (!glRaytracingUpdateInstance(surf->dxrInstanceHandle, &desc))
+		{
+			glRaytracingDeleteInstance(surf->dxrInstanceHandle);
+			surf->dxrInstanceHandle = glRaytracingCreateInstance(&desc);
+		}
+	}
+}
 
 #define MAC_EVENT_PUMP_MSEC     5
 
@@ -915,6 +982,96 @@ void RB_BuildViewMatrixFromRefdef(const trRefdef_t* rd, Mat4 * outView)
 	outView->m[13] = -(org[0] * u[0] + org[1] * u[1] + org[2] * u[2]);
 	outView->m[14] = (org[0] * f[0] + org[1] * f[1] + org[2] * f[2]);
 	outView->m[15] = 1.0f;
+}
+
+/*
+==================
+RB_UpdateDXRMesh
+==================
+*/
+
+void RB_UpdateDXRMesh(trDXRMesh_t* mesh, int currentFrame, int surfaceId, int startVertex, int endVertex, int startIndex, int endIndex)
+{
+	if (!mesh)
+	{
+		return;
+	}
+
+	if (mesh->cachedFrame == currentFrame)
+	{
+		return;
+	}
+
+	if (surfaceId < 0 || surfaceId >= MAX_DXR_SURFACES)
+	{
+		return;
+	}
+
+	if (startVertex < 0)
+	{
+		startVertex = 0;
+	}
+	if (endVertex > tess.numVertexes)
+	{
+		endVertex = tess.numVertexes;
+	}
+
+	if (startIndex < 0)
+	{
+		startIndex = 0;
+	}
+	if (endIndex > tess.numIndexes)
+	{
+		endIndex = tess.numIndexes;
+	}
+
+	if (endVertex <= startVertex || endIndex <= startIndex)
+	{
+		return;
+	}
+
+	const int vertexCount = endVertex - startVertex;
+	const int indexCount = endIndex - startIndex;
+
+	trDXRSurface_t* surf = &mesh->dxrSurfaces[surfaceId];
+
+	std::vector<glRaytracingVertex_t> vertices(vertexCount);
+	std::vector<uint32_t> indices(indexCount);
+
+	for (int i = 0; i < vertexCount; ++i)
+	{
+		const int srcVert = startVertex + i;
+		vertices[i].xyz[0] = tess.xyz[srcVert][0];
+		vertices[i].xyz[1] = tess.xyz[srcVert][1];
+		vertices[i].xyz[2] = tess.xyz[srcVert][2];
+	}
+
+	for (int i = 0; i < indexCount; ++i)
+	{
+		const int localIndex = tess.indexes[startIndex + i] - startVertex;
+		indices[i] = (localIndex >= 0 && localIndex < vertexCount) ? (uint32_t)localIndex : 0;
+	}
+
+	glRaytracingMeshDesc_t desc = {};
+	desc.vertices = vertices.data();
+	desc.vertexCount = (uint32_t)vertexCount;
+	desc.indices = indices.data();
+	desc.indexCount = (uint32_t)indexCount;
+
+	if (!surf->dxrMeshHandle)
+	{
+		surf->dxrMeshHandle = glRaytracingCreateMesh(&desc);
+	}
+	else
+	{
+		if (!glRaytracingUpdateMesh(surf->dxrMeshHandle, &desc))
+		{
+			glRaytracingDeleteMesh(surf->dxrMeshHandle);
+			surf->dxrMeshHandle = glRaytracingCreateMesh(&desc);
+		}
+	}
+
+	mesh->cachedFrame = currentFrame;
 }
 
 /*
@@ -982,13 +1139,21 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 	backEnd.pc.c_surfaces += numDrawSurfs;
 
+	orientationr_t entityMatrix;
+	trDXRMesh_t* dxrMesh = NULL;
 	for ( i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++ ) {
 		if ( drawSurf->sort == oldSort ) {
 			// fast path, same as previous sort
 			oldNumVerts = tess.numVertexes;
 			oldNumIndex = tess.numIndexes;
 
-			rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
+			rb_surfaceTable[ drawSurf->surface->surfaceType ]( drawSurf->surface );
+		
+			if (dxrMesh)
+			{
+				RB_UpdateDXRMesh(dxrMesh, backEnd.currentEntity->e.frame, drawSurf->dxrSurfaceId, oldNumVerts, tess.numVertexes, oldNumIndex, tess.numIndexes);
+				RB_UpdateDXRInstance(dxrMesh, drawSurf->dxrSurfaceId, 0, entityMatrix.modelMatrix);
+			}
 /*
 			// RF, convert the newly created vertexes into dust particles, and overwrite
 			if (backEnd.currentEntity->e.reFlags & REFLAG_ZOMBIEFX) {
@@ -1050,8 +1215,6 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		if ( entityNum != oldEntityNum ) {
 			depthRange = qfalse;
 
-			orientationr_t entityMatrix;
-
 			if ( entityNum != ENTITYNUM_WORLD ) {
 				backEnd.currentEntity = &backEnd.refdef.entities[entityNum];
 				backEnd.refdef.floatTime = originalTime - backEnd.currentEntity->e.shaderTime;
@@ -1086,6 +1249,8 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 				R_TransformDlights( backEnd.refdef.num_dlights, backEnd.refdef.dlights, &backEnd.or );
 			}
 
+			dxrMesh = &backEnd.currentEntity->dxrMesh;
+
 			glLoadMatrixf( backEnd.or.modelMatrix );
 			glLoadModelMatrixf(entityMatrix.modelMatrix);
 
@@ -1110,7 +1275,14 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		oldNumIndex = tess.numIndexes;
 
 		// add the triangles for this surface
-		rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
+		rb_surfaceTable[ drawSurf->surface->surfaceType]( drawSurf->surface );
+
+		trDXRMesh_t* dxrMesh = &backEnd.currentEntity->dxrMesh;
+		if (dxrMesh)
+		{
+			RB_UpdateDXRMesh(dxrMesh, backEnd.currentEntity->e.frame, drawSurf->dxrSurfaceId, oldNumVerts, tess.numVertexes, oldNumIndex, tess.numIndexes);
+			RB_UpdateDXRInstance(dxrMesh, drawSurf->dxrSurfaceId, 0, entityMatrix.modelMatrix);
+		}
 
 		// RF, convert the newly created vertexes into dust particles, and overwrite
 		if ( backEnd.currentEntity->e.reFlags & REFLAG_ZOMBIEFX ) {

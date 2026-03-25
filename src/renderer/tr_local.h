@@ -37,6 +37,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "tr_public.h"
 #include "qgl.h"
 
+#include <vector>
+
 #define GL_INDEX_TYPE       GL_UNSIGNED_INT
 typedef unsigned int glIndex_t;
 
@@ -59,8 +61,19 @@ long myftol( float f );
 #define MAX_STATES_PER_SHADER 32
 #define MAX_STATE_NAME 32
 
-// can't be increased without changing bit packing for drawsurfs
+#define MAX_DXR_SURFACES 32
 
+// can't be increased without changing bit packing for drawsurfs
+struct trDXRSurface_t {
+	glRaytracingInstanceHandle_t dxrInstanceHandle;
+	glRaytracingMeshHandle_t dxrMeshHandle;
+};
+
+struct trDXRMesh_t {
+	int cachedFrame = -1;
+	int currentFrame = 0;
+	trDXRSurface_t dxrSurfaces[MAX_DXR_SURFACES];
+};
 
 // a trRefEntity_t has all the information passed in by
 // the client game, as well as some locally derived info
@@ -76,6 +89,8 @@ typedef struct {
 	int ambientLightInt;            // 32 bit rgba packed
 	vec3_t directedLight;
 	float brightness;
+
+	trDXRMesh_t dxrMesh;
 } trRefEntity_t;
 
 typedef struct {
@@ -486,7 +501,7 @@ typedef struct {
 	struct corona_s *coronas;
 
 	int numPolys;
-	struct srfPoly_s    *polys;
+	class srfPoly_t    *polys;
 
 	int numDrawSurfs;
 	struct drawSurf_s   *drawSurfs;
@@ -584,9 +599,18 @@ typedef enum {
 } surfaceType_t;
 
 typedef struct drawSurf_s {
-	unsigned sort;                      // bit combination for fast compares
-	surfaceType_t       *surface;       // any of surface*_t
+	unsigned sort;                       // bit combination for fast compares
+	trDXRMesh_t* dxrMesh;
+	int dxrSurfaceId;
+	class surfaceBase_t *surface;       // any of surface*_t
 } drawSurf_t;
+
+class surfaceBase_t {
+public:
+	surfaceBase_t(surfaceType_t type) { surfaceType = type; }
+
+	surfaceType_t surfaceType;
+};
 
 #define MAX_FACE_POINTS     64
 
@@ -595,30 +619,29 @@ typedef struct drawSurf_s {
 
 // when cgame directly specifies a polygon, it becomes a srfPoly_t
 // as soon as it is called
-typedef struct srfPoly_s {
-	surfaceType_t surfaceType;
+class srfPoly_t : public surfaceBase_t {
+public:
 	qhandle_t hShader;
 	int fogIndex;
 	int numVerts;
 	polyVert_t      *verts;
-} srfPoly_t;
+};
 
-typedef struct srfDisplayList_s {
-	surfaceType_t surfaceType;
+class srfDisplayList_t : public surfaceBase_t {
+public:
 	int listNum;
-} srfDisplayList_t;
+};
 
 
-typedef struct srfFlare_s {
-	surfaceType_t surfaceType;
+class srfFlare_t : public surfaceBase_t {
+public:
 	vec3_t origin;
 	vec3_t normal;
 	vec3_t color;
-} srfFlare_t;
+};
 
-typedef struct srfGridMesh_s {
-	surfaceType_t surfaceType;
-
+class srfGridMesh_t : public surfaceBase_t {
+public:
 	// dynamic lighting information
 	int dlightBits[SMP_FRAMES];
 
@@ -640,13 +663,13 @@ typedef struct srfGridMesh_s {
 	float           *widthLodError;
 	float           *heightLodError;
 	drawVert_t verts[1];            // variable sized
-} srfGridMesh_t;
+};
 
 
 
 #define VERTEXSIZE  8
-typedef struct {
-	surfaceType_t surfaceType;
+class srfSurfaceFace_t : public surfaceBase_t {
+public:
 	cplane_t plane;
 
 	// dynamic lighting information
@@ -658,13 +681,12 @@ typedef struct {
 	int ofsIndices;
 	float points[1][VERTEXSIZE];        // variable sized
 										// there is a variable length list of indices here also
-} srfSurfaceFace_t;
+};
 
 
 // misc_models in maps are turned into direct geometry by q3map
-typedef struct {
-	surfaceType_t surfaceType;
-
+class srfTriangles_t : public surfaceBase_t {
+public:
 	// dynamic lighting information
 	int dlightBits[SMP_FRAMES];
 
@@ -679,7 +701,7 @@ typedef struct {
 
 	int numVerts;
 	drawVert_t      *verts;
-} srfTriangles_t;
+};
 
 
 extern void( *rb_surfaceTable[SF_NUM_SURFACE_TYPES] ) ( void * );
@@ -1237,7 +1259,7 @@ void R_DecomposeSort( unsigned sort, int *entityNum, shader_t **shader,
 					  int *fogNum, int *dlightMap, int *atiTess );
 
 // GR - add tessellation flag
-void R_AddDrawSurf( surfaceType_t *surface, shader_t *shader, int fogIndex, int dlightMap, int atiTess );
+void R_AddDrawSurf( surfaceBase_t *surface, shader_t *shader, int fogIndex, int dlightMap, int atiTess, int dxrSurfaceId = -1, trDXRMesh_t* dxrMesh = NULL);
 
 
 #define CULL_IN     0       // completely unclipped

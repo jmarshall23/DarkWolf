@@ -1202,11 +1202,11 @@ static UploadAlloc QD3D12_AllocUpload(UINT bytes, UINT alignment)
 static void QD3D12_CreateDevice()
 {
 #if defined(_DEBUG)
-    {
-        ComPtr<ID3D12Debug> debug;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
-            debug->EnableDebugLayer();
-    }
+   // {
+   //     ComPtr<ID3D12Debug> debug;
+   //     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+   //         debug->EnableDebugLayer();
+   // }
 #endif
 
 QD3D12_CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&g_gl.factory)));
@@ -4194,6 +4194,8 @@ extern "C" void glLightScene(void)
     TextureResource* lightingTex = QD3D12_EnsureLightingTexture(width, height);
     if (!lightingTex || !lightingTex->texture)
         return;
+
+    glRaytracingBuildScene();
 
     QD3D12_FlushQueuedBatches();
 

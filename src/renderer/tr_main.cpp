@@ -51,7 +51,7 @@ refimport_t ri;
 
 // entities that will have procedurally generated surfaces will just
 // point at this for their sorting surface
-surfaceType_t entitySurface = SF_ENTITY;
+surfaceBase_t entitySurface(SF_ENTITY);
 
 // fog stuff
 glfog_t glfogsettings[NUM_FOGS];
@@ -959,7 +959,7 @@ void R_MirrorVector( vec3_t in, orientation_t *surface, orientation_t *camera, v
 R_PlaneForSurface
 =============
 */
-void R_PlaneForSurface( surfaceType_t *surfType, cplane_t *plane ) {
+void R_PlaneForSurface( surfaceBase_t *surfType, cplane_t *plane ) {
 	srfTriangles_t  *tri;
 	srfPoly_t       *poly;
 	drawVert_t      *v1, *v2, *v3;
@@ -970,7 +970,7 @@ void R_PlaneForSurface( surfaceType_t *surfType, cplane_t *plane ) {
 		plane->normal[0] = 1;
 		return;
 	}
-	switch ( *surfType ) {
+	switch ( surfType->surfaceType ) {
 	case SF_FACE:
 		*plane = ( (srfSurfaceFace_t *)surfType )->plane;
 		return;
@@ -1208,7 +1208,7 @@ static qboolean SurfIsOffscreen( const drawSurf_t *drawSurf, vec4_t clipDest[128
 // GR - decompose with tessellation flag
 	R_DecomposeSort( drawSurf->sort, &entityNum, &shader, &fogNum, &dlighted, &atiTess );
 	RB_BeginSurface( shader, fogNum );
-	rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
+	rb_surfaceTable[ drawSurf->surface->surfaceType ]( drawSurf->surface );
 
 	assert( tess.numVertexes < 128 );
 
@@ -1583,8 +1583,7 @@ recurse:
 R_AddDrawSurf
 =================
 */
-void R_AddDrawSurf( surfaceType_t *surface, shader_t *shader,
-					int fogIndex, int dlightMap, int atiTess ) {
+void R_AddDrawSurf(surfaceBase_t *surface, shader_t *shader, int fogIndex, int dlightMap, int atiTess, int dxrSurfaceId, trDXRMesh_t *dxrMesh) {
 	int index;
 
 	// instead of checking for overflow, we just mask the index
@@ -1597,6 +1596,8 @@ void R_AddDrawSurf( surfaceType_t *surface, shader_t *shader,
 									  | ( atiTess << QSORT_ATI_TESS_SHIFT )
 									  | tr.shiftedEntityNum | ( fogIndex << QSORT_FOGNUM_SHIFT ) | (int)dlightMap;
 	tr.refdef.drawSurfs[index].surface = surface;
+	tr.refdef.drawSurfs[index].dxrMesh = dxrMesh;
+	tr.refdef.drawSurfs[index].dxrSurfaceId = dxrSurfaceId;
 	tr.refdef.numDrawSurfs++;
 }
 
