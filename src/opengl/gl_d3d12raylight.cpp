@@ -1441,7 +1441,7 @@ void RayGen()
         lightingAccum += diffuse;
     }
 
-    gOutputTex[pixel] = float4(lightingAccum  * ao * 1.3, albedoSample.a);
+    gOutputTex[pixel] = float4(lightingAccum  * ao * 1.1, albedoSample.a);
 }
 )";
 
