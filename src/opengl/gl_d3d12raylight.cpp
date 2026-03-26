@@ -1438,10 +1438,10 @@ void RayGen()
         }
 
         float3 diffuse = albedo * Lgt.color * (Lgt.intensity * atten * NdotL * shadow);
-        lightingAccum += diffuse;
+        lightingAccum += clamp(diffuse, 0.0, 1.0);
     }
 
-    gOutputTex[pixel] = float4(lightingAccum  * ao * 1.1, albedoSample.a);
+    gOutputTex[pixel] = float4(lightingAccum  * ao * 1.3, albedoSample.a);
 }
 )";
 
