@@ -1,0 +1,8 @@
+playerscale 1.1
+u_body,models/players/jack/jack_body1.tga
+u_lfthand,models/players/jack/jack_body1.tga
+u_rthand,models/players/jack/jack_body1.tga
+
+l_legs,models/players/jack/jack_legs1.tga
+l_lftfoot,models/players/jack/jack_legs1.tga
+l_rtfoot,models/players/jack/jack_legs1.tga

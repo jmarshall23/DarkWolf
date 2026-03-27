@@ -1,0 +1,16 @@
+tag_head,
+tag_footleft,
+tag_legleft,
+tag_footright,
+tag_legright,
+tag_lbelt,
+tag_torso,
+tag_bleft,
+tag_bright,
+l_olegs,models/players/officerSS/o_legs4.tga
+u_body,models/players/officerSS/o_body5.tga
+u_rthand,models/players/officerSS/o_body5.tga
+u_lfthand,models/players/officerSS/o_body5.tga
+
+md3_beltl,acc/l_offbelt.md3
+md3_beltr,acc/r_offbelt.md3

@@ -1268,14 +1268,14 @@ float3 CosineSampleHemisphere(float2 u)
 
 float TraceSoftShadow(float3 worldPos, float3 N, Light Lgt, float3 toLight, float dist)
 {
-    const uint SHADOW_SAMPLES = 8;
+    const uint SHADOW_SAMPLES = 12;
 
     float3 L = toLight / max(dist, 1e-6);
 
     float3 tangent, bitangent;
     BuildOrthonormalBasis(L, tangent, bitangent);
 
-    float areaRadius = max(Lgt.radius * 0.08, 2.0);
+    float areaRadius = max(Lgt.radius * 0.03, 0.12);
 
     float shadowAccum = 0.0;
     float rand = Hash12(worldPos.xy + float2(worldPos.z, dist));
@@ -1298,8 +1298,11 @@ float TraceSoftShadow(float3 worldPos, float3 N, Light Lgt, float3 toLight, floa
 
         float3 sampleDir = sampleVec / sampleDist;
 
-        float3 shadowOrigin = worldPos + N * (gShadowBias * 0.75) + sampleDir * (gShadowBias * 0.75);
-        float  shadowTMax   = max(sampleDist - gShadowBias * 2.0, 0.001);
+        float NdotLRaw   = saturate(dot(N, sampleDir));
+        float normalBias = lerp(gShadowBias * 3.0, gShadowBias * 0.75, NdotLRaw);
+
+        float3 shadowOrigin = worldPos + N * normalBias + sampleDir * (gShadowBias * 0.5);
+        float  shadowTMax   = max(sampleDist - gShadowBias * 0.5, 0.001);
 
         shadowAccum += TraceShadow(shadowOrigin, sampleDir, shadowTMax);
     }
@@ -1380,6 +1383,63 @@ float ComputeSkyVisibility(float3 worldPos, float3 N, uint2 pixel)
     return saturate(vis);
 }
 
+float ComputeCavity(uint2 pixel, float3 worldPos, float3 N)
+{
+    static const int2 taps[12] =
+    {
+        int2(-2,  0), int2( 2,  0),
+        int2( 0, -2), int2( 0,  2),
+        int2(-2, -2), int2( 2, -2),
+        int2(-2,  2), int2( 2,  2),
+        int2(-4,  0), int2( 4,  0),
+        int2( 0, -4), int2( 0,  4)
+    };
+
+    float accum = 0.0;
+    float weightSum = 0.0;
+
+    [unroll]
+    for (int i = 0; i < 12; ++i)
+    {
+        int2 sp = int2(pixel) + taps[i];
+
+        if (sp.x < 0 || sp.y < 0 || sp.x >= (int)gScreenSize.x || sp.y >= (int)gScreenSize.y)
+            continue;
+
+        float3 samplePos = gPositionTex.Load(int3(sp, 0)).xyz;
+        float3 sampleN   = normalize(gNormalTex.Load(int3(sp, 0)).xyz);
+
+        float3 d = samplePos - worldPos;
+        float distSq = dot(d, d);
+
+        // reject unrelated geometry / depth breaks
+        if (distSq > (24.0 * 24.0))
+            continue;
+
+        // reject hard normal seams / unrelated surfaces
+        float nd = dot(N, sampleN);
+        if (nd < 0.65)
+            continue;
+
+        // only small/medium curvature signal
+        float curvature = 1.0 - saturate(nd);
+
+        // favor closer taps
+        float w = 1.0 / (1.0 + distSq * 0.02);
+
+        accum += curvature * w;
+        weightSum += w;
+    }
+
+    float cavity = (weightSum > 0.0) ? (accum / weightSum) : 0.0;
+
+    // compress hard so it doesn't turn into line art
+    cavity = saturate(cavity * 2.0);
+
+    // final multiplier: subtle only
+    return 1.0 - cavity * 0.18;
+}
+
 [shader("raygeneration")]
 void RayGen()
 {
@@ -1397,10 +1457,15 @@ void RayGen()
         return;
     }
 
-    float3 albedo   = albedoSample.rgb;
-    float3 worldPos = LoadScenePosition(pixel);
-    float3 N        = LoadSceneNormal(pixel);
-    float3 V        = normalize(gCameraPos.xyz - worldPos);
+   float3 baseAlbedo = albedoSample.rgb;
+    float3 worldPos   = LoadScenePosition(pixel);
+    float3 N          = LoadSceneNormal(pixel);
+    float3 V          = normalize(gCameraPos.xyz - worldPos);
+
+    float cavity = ComputeCavity(pixel, worldPos, N);
+    float microShadow = lerp(0.75, 1.0, cavity);
+    float3 albedo = baseAlbedo * cavity;
+    albedo *= microShadow;
 
     float ao      = ComputeAmbientOcclusion(worldPos, N, pixel);
     float skyVis  = ComputeSkyVisibility(worldPos, N, pixel);
@@ -1412,9 +1477,9 @@ void RayGen()
 
     float skyStrength = 2.0;
 
-    float3 lightingAccum = albedo * 0.2;
+    float3 lightingAccum = 0.05;
 
-    lightingAccum += albedo * skyColor * (skyStrength * skyVis);
+    lightingAccum += skyColor * (skyStrength * skyVis);
 
     [loop]
     for (uint i = 0; i < gLightCount; ++i)
@@ -1426,10 +1491,12 @@ void RayGen()
         float  dist    = sqrt(max(distSq, 1e-6));
         float3 L       = toLight / dist;
 
-        float radius = max(Lgt.radius, 1e-4);
+        float radius = max(Lgt.radius * 1.6, 1e-4);
 
         float atten = saturate((radius - dist) / radius);
-        float NdotL = saturate(dot(N, L));
+        atten = atten * atten;
+        float wrap = 0.35;
+        float NdotL = saturate((dot(N, L) + wrap) / (1.0 + wrap));
 
         float shadow = 1.0;
         if (NdotL > 0.0001 && atten > 0.0 && dist > 0.01)
@@ -1437,11 +1504,12 @@ void RayGen()
             shadow = TraceSoftShadow(worldPos, N, Lgt, toLight, dist);
         }
 
-        float3 diffuse = albedo * Lgt.color * (Lgt.intensity * atten * NdotL * shadow);
+        float3 diffuse = Lgt.color * (Lgt.intensity * atten * NdotL * shadow);
         lightingAccum += clamp(diffuse, 0.0, 1.0);
     }
+    lightingAccum = lightingAccum  * ao * 1.5;
 
-    gOutputTex[pixel] = float4(lightingAccum  * ao * 1.3, albedoSample.a);
+    gOutputTex[pixel] = float4(albedo * lightingAccum, albedoSample.a);
 }
 )";
 

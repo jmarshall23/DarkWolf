@@ -1,0 +1,8 @@
+playerscale 1.15
+u_body,models/players/higgs/higg_body1.tga
+u_lfthand,models/players/higgs/higg_body1.tga
+u_rthand,models/players/higgs/higg_body1.tga
+
+l_legs,models/players/higgs/higg_legs1.tga
+l_lftfoot,models/players/higgs/higg_legs1.tga
+l_rtfoot,models/players/higgs/higg_legs1.tga

@@ -1,0 +1,8 @@
+playerscale 1.1
+tag_head,
+h_head,models/players/jack/jack_head1.tga
+h_mouthin,models/players/jack/jack_head1.tga
+h_teethbot,models/players/jack/jack_head1.tga
+h_teethup,models/players/jack/jack_head1.tga
+h_glasses,models/players/jack/jack_glasses.tga
+h_blink,models/players/jack/jack_head_blink.tga

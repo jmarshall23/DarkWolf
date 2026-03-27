@@ -1,0 +1,17 @@
+md3_weapon2, "acc/shield.md3"
+md3_weapon, "acc/sword.md3"
+tag_head,
+tag_footleft,
+tag_legleft,
+tag_footright,
+tag_legright,
+tag_lbelt,
+tag_torso,
+tag_bleft,
+tag_bright,
+u_body,models/players/warrior/wzom_body1.tga
+u_gaunt,models/players/warrior/armor1.tga
+u_shouldlft,models/players/warrior/armor1.tga
+u_shouldrt,models/players/warrior/armor1.tga
+l_bootlft,models/players/warrior/armor1.tga
+l_bootrt,models/players/warrior/armor1.tga

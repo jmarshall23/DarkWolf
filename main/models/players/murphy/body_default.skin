@@ -1,0 +1,8 @@
+playerscale 1.1
+u_body,models/players/murphy/murp_body1.tga
+u_lfthand,models/players/murphy/murp_body1.tga
+u_rthand,models/players/murphy/murp_body1.tga
+
+l_legs,models/players/murphy/murp_legs1.tga
+l_lftfoot,models/players/murphy/murp_legs1.tga
+l_rtfoot,models/players/murphy/murp_legs1.tga

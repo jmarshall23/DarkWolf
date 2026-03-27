@@ -3564,7 +3564,8 @@ void BotMoveToGoal( bot_moveresult_t *result, int movestate, bot_goal_t *goal, i
 				ltraveltime = 999999;
 				while ( AAS_AreaRouteToGoalArea( reach.areanum, reach.end, goal->areanum, travelflags, &ftraveltime, &freachnum ) ) {
 					// make sure we are not in a loop
-					if ( ftraveltime > ltraveltime ) {
+					// jmarshall: aas loop fix. 
+					if ( ftraveltime >= ltraveltime ) {
 						break;
 					}
 					ltraveltime = ftraveltime;

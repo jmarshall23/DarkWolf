@@ -1,0 +1,11 @@
+md3_part, "head2.md3"
+tag_head,
+tag_mouth,
+h_head2,models/players/drz/drz_head2.tga
+h_mouthin2,models/players/drz/drz_head2.tga
+h_teethbot2,models/players/drz/drz_head2.tga
+h_teethup2,models/players/drz/drz_head2.tga
+h_glass2,models/players/drz/drz_glass.tga
+h_gogs2,models/players/drz/drz_goggles.tga
+h_blink,models/players/drz/drz_head_blink.tga
+

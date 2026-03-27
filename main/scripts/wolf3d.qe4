@@ -1,0 +1,11 @@
+{
+"brush_primit" "0"
+"bsp " "!q3map $ && !q3map -vis $"
+"autosave" "e:\autosave.map"
+"texturepath" "D:\projects\Wolf\main\textures"
+"entitypath" "D:\projects\Wolf\main\scripts\wolf.def"
+"mapspath" ""
+"remotebasepath" "D:\projects\Wolf\main"
+"rshcmd" "D:\projects\Wolf\bin_nt\"
+"basepath" "D:\projects\Wolf\main"
+}

@@ -1,0 +1,11 @@
+md3_part, "head.md3"
+md3_hat, "acc/villagehelmut"
+// edit dan
+//md3_hat, "acc/villcap"
+//md3_hat, "acc/feldmutz.md3"
+tag_head,
+h_head,models/players/infantrySS/i_cryhead4.tga
+h_mouthin,models/players/infantrySS/i_cryhead4.tga
+h_teethbot,models/players/infantrySS/i_cryhead4.tga
+h_teethup,models/players/infantrySS/i_cryhead4.tga
+h_blink,models/players/infantrySS/i_head_blink.tga

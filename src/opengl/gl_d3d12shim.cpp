@@ -590,11 +590,7 @@ VSOut VSMain(VSIn i)
 
     // Transform normal by model matrix as direction
     float3 worldNormal = mul((float3x3)gModelMatrix, i.normal);
-    float len2 = dot(worldNormal, worldNormal);
-    if (len2 > 1e-12)
-        worldNormal *= rsqrt(len2);
-    else
-        worldNormal = float3(0.0, 0.0, 1.0);
+
 
     o.pos = clipPos;
     o.fogCoord = abs(clipPos.z / max(abs(clipPos.w), 0.00001));
