@@ -813,88 +813,219 @@ static size_t QD3D12_TypeSize(GLenum type) {
     }
 }
 
-static float QD3D12_ReadScalar(const uint8_t* p, GLenum type) {
-    switch (type) {
-    case GL_BYTE:           return (float)*(const GLbyte*)p;
-    case GL_UNSIGNED_BYTE:  return (float)*(const GLubyte*)p;
-    case GL_SHORT:          return (float)*(const GLshort*)p;
-    case GL_UNSIGNED_SHORT: return (float)*(const GLushort*)p;
-    case GL_INT:            return (float)*(const GLint*)p;
-    case GL_UNSIGNED_INT:   return (float)*(const GLuint*)p;
-    case GL_FLOAT:          return *(const GLfloat*)p;
-    case GL_DOUBLE:         return (float)*(const GLdouble*)p;
-    default:                return 0.0f;
-    }
+static inline float QD3D12_ReadScalarFast(const uint8_t* p, GLenum type)
+{
+	switch (type)
+	{
+	case GL_FLOAT:           return *(const float*)p;
+	case GL_DOUBLE:          return (float)(*(const double*)p);
+	case GL_INT:             return (float)(*(const GLint*)p);
+	case GL_UNSIGNED_INT:    return (float)(*(const GLuint*)p);
+	case GL_SHORT:           return (float)(*(const GLshort*)p);
+	case GL_UNSIGNED_SHORT:  return (float)(*(const GLushort*)p);
+	case GL_BYTE:            return (float)(*(const GLbyte*)p);
+	case GL_UNSIGNED_BYTE:   return (float)(*(const GLubyte*)p);
+	default:                 return 0.0f;
+	}
 }
 
 static void QD3D12_FetchArrayVertex(GLint idx, GLVertex& out)
 {
-    memset(&out, 0, sizeof(out));
-    out.r = out.g = out.b = out.a = 1.0f;
-    out.nx = 0.0f;
-    out.ny = 0.0f;
-    out.nz = 1.0f;
+	// Direct init is much cheaper than memset + patching fields.
+	out.px = 0.0f; out.py = 0.0f; out.pz = 0.0f;
+	out.nx = 0.0f; out.ny = 0.0f; out.nz = 1.0f;
+	out.r = 1.0f; out.g = 1.0f; out.b = 1.0f; out.a = 1.0f;
+	out.u0 = 0.0f; out.v0 = 0.0f;
+	out.u1 = 0.0f; out.v1 = 0.0f;
 
-    if (g_gl.vertexArray.enabled && g_gl.vertexArray.ptr)
-    {
-        const size_t elemSize = (size_t)g_gl.vertexArray.size * QD3D12_TypeSize(g_gl.vertexArray.type);
-        const size_t stride = g_gl.vertexArray.stride ? (size_t)g_gl.vertexArray.stride : elemSize;
-        const uint8_t* p = g_gl.vertexArray.ptr + stride * idx;
+	//
+	// Position
+	//
+	const auto& va = g_gl.vertexArray;
+	if (va.enabled && va.ptr)
+	{
+		const size_t typeSize = (size_t)QD3D12_TypeSize(va.type);
+		const size_t elemSize = (size_t)va.size * typeSize;
+		const size_t stride = va.stride ? (size_t)va.stride : elemSize;
+		const uint8_t* p = va.ptr + stride * (size_t)idx;
 
-        out.px = (g_gl.vertexArray.size > 0) ? QD3D12_ReadScalar(p + 0 * QD3D12_TypeSize(g_gl.vertexArray.type), g_gl.vertexArray.type) : 0.0f;
-        out.py = (g_gl.vertexArray.size > 1) ? QD3D12_ReadScalar(p + 1 * QD3D12_TypeSize(g_gl.vertexArray.type), g_gl.vertexArray.type) : 0.0f;
-        out.pz = (g_gl.vertexArray.size > 2) ? QD3D12_ReadScalar(p + 2 * QD3D12_TypeSize(g_gl.vertexArray.type), g_gl.vertexArray.type) : 0.0f;
-    }
+		switch (va.type)
+		{
+		case GL_FLOAT:
+		{
+			const float* f = (const float*)p;
+			if (va.size > 0) out.px = f[0];
+			if (va.size > 1) out.py = f[1];
+			if (va.size > 2) out.pz = f[2];
+			break;
+		}
+		case GL_DOUBLE:
+		{
+			const double* f = (const double*)p;
+			if (va.size > 0) out.px = (float)f[0];
+			if (va.size > 1) out.py = (float)f[1];
+			if (va.size > 2) out.pz = (float)f[2];
+			break;
+		}
+		default:
+			if (va.size > 0) out.px = QD3D12_ReadScalarFast(p + 0 * typeSize, va.type);
+			if (va.size > 1) out.py = QD3D12_ReadScalarFast(p + 1 * typeSize, va.type);
+			if (va.size > 2) out.pz = QD3D12_ReadScalarFast(p + 2 * typeSize, va.type);
+			break;
+		}
+	}
 
-    if (g_gl.normalArray.enabled && g_gl.normalArray.ptr)
-    {
-        const size_t elemSize = 3 * QD3D12_TypeSize(g_gl.normalArray.type);
-        const size_t stride = g_gl.normalArray.stride ? (size_t)g_gl.normalArray.stride : elemSize;
-        const uint8_t* p = g_gl.normalArray.ptr + stride * idx;
+	//
+	// Normal
+	//
+	const auto& na = g_gl.normalArray;
+	if (na.enabled && na.ptr)
+	{
+		const size_t typeSize = (size_t)QD3D12_TypeSize(na.type);
+		const size_t stride = na.stride ? (size_t)na.stride : (3 * typeSize);
+		const uint8_t* p = na.ptr + stride * (size_t)idx;
 
-        out.nx = QD3D12_ReadScalar(p + 0 * QD3D12_TypeSize(g_gl.normalArray.type), g_gl.normalArray.type);
-        out.ny = QD3D12_ReadScalar(p + 1 * QD3D12_TypeSize(g_gl.normalArray.type), g_gl.normalArray.type);
-        out.nz = QD3D12_ReadScalar(p + 2 * QD3D12_TypeSize(g_gl.normalArray.type), g_gl.normalArray.type);
-    }
+		switch (na.type)
+		{
+		case GL_FLOAT:
+		{
+			const float* f = (const float*)p;
+			out.nx = f[0];
+			out.ny = f[1];
+			out.nz = f[2];
+			break;
+		}
+		case GL_DOUBLE:
+		{
+			const double* f = (const double*)p;
+			out.nx = (float)f[0];
+			out.ny = (float)f[1];
+			out.nz = (float)f[2];
+			break;
+		}
+		default:
+			out.nx = QD3D12_ReadScalarFast(p + 0 * typeSize, na.type);
+			out.ny = QD3D12_ReadScalarFast(p + 1 * typeSize, na.type);
+			out.nz = QD3D12_ReadScalarFast(p + 2 * typeSize, na.type);
+			break;
+		}
+	}
 
-    if (g_gl.colorArray.enabled && g_gl.colorArray.ptr)
-    {
-        const size_t elemSize = (size_t)g_gl.colorArray.size * QD3D12_TypeSize(g_gl.colorArray.type);
-        const size_t stride = g_gl.colorArray.stride ? (size_t)g_gl.colorArray.stride : elemSize;
-        const uint8_t* p = g_gl.colorArray.ptr + stride * idx;
+	//
+	// Color
+	//
+	const auto& ca = g_gl.colorArray;
+	if (ca.enabled && ca.ptr)
+	{
+		const size_t typeSize = (size_t)QD3D12_TypeSize(ca.type);
+		const size_t elemSize = (size_t)ca.size * typeSize;
+		const size_t stride = ca.stride ? (size_t)ca.stride : elemSize;
+		const uint8_t* p = ca.ptr + stride * (size_t)idx;
 
-        if (g_gl.colorArray.type == GL_UNSIGNED_BYTE)
-        {
-            out.r = (g_gl.colorArray.size > 0) ? p[0] / 255.0f : 1.0f;
-            out.g = (g_gl.colorArray.size > 1) ? p[1] / 255.0f : 1.0f;
-            out.b = (g_gl.colorArray.size > 2) ? p[2] / 255.0f : 1.0f;
-            out.a = (g_gl.colorArray.size > 3) ? p[3] / 255.0f : 1.0f;
-        }
-        else
-        {
-            out.r = (g_gl.colorArray.size > 0) ? QD3D12_ReadScalar(p + 0 * QD3D12_TypeSize(g_gl.colorArray.type), g_gl.colorArray.type) : 1.0f;
-            out.g = (g_gl.colorArray.size > 1) ? QD3D12_ReadScalar(p + 1 * QD3D12_TypeSize(g_gl.colorArray.type), g_gl.colorArray.type) : 1.0f;
-            out.b = (g_gl.colorArray.size > 2) ? QD3D12_ReadScalar(p + 2 * QD3D12_TypeSize(g_gl.colorArray.type), g_gl.colorArray.type) : 1.0f;
-            out.a = (g_gl.colorArray.size > 3) ? QD3D12_ReadScalar(p + 3 * QD3D12_TypeSize(g_gl.colorArray.type), g_gl.colorArray.type) : 1.0f;
-        }
-    }
+		if (ca.type == GL_UNSIGNED_BYTE)
+		{
+			static const float kInv255 = 1.0f / 255.0f;
+			if (ca.size > 0) out.r = p[0] * kInv255;
+			if (ca.size > 1) out.g = p[1] * kInv255;
+			if (ca.size > 2) out.b = p[2] * kInv255;
+			if (ca.size > 3) out.a = p[3] * kInv255;
+		}
+		else if (ca.type == GL_FLOAT)
+		{
+			const float* f = (const float*)p;
+			if (ca.size > 0) out.r = f[0];
+			if (ca.size > 1) out.g = f[1];
+			if (ca.size > 2) out.b = f[2];
+			if (ca.size > 3) out.a = f[3];
+		}
+		else if (ca.type == GL_DOUBLE)
+		{
+			const double* f = (const double*)p;
+			if (ca.size > 0) out.r = (float)f[0];
+			if (ca.size > 1) out.g = (float)f[1];
+			if (ca.size > 2) out.b = (float)f[2];
+			if (ca.size > 3) out.a = (float)f[3];
+		}
+		else
+		{
+			if (ca.size > 0) out.r = QD3D12_ReadScalarFast(p + 0 * typeSize, ca.type);
+			if (ca.size > 1) out.g = QD3D12_ReadScalarFast(p + 1 * typeSize, ca.type);
+			if (ca.size > 2) out.b = QD3D12_ReadScalarFast(p + 2 * typeSize, ca.type);
+			if (ca.size > 3) out.a = QD3D12_ReadScalarFast(p + 3 * typeSize, ca.type);
+		}
+	}
 
-    for (UINT unit = 0; unit < QD3D12_MaxTextureUnits; ++unit)
-    {
-        const auto& tc = g_gl.texCoordArray[unit];
-        if (tc.enabled && tc.ptr)
-        {
-            const size_t elemSize = (size_t)tc.size * QD3D12_TypeSize(tc.type);
-            const size_t stride = tc.stride ? (size_t)tc.stride : elemSize;
-            const uint8_t* p = tc.ptr + stride * idx;
+	//
+	// Texcoord 0
+	//
+	{
+		const auto& tc = g_gl.texCoordArray[0];
+		if (tc.enabled && tc.ptr)
+		{
+			const size_t typeSize = (size_t)QD3D12_TypeSize(tc.type);
+			const size_t elemSize = (size_t)tc.size * typeSize;
+			const size_t stride = tc.stride ? (size_t)tc.stride : elemSize;
+			const uint8_t* p = tc.ptr + stride * (size_t)idx;
 
-            float s = (tc.size > 0) ? QD3D12_ReadScalar(p + 0 * QD3D12_TypeSize(tc.type), tc.type) : 0.0f;
-            float t = (tc.size > 1) ? QD3D12_ReadScalar(p + 1 * QD3D12_TypeSize(tc.type), tc.type) : 0.0f;
+			switch (tc.type)
+			{
+			case GL_FLOAT:
+			{
+				const float* f = (const float*)p;
+				if (tc.size > 0) out.u0 = f[0];
+				if (tc.size > 1) out.v0 = f[1];
+				break;
+			}
+			case GL_DOUBLE:
+			{
+				const double* f = (const double*)p;
+				if (tc.size > 0) out.u0 = (float)f[0];
+				if (tc.size > 1) out.v0 = (float)f[1];
+				break;
+			}
+			default:
+				if (tc.size > 0) out.u0 = QD3D12_ReadScalarFast(p + 0 * typeSize, tc.type);
+				if (tc.size > 1) out.v0 = QD3D12_ReadScalarFast(p + 1 * typeSize, tc.type);
+				break;
+			}
+		}
+	}
 
-            if (unit == 0) { out.u0 = s; out.v0 = t; }
-            else { out.u1 = s; out.v1 = t; }
-        }
-    }
+	//
+	// Texcoord 1
+	//
+	{
+		const auto& tc = g_gl.texCoordArray[1];
+		if (tc.enabled && tc.ptr)
+		{
+			const size_t typeSize = (size_t)QD3D12_TypeSize(tc.type);
+			const size_t elemSize = (size_t)tc.size * typeSize;
+			const size_t stride = tc.stride ? (size_t)tc.stride : elemSize;
+			const uint8_t* p = tc.ptr + stride * (size_t)idx;
+
+			switch (tc.type)
+			{
+			case GL_FLOAT:
+			{
+				const float* f = (const float*)p;
+				if (tc.size > 0) out.u1 = f[0];
+				if (tc.size > 1) out.v1 = f[1];
+				break;
+			}
+			case GL_DOUBLE:
+			{
+				const double* f = (const double*)p;
+				if (tc.size > 0) out.u1 = (float)f[0];
+				if (tc.size > 1) out.v1 = (float)f[1];
+				break;
+			}
+			default:
+				if (tc.size > 0) out.u1 = QD3D12_ReadScalarFast(p + 0 * typeSize, tc.type);
+				if (tc.size > 1) out.v1 = QD3D12_ReadScalarFast(p + 1 * typeSize, tc.type);
+				break;
+			}
+		}
+	}
 }
 
 static D3D12_PRIMITIVE_TOPOLOGY GetDrawTopology(GLenum originalMode)

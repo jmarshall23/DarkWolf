@@ -9,6 +9,9 @@
 
 #include <stdint.h>
 #include <vector>
+#include <thread>
+#include <atomic>
+#include <algorithm>
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -25,26 +28,26 @@ using Microsoft::WRL::ComPtr;
 
 static void glRaytracingLog(const char* fmt, ...)
 {
-    char buffer[4096];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
-    va_end(args);
-    OutputDebugStringA(buffer);
-    OutputDebugStringA("\n");
+	char buffer[4096];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
+	va_end(args);
+	OutputDebugStringA(buffer);
+	OutputDebugStringA("\n");
 }
 
 static void glRaytracingFatal(const char* fmt, ...)
 {
-    char buffer[4096];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
-    va_end(args);
-    OutputDebugStringA(buffer);
-    OutputDebugStringA("\n");
-    MessageBoxA(nullptr, buffer, "glRaytracing Fatal", MB_OK | MB_ICONERROR);
-    DebugBreak();
+	char buffer[4096];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
+	va_end(args);
+	OutputDebugStringA(buffer);
+	OutputDebugStringA("\n");
+	MessageBoxA(nullptr, buffer, "glRaytracing Fatal", MB_OK | MB_ICONERROR);
+	DebugBreak();
 }
 
 #define GLR_CHECK(x) \
@@ -59,123 +62,123 @@ static void glRaytracingFatal(const char* fmt, ...)
 
 static UINT64 glRaytracingAlignUp(UINT64 v, UINT64 a)
 {
-    return (v + (a - 1)) & ~(a - 1);
+	return (v + (a - 1)) & ~(a - 1);
 }
 
 template<typename T>
 static T glRaytracingClamp(T v, T lo, T hi)
 {
-    return (v < lo) ? lo : ((v > hi) ? hi : v);
+	return (v < lo) ? lo : ((v > hi) ? hi : v);
 }
 
 static DXGI_FORMAT glRaytracingGetSrvFormatForDepth(DXGI_FORMAT fmt)
 {
-    switch (fmt)
-    {
-    case DXGI_FORMAT_D32_FLOAT:         return DXGI_FORMAT_R32_FLOAT;
-    case DXGI_FORMAT_D24_UNORM_S8_UINT: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-    case DXGI_FORMAT_D16_UNORM:         return DXGI_FORMAT_R16_UNORM;
-    default:                            return fmt;
-    }
+	switch (fmt)
+	{
+	case DXGI_FORMAT_D32_FLOAT:         return DXGI_FORMAT_R32_FLOAT;
+	case DXGI_FORMAT_D24_UNORM_S8_UINT: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+	case DXGI_FORMAT_D16_UNORM:         return DXGI_FORMAT_R16_UNORM;
+	default:                            return fmt;
+	}
 }
 
 struct glRaytracingBuffer_t
 {
-    ComPtr<ID3D12Resource> resource;
-    UINT64 size;
-    D3D12_GPU_VIRTUAL_ADDRESS gpuVA;
+	ComPtr<ID3D12Resource> resource;
+	UINT64 size;
+	D3D12_GPU_VIRTUAL_ADDRESS gpuVA;
 
-    glRaytracingBuffer_t()
-    {
-        size = 0;
-        gpuVA = 0;
-    }
+	glRaytracingBuffer_t()
+	{
+		size = 0;
+		gpuVA = 0;
+	}
 };
 
 static glRaytracingBuffer_t glRaytracingCreateBuffer(
-    ID3D12Device* device,
-    UINT64 size,
-    D3D12_HEAP_TYPE heapType,
-    D3D12_RESOURCE_STATES initialState,
-    D3D12_RESOURCE_FLAGS flags)
+	ID3D12Device* device,
+	UINT64 size,
+	D3D12_HEAP_TYPE heapType,
+	D3D12_RESOURCE_STATES initialState,
+	D3D12_RESOURCE_FLAGS flags)
 {
-    glRaytracingBuffer_t out;
+	glRaytracingBuffer_t out;
 
-    D3D12_HEAP_PROPERTIES hp = {};
-    hp.Type = heapType;
+	D3D12_HEAP_PROPERTIES hp = {};
+	hp.Type = heapType;
 
-    D3D12_RESOURCE_DESC rd = {};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    rd.Width = size;
-    rd.Height = 1;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.Format = DXGI_FORMAT_UNKNOWN;
-    rd.SampleDesc.Count = 1;
-    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    rd.Flags = flags;
+	D3D12_RESOURCE_DESC rd = {};
+	rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	rd.Width = size;
+	rd.Height = 1;
+	rd.DepthOrArraySize = 1;
+	rd.MipLevels = 1;
+	rd.Format = DXGI_FORMAT_UNKNOWN;
+	rd.SampleDesc.Count = 1;
+	rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	rd.Flags = flags;
 
-    HRESULT hr = device->CreateCommittedResource(
-        &hp,
-        D3D12_HEAP_FLAG_NONE,
-        &rd,
-        initialState,
-        nullptr,
-        IID_PPV_ARGS(&out.resource));
+	HRESULT hr = device->CreateCommittedResource(
+		&hp,
+		D3D12_HEAP_FLAG_NONE,
+		&rd,
+		initialState,
+		nullptr,
+		IID_PPV_ARGS(&out.resource));
 
-    if (FAILED(hr))
-    {
-        glRaytracingFatal("CreateCommittedResource failed 0x%08X", (unsigned)hr);
-        return out;
-    }
+	if (FAILED(hr))
+	{
+		glRaytracingFatal("CreateCommittedResource failed 0x%08X", (unsigned)hr);
+		return out;
+	}
 
-    out.size = size;
-    out.gpuVA = out.resource->GetGPUVirtualAddress();
-    return out;
+	out.size = size;
+	out.gpuVA = out.resource->GetGPUVirtualAddress();
+	return out;
 }
 
 static void glRaytracingMapCopy(ID3D12Resource* res, const void* src, size_t bytes)
 {
-    void* dst = nullptr;
-    HRESULT hr = res->Map(0, nullptr, &dst);
-    if (FAILED(hr))
-    {
-        glRaytracingFatal("Map failed 0x%08X", (unsigned)hr);
-        return;
-    }
+	void* dst = nullptr;
+	HRESULT hr = res->Map(0, nullptr, &dst);
+	if (FAILED(hr))
+	{
+		glRaytracingFatal("Map failed 0x%08X", (unsigned)hr);
+		return;
+	}
 
-    memcpy(dst, src, bytes);
-    res->Unmap(0, nullptr);
+	memcpy(dst, src, bytes);
+	res->Unmap(0, nullptr);
 }
 
 static void glRaytracingTransition(
-    ID3D12GraphicsCommandList* cmd,
-    ID3D12Resource* res,
-    D3D12_RESOURCE_STATES before,
-    D3D12_RESOURCE_STATES after)
+	ID3D12GraphicsCommandList* cmd,
+	ID3D12Resource* res,
+	D3D12_RESOURCE_STATES before,
+	D3D12_RESOURCE_STATES after)
 {
-    if (!res || before == after)
-        return;
+	if (!res || before == after)
+		return;
 
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = res;
-    b.Transition.StateBefore = before;
-    b.Transition.StateAfter = after;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cmd->ResourceBarrier(1, &b);
+	D3D12_RESOURCE_BARRIER b = {};
+	b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	b.Transition.pResource = res;
+	b.Transition.StateBefore = before;
+	b.Transition.StateAfter = after;
+	b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	cmd->ResourceBarrier(1, &b);
 }
 
 static D3D12_CPU_DESCRIPTOR_HANDLE glRaytracingOffsetCpu(D3D12_CPU_DESCRIPTOR_HANDLE h, UINT stride, UINT idx)
 {
-    h.ptr += UINT64(stride) * UINT64(idx);
-    return h;
+	h.ptr += UINT64(stride) * UINT64(idx);
+	return h;
 }
 
 static D3D12_GPU_DESCRIPTOR_HANDLE glRaytracingOffsetGpu(D3D12_GPU_DESCRIPTOR_HANDLE h, UINT stride, UINT idx)
 {
-    h.ptr += UINT64(stride) * UINT64(idx);
-    return h;
+	h.ptr += UINT64(stride) * UINT64(idx);
+	return h;
 }
 
 // ============================================================
@@ -184,120 +187,120 @@ static D3D12_GPU_DESCRIPTOR_HANDLE glRaytracingOffsetGpu(D3D12_GPU_DESCRIPTOR_HA
 
 struct glRaytracingCmdContext_t
 {
-    ComPtr<ID3D12Device5> device;
-    ComPtr<ID3D12CommandQueue> queue;
-    ComPtr<ID3D12CommandAllocator> cmdAlloc;
-    ComPtr<ID3D12GraphicsCommandList4> cmdList;
-    ComPtr<ID3D12Fence> fence;
-    HANDLE fenceEvent;
-    UINT64 fenceValue;
-    bool initialized;
+	ComPtr<ID3D12Device5> device;
+	ComPtr<ID3D12CommandQueue> queue;
+	ComPtr<ID3D12CommandAllocator> cmdAlloc;
+	ComPtr<ID3D12GraphicsCommandList4> cmdList;
+	ComPtr<ID3D12Fence> fence;
+	HANDLE fenceEvent;
+	UINT64 fenceValue;
+	bool initialized;
 
-    glRaytracingCmdContext_t()
-    {
-        fenceEvent = nullptr;
-        fenceValue = 0;
-        initialized = false;
-    }
+	glRaytracingCmdContext_t()
+	{
+		fenceEvent = nullptr;
+		fenceValue = 0;
+		initialized = false;
+	}
 };
 
 static glRaytracingCmdContext_t g_glRaytracingCmd;
 
 static void glRaytracingWaitIdle(void)
 {
-    if (!g_glRaytracingCmd.queue || !g_glRaytracingCmd.fence)
-        return;
+	if (!g_glRaytracingCmd.queue || !g_glRaytracingCmd.fence)
+		return;
 
-    ++g_glRaytracingCmd.fenceValue;
-    g_glRaytracingCmd.queue->Signal(g_glRaytracingCmd.fence.Get(), g_glRaytracingCmd.fenceValue);
+	++g_glRaytracingCmd.fenceValue;
+	g_glRaytracingCmd.queue->Signal(g_glRaytracingCmd.fence.Get(), g_glRaytracingCmd.fenceValue);
 
-    if (g_glRaytracingCmd.fence->GetCompletedValue() < g_glRaytracingCmd.fenceValue)
-    {
-        g_glRaytracingCmd.fence->SetEventOnCompletion(g_glRaytracingCmd.fenceValue, g_glRaytracingCmd.fenceEvent);
-        WaitForSingleObject(g_glRaytracingCmd.fenceEvent, INFINITE);
-    }
+	if (g_glRaytracingCmd.fence->GetCompletedValue() < g_glRaytracingCmd.fenceValue)
+	{
+		g_glRaytracingCmd.fence->SetEventOnCompletion(g_glRaytracingCmd.fenceValue, g_glRaytracingCmd.fenceEvent);
+		WaitForSingleObject(g_glRaytracingCmd.fenceEvent, INFINITE);
+	}
 }
 
 static int glRaytracingInitCmdContext(void)
 {
-    if (g_glRaytracingCmd.initialized)
-        return 1;
+	if (g_glRaytracingCmd.initialized)
+		return 1;
 
-    ID3D12Device* baseDevice = QD3D12_GetDevice();
-    ID3D12CommandQueue* baseQueue = QD3D12_GetQueue();
+	ID3D12Device* baseDevice = QD3D12_GetDevice();
+	ID3D12CommandQueue* baseQueue = QD3D12_GetQueue();
 
-    if (!baseDevice || !baseQueue)
-    {
-        glRaytracingFatal("glRaytracingInitCmdContext: missing device or queue");
-        return 0;
-    }
+	if (!baseDevice || !baseQueue)
+	{
+		glRaytracingFatal("glRaytracingInitCmdContext: missing device or queue");
+		return 0;
+	}
 
-    GLR_CHECK(baseDevice->QueryInterface(IID_PPV_ARGS(&g_glRaytracingCmd.device)));
-    g_glRaytracingCmd.queue = baseQueue;
+	GLR_CHECK(baseDevice->QueryInterface(IID_PPV_ARGS(&g_glRaytracingCmd.device)));
+	g_glRaytracingCmd.queue = baseQueue;
 
-    GLR_CHECK(g_glRaytracingCmd.device->CreateCommandAllocator(
-        D3D12_COMMAND_LIST_TYPE_DIRECT,
-        IID_PPV_ARGS(&g_glRaytracingCmd.cmdAlloc)));
+	GLR_CHECK(g_glRaytracingCmd.device->CreateCommandAllocator(
+		D3D12_COMMAND_LIST_TYPE_DIRECT,
+		IID_PPV_ARGS(&g_glRaytracingCmd.cmdAlloc)));
 
-    GLR_CHECK(g_glRaytracingCmd.device->CreateCommandList(
-        0,
-        D3D12_COMMAND_LIST_TYPE_DIRECT,
-        g_glRaytracingCmd.cmdAlloc.Get(),
-        nullptr,
-        IID_PPV_ARGS(&g_glRaytracingCmd.cmdList)));
+	GLR_CHECK(g_glRaytracingCmd.device->CreateCommandList(
+		0,
+		D3D12_COMMAND_LIST_TYPE_DIRECT,
+		g_glRaytracingCmd.cmdAlloc.Get(),
+		nullptr,
+		IID_PPV_ARGS(&g_glRaytracingCmd.cmdList)));
 
-    GLR_CHECK(g_glRaytracingCmd.cmdList->Close());
+	GLR_CHECK(g_glRaytracingCmd.cmdList->Close());
 
-    GLR_CHECK(g_glRaytracingCmd.device->CreateFence(
-        0,
-        D3D12_FENCE_FLAG_NONE,
-        IID_PPV_ARGS(&g_glRaytracingCmd.fence)));
+	GLR_CHECK(g_glRaytracingCmd.device->CreateFence(
+		0,
+		D3D12_FENCE_FLAG_NONE,
+		IID_PPV_ARGS(&g_glRaytracingCmd.fence)));
 
-    g_glRaytracingCmd.fenceEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
-    if (!g_glRaytracingCmd.fenceEvent)
-    {
-        glRaytracingFatal("CreateEventA failed");
-        return 0;
-    }
+	g_glRaytracingCmd.fenceEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+	if (!g_glRaytracingCmd.fenceEvent)
+	{
+		glRaytracingFatal("CreateEventA failed");
+		return 0;
+	}
 
-    g_glRaytracingCmd.initialized = true;
-    return 1;
+	g_glRaytracingCmd.initialized = true;
+	return 1;
 }
 
 static void glRaytracingShutdownCmdContext(void)
 {
-    if (!g_glRaytracingCmd.initialized)
-        return;
+	if (!g_glRaytracingCmd.initialized)
+		return;
 
-    glRaytracingWaitIdle();
+	glRaytracingWaitIdle();
 
-    if (g_glRaytracingCmd.fenceEvent)
-    {
-        CloseHandle(g_glRaytracingCmd.fenceEvent);
-        g_glRaytracingCmd.fenceEvent = nullptr;
-    }
+	if (g_glRaytracingCmd.fenceEvent)
+	{
+		CloseHandle(g_glRaytracingCmd.fenceEvent);
+		g_glRaytracingCmd.fenceEvent = nullptr;
+	}
 
-    g_glRaytracingCmd = glRaytracingCmdContext_t();
+	g_glRaytracingCmd = glRaytracingCmdContext_t();
 }
 
 static int glRaytracingBeginCmd(void)
 {
-    glRaytracingWaitIdle();
+	glRaytracingWaitIdle();
 
-    GLR_CHECK(g_glRaytracingCmd.cmdAlloc->Reset());
-    GLR_CHECK(g_glRaytracingCmd.cmdList->Reset(g_glRaytracingCmd.cmdAlloc.Get(), nullptr));
-    return 1;
+	GLR_CHECK(g_glRaytracingCmd.cmdAlloc->Reset());
+	GLR_CHECK(g_glRaytracingCmd.cmdList->Reset(g_glRaytracingCmd.cmdAlloc.Get(), nullptr));
+	return 1;
 }
 
 static int glRaytracingEndCmd(void)
 {
-    GLR_CHECK(g_glRaytracingCmd.cmdList->Close());
+	GLR_CHECK(g_glRaytracingCmd.cmdList->Close());
 
-    ID3D12CommandList* lists[] = { g_glRaytracingCmd.cmdList.Get() };
-    g_glRaytracingCmd.queue->ExecuteCommandLists(1, lists);
+	ID3D12CommandList* lists[] = { g_glRaytracingCmd.cmdList.Get() };
+	g_glRaytracingCmd.queue->ExecuteCommandLists(1, lists);
 
-    glRaytracingWaitIdle();
-    return 1;
+	glRaytracingWaitIdle();
+	return 1;
 }
 
 // ============================================================
@@ -306,518 +309,743 @@ static int glRaytracingEndCmd(void)
 
 struct glRaytracingMeshRecord_t
 {
-    uint32_t handle;
-    int      alive;
+	uint32_t handle;
+	int      alive;
 
-    glRaytracingMeshDesc_t descCpu;
+	glRaytracingMeshDesc_t descCpu;
 
-    std::vector<glRaytracingVertex_t> verticesCpu;
-    std::vector<uint32_t>             indicesCpu;
+	std::vector<glRaytracingVertex_t> verticesCpu;
+	std::vector<uint32_t>             indicesCpu;
 
-    glRaytracingBuffer_t vertexBuffer;
-    glRaytracingBuffer_t indexBuffer;
+	glRaytracingBuffer_t vertexBuffer;
+	glRaytracingBuffer_t indexBuffer;
 
-    glRaytracingBuffer_t blasScratch;
-    glRaytracingBuffer_t blasResult;
+	glRaytracingBuffer_t blasScratch;
+	glRaytracingBuffer_t blasResult[2];
 
-    UINT64 blasScratchSize;
-    UINT64 blasResultSize;
+	UINT64 blasScratchSize;
+	UINT64 blasResultSize;
 
-    int blasBuilt;
-    int dirty;
+	int blasBuilt;
+	int dirty;
+	int currentBlasIndex;
 
-    glRaytracingMeshRecord_t()
-    {
-        handle = 0;
-        alive = 0;
-        memset(&descCpu, 0, sizeof(descCpu));
-        blasScratchSize = 0;
-        blasResultSize = 0;
-        blasBuilt = 0;
-        dirty = 0;
-    }
+	glRaytracingMeshRecord_t()
+	{
+		handle = 0;
+		alive = 0;
+		memset(&descCpu, 0, sizeof(descCpu));
+		blasScratchSize = 0;
+		blasResultSize = 0;
+		blasBuilt = 0;
+		dirty = 0;
+		currentBlasIndex = 0;
+	}
 };
 
 struct glRaytracingInstanceRecord_t
 {
-    uint32_t handle;
-    int      alive;
-    glRaytracingInstanceDesc_t descCpu;
-    int dirty;
+	uint32_t handle;
+	int      alive;
+	glRaytracingInstanceDesc_t descCpu;
+	int dirty;
 
-    glRaytracingInstanceRecord_t()
-    {
-        handle = 0;
-        alive = 0;
-        memset(&descCpu, 0, sizeof(descCpu));
-        dirty = 0;
-    }
+	glRaytracingInstanceRecord_t()
+	{
+		handle = 0;
+		alive = 0;
+		memset(&descCpu, 0, sizeof(descCpu));
+		dirty = 0;
+	}
+};
+
+struct glRaytracingSceneUploadBuffer_t
+{
+	glRaytracingBuffer_t buffer;
+	UINT64 capacityBytes;
+	D3D12_RAYTRACING_INSTANCE_DESC* mapped;
+
+	glRaytracingSceneUploadBuffer_t()
+	{
+		capacityBytes = 0;
+		mapped = nullptr;
+	}
 };
 
 struct glRaytracingSceneState_t
 {
-    std::vector<glRaytracingMeshRecord_t> meshes;
-    std::vector<glRaytracingInstanceRecord_t> instances;
+	std::vector<glRaytracingMeshRecord_t> meshes;
+	std::vector<glRaytracingInstanceRecord_t> instances;
 
-    std::vector<int> meshHandleToIndex;
+	std::vector<int> meshHandleToIndex;
+	std::vector<int> instanceHandleToIndex;
 
-    uint32_t nextMeshHandle;
-    uint32_t nextInstanceHandle;
+	uint32_t nextMeshHandle;
+	uint32_t nextInstanceHandle;
 
-    glRaytracingBuffer_t instanceDescUpload;
-    glRaytracingBuffer_t tlasScratch;
-    glRaytracingBuffer_t tlasResult;
+	glRaytracingSceneUploadBuffer_t instanceDescUpload[2];
+	glRaytracingBuffer_t tlasScratch;
+	glRaytracingBuffer_t tlasResult[2];
 
-    UINT64 tlasScratchSize;
-    UINT64 tlasResultSize;
+	UINT64 tlasScratchSize;
+	UINT64 tlasResultSize;
 
-    int initialized;
+	int initialized;
 
-    UINT64 instanceDescCapacityBytes;
-    D3D12_RAYTRACING_INSTANCE_DESC* mappedInstanceDescs;
+	UINT activeInstanceCount;
+	UINT builtInstanceCount;
 
-    UINT activeInstanceCount;
-    UINT builtInstanceCount;
+	int tlasBuilt;
+	int tlasNeedsRebuild;
+	int tlasNeedsUpdate;
+	int currentTLASIndex;
 
-    int tlasBuilt;
-    int tlasNeedsRebuild;
-    int tlasNeedsUpdate;
+	glRaytracingSceneState_t()
+	{
+		nextMeshHandle = 1;
+		nextInstanceHandle = 1;
+		tlasScratchSize = 0;
+		tlasResultSize = 0;
+		initialized = 0;
 
-    glRaytracingSceneState_t()
-    {
-        nextMeshHandle = 1;
-        nextInstanceHandle = 1;
-        tlasScratchSize = 0;
-        tlasResultSize = 0;
-        initialized = 0;
-
-        instanceDescCapacityBytes = 0;
-        mappedInstanceDescs = nullptr;
-        activeInstanceCount = 0;
-        builtInstanceCount = 0;
-        tlasBuilt = 0;
-        tlasNeedsRebuild = 1;
-        tlasNeedsUpdate = 1;
-    }
+		activeInstanceCount = 0;
+		builtInstanceCount = 0;
+		tlasBuilt = 0;
+		tlasNeedsRebuild = 1;
+		tlasNeedsUpdate = 1;
+		currentTLASIndex = 0;
+	}
 };
 
 static glRaytracingSceneState_t g_glRaytracingScene;
 
+extern "C" void glRaytracingClear(void);
 
 static void glRaytracingEnsureMeshHandleTable(uint32_t handle)
 {
-    if (handle >= g_glRaytracingScene.meshHandleToIndex.size())
-        g_glRaytracingScene.meshHandleToIndex.resize((size_t)handle + 1, -1);
+	if (handle >= g_glRaytracingScene.meshHandleToIndex.size())
+		g_glRaytracingScene.meshHandleToIndex.resize((size_t)handle + 1, -1);
+}
+
+static void glRaytracingEnsureInstanceHandleTable(uint32_t handle)
+{
+	if (handle >= g_glRaytracingScene.instanceHandleToIndex.size())
+		g_glRaytracingScene.instanceHandleToIndex.resize((size_t)handle + 1, -1);
+}
+
+static glRaytracingBuffer_t* glRaytracingGetMeshCurrentBLAS(glRaytracingMeshRecord_t* mesh)
+{
+	if (!mesh)
+		return nullptr;
+	return &mesh->blasResult[mesh->currentBlasIndex & 1];
+}
+
+static const glRaytracingBuffer_t* glRaytracingGetMeshCurrentBLASConst(const glRaytracingMeshRecord_t* mesh)
+{
+	if (!mesh)
+		return nullptr;
+	return &mesh->blasResult[mesh->currentBlasIndex & 1];
+}
+
+static int glRaytracingGetInactiveTLASIndex(void)
+{
+	return g_glRaytracingScene.currentTLASIndex ^ 1;
+}
+
+static glRaytracingSceneUploadBuffer_t* glRaytracingGetBuildInstanceUpload(void)
+{
+	return &g_glRaytracingScene.instanceDescUpload[glRaytracingGetInactiveTLASIndex()];
+}
+
+static glRaytracingBuffer_t* glRaytracingGetCurrentTLASBuffer(void)
+{
+	return &g_glRaytracingScene.tlasResult[g_glRaytracingScene.currentTLASIndex & 1];
+}
+
+static const glRaytracingBuffer_t* glRaytracingGetCurrentTLASBufferConst(void)
+{
+	return &g_glRaytracingScene.tlasResult[g_glRaytracingScene.currentTLASIndex & 1];
+}
+
+static glRaytracingBuffer_t* glRaytracingGetBuildTLASBuffer(void)
+{
+	return &g_glRaytracingScene.tlasResult[glRaytracingGetInactiveTLASIndex()];
 }
 
 
 static int glRaytracingEnsureTLASBuffers(
-    const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS* inputs)
+	const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS* inputs)
 {
-    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild = {};
-    g_glRaytracingCmd.device->GetRaytracingAccelerationStructurePrebuildInfo(inputs, &prebuild);
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild = {};
+	g_glRaytracingCmd.device->GetRaytracingAccelerationStructurePrebuildInfo(inputs, &prebuild);
 
-    if (prebuild.ResultDataMaxSizeInBytes == 0)
-    {
-        glRaytracingFatal("TLAS prebuild size is zero");
-        return 0;
-    }
+	if (prebuild.ResultDataMaxSizeInBytes == 0)
+	{
+		glRaytracingFatal("TLAS prebuild size is zero");
+		return 0;
+	}
 
-    const UINT64 requiredScratch = glRaytracingAlignUp(
-        prebuild.ScratchDataSizeInBytes,
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+	const UINT64 requiredScratch = glRaytracingAlignUp(
+		prebuild.ScratchDataSizeInBytes,
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
 
-    const UINT64 requiredResult = glRaytracingAlignUp(
-        prebuild.ResultDataMaxSizeInBytes,
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+	const UINT64 requiredResult = glRaytracingAlignUp(
+		prebuild.ResultDataMaxSizeInBytes,
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
 
-    if (!g_glRaytracingScene.tlasScratch.resource ||
-        g_glRaytracingScene.tlasScratchSize < requiredScratch)
-    {
-        g_glRaytracingScene.tlasScratch.resource.Reset();
-        g_glRaytracingScene.tlasScratch = glRaytracingCreateBuffer(
-            g_glRaytracingCmd.device.Get(),
-            requiredScratch,
-            D3D12_HEAP_TYPE_DEFAULT,
-            D3D12_RESOURCE_STATE_COMMON,
-            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+	if (!g_glRaytracingScene.tlasScratch.resource ||
+		g_glRaytracingScene.tlasScratchSize < requiredScratch)
+	{
+		g_glRaytracingScene.tlasScratch.resource.Reset();
+		g_glRaytracingScene.tlasScratch = glRaytracingCreateBuffer(
+			g_glRaytracingCmd.device.Get(),
+			requiredScratch,
+			D3D12_HEAP_TYPE_DEFAULT,
+			D3D12_RESOURCE_STATE_COMMON,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-        if (!g_glRaytracingScene.tlasScratch.resource)
-            return 0;
+		if (!g_glRaytracingScene.tlasScratch.resource)
+			return 0;
 
-        g_glRaytracingScene.tlasScratchSize = requiredScratch;
-    }
+		g_glRaytracingScene.tlasScratchSize = requiredScratch;
+	}
 
-    if (!g_glRaytracingScene.tlasResult.resource ||
-        g_glRaytracingScene.tlasResultSize < requiredResult)
-    {
-        g_glRaytracingScene.tlasResult.resource.Reset();
-        g_glRaytracingScene.tlasResult = glRaytracingCreateBuffer(
-            g_glRaytracingCmd.device.Get(),
-            requiredResult,
-            D3D12_HEAP_TYPE_DEFAULT,
-            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+	for (int i = 0; i < 2; ++i)
+	{
+		if (!g_glRaytracingScene.tlasResult[i].resource ||
+			g_glRaytracingScene.tlasResultSize < requiredResult)
+		{
+			g_glRaytracingScene.tlasResult[i].resource.Reset();
+			g_glRaytracingScene.tlasResult[i] = glRaytracingCreateBuffer(
+				g_glRaytracingCmd.device.Get(),
+				requiredResult,
+				D3D12_HEAP_TYPE_DEFAULT,
+				D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+				D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-        if (!g_glRaytracingScene.tlasResult.resource)
-            return 0;
+			if (!g_glRaytracingScene.tlasResult[i].resource)
+				return 0;
+		}
+	}
 
-        g_glRaytracingScene.tlasResultSize = requiredResult;
-        g_glRaytracingScene.tlasBuilt = 0;
-    }
-
-    return 1;
+	g_glRaytracingScene.tlasResultSize = requiredResult;
+	return 1;
 }
 
 static glRaytracingMeshRecord_t* glRaytracingFindMesh(uint32_t handle)
 {
-    if (handle == 0 || handle >= g_glRaytracingScene.meshHandleToIndex.size())
-        return nullptr;
+	if (handle == 0 || handle >= g_glRaytracingScene.meshHandleToIndex.size())
+		return nullptr;
 
-    const int index = g_glRaytracingScene.meshHandleToIndex[handle];
-    if (index < 0 || (size_t)index >= g_glRaytracingScene.meshes.size())
-        return nullptr;
+	const int index = g_glRaytracingScene.meshHandleToIndex[handle];
+	if (index < 0 || (size_t)index >= g_glRaytracingScene.meshes.size())
+		return nullptr;
 
-    glRaytracingMeshRecord_t& mesh = g_glRaytracingScene.meshes[(size_t)index];
-    if (!mesh.alive || mesh.handle != handle)
-        return nullptr;
+	glRaytracingMeshRecord_t& mesh = g_glRaytracingScene.meshes[(size_t)index];
+	if (!mesh.alive || mesh.handle != handle)
+		return nullptr;
 
-    return &mesh;
+	return &mesh;
 }
 
 static const glRaytracingMeshRecord_t* glRaytracingFindMeshConst(uint32_t handle)
 {
-    if (handle == 0 || handle >= g_glRaytracingScene.meshHandleToIndex.size())
-        return nullptr;
+	if (handle == 0 || handle >= g_glRaytracingScene.meshHandleToIndex.size())
+		return nullptr;
 
-    const int index = g_glRaytracingScene.meshHandleToIndex[handle];
-    if (index < 0 || (size_t)index >= g_glRaytracingScene.meshes.size())
-        return nullptr;
+	const int index = g_glRaytracingScene.meshHandleToIndex[handle];
+	if (index < 0 || (size_t)index >= g_glRaytracingScene.meshes.size())
+		return nullptr;
 
-    const glRaytracingMeshRecord_t& mesh = g_glRaytracingScene.meshes[(size_t)index];
-    if (!mesh.alive || mesh.handle != handle)
-        return nullptr;
+	const glRaytracingMeshRecord_t& mesh = g_glRaytracingScene.meshes[(size_t)index];
+	if (!mesh.alive || mesh.handle != handle)
+		return nullptr;
 
-    return &mesh;
+	return &mesh;
 }
 
 static glRaytracingInstanceRecord_t* glRaytracingFindInstance(uint32_t handle)
 {
-    for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
-    {
-        if (g_glRaytracingScene.instances[i].alive && g_glRaytracingScene.instances[i].handle == handle)
-            return &g_glRaytracingScene.instances[i];
-    }
-    return nullptr;
+	if (handle == 0 || handle >= g_glRaytracingScene.instanceHandleToIndex.size())
+		return nullptr;
+
+	const int index = g_glRaytracingScene.instanceHandleToIndex[handle];
+	if (index < 0 || (size_t)index >= g_glRaytracingScene.instances.size())
+		return nullptr;
+
+	glRaytracingInstanceRecord_t& inst = g_glRaytracingScene.instances[(size_t)index];
+	if (!inst.alive || inst.handle != handle)
+		return nullptr;
+
+	return &inst;
+}
+
+static int glRaytracingEnsureMeshScratch(glRaytracingMeshRecord_t* mesh, UINT64 requiredScratch)
+{
+	if (!mesh)
+		return 0;
+
+	requiredScratch = glRaytracingAlignUp(requiredScratch, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+
+	if (!mesh->blasScratch.resource || mesh->blasScratchSize < requiredScratch)
+	{
+		mesh->blasScratch.resource.Reset();
+		mesh->blasScratch = glRaytracingCreateBuffer(
+			g_glRaytracingCmd.device.Get(),
+			requiredScratch,
+			D3D12_HEAP_TYPE_DEFAULT,
+			D3D12_RESOURCE_STATE_COMMON,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+		if (!mesh->blasScratch.resource)
+			return 0;
+
+		mesh->blasScratchSize = requiredScratch;
+	}
+
+	return 1;
+}
+
+static int glRaytracingEnsureMeshResultBuffers(glRaytracingMeshRecord_t* mesh, UINT64 requiredResult)
+{
+	if (!mesh)
+		return 0;
+
+	requiredResult = glRaytracingAlignUp(requiredResult, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+
+	const int resultCount = mesh->descCpu.allowUpdate ? 2 : 1;
+	for (int i = 0; i < resultCount; ++i)
+	{
+		if (!mesh->blasResult[i].resource || mesh->blasResultSize < requiredResult)
+		{
+			mesh->blasResult[i].resource.Reset();
+			mesh->blasResult[i] = glRaytracingCreateBuffer(
+				g_glRaytracingCmd.device.Get(),
+				requiredResult,
+				D3D12_HEAP_TYPE_DEFAULT,
+				D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+				D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+			if (!mesh->blasResult[i].resource)
+				return 0;
+		}
+	}
+
+	if (!mesh->descCpu.allowUpdate)
+		mesh->blasResult[1].resource.Reset();
+
+	mesh->blasResultSize = requiredResult;
+	return 1;
+}
+
+static void glRaytracingBuildInstanceDesc(
+	D3D12_RAYTRACING_INSTANCE_DESC* outDesc,
+	const glRaytracingInstanceRecord_t& inst,
+	const glRaytracingMeshRecord_t& mesh)
+{
+	memcpy(outDesc->Transform, inst.descCpu.transform, sizeof(float) * 12);
+	outDesc->InstanceID = inst.descCpu.instanceID;
+	outDesc->InstanceMask = (UINT8)(inst.descCpu.mask ? inst.descCpu.mask : 0xFF);
+	outDesc->InstanceContributionToHitGroupIndex = 0;
+	outDesc->Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+	outDesc->AccelerationStructure = glRaytracingGetMeshCurrentBLASConst(&mesh)->gpuVA;
+}
+
+static int glRaytracingUploadMeshBuffers(glRaytracingMeshRecord_t* mesh);
+
+static int glRaytracingBuildDirtyMeshesInternal(void)
+{
+	std::vector<glRaytracingMeshRecord_t*> dirtyMeshes;
+	dirtyMeshes.reserve(g_glRaytracingScene.meshes.size());
+
+	for (size_t i = 0; i < g_glRaytracingScene.meshes.size(); ++i)
+	{
+		glRaytracingMeshRecord_t& mesh = g_glRaytracingScene.meshes[i];
+		if (!mesh.alive)
+			continue;
+
+		if (!mesh.blasBuilt || mesh.dirty)
+			dirtyMeshes.push_back(&mesh);
+	}
+
+	if (dirtyMeshes.empty())
+		return 1;
+
+	struct glRaytracingMeshBuildInfo_t
+	{
+		glRaytracingMeshRecord_t* mesh;
+		D3D12_RAYTRACING_GEOMETRY_DESC geomDesc;
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc;
+		ID3D12Resource* barrierResource;
+		int newBlasIndex;
+	};
+
+	std::vector<glRaytracingMeshBuildInfo_t> builds;
+	builds.resize(dirtyMeshes.size());
+
+	for (size_t i = 0; i < dirtyMeshes.size(); ++i)
+	{
+		glRaytracingMeshRecord_t* mesh = dirtyMeshes[i];
+		if (!mesh->vertexBuffer.resource || !mesh->indexBuffer.resource)
+		{
+			if (!glRaytracingUploadMeshBuffers(mesh))
+				return 0;
+		}
+
+		glRaytracingMeshBuildInfo_t& info = builds[i];
+		memset(&info, 0, sizeof(info));
+		info.mesh = mesh;
+
+		info.geomDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+		info.geomDesc.Flags = mesh->descCpu.opaque
+			? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE
+			: D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+		info.geomDesc.Triangles.Transform3x4 = 0;
+		info.geomDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+		info.geomDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+		info.geomDesc.Triangles.IndexCount = (UINT)mesh->indicesCpu.size();
+		info.geomDesc.Triangles.VertexCount = (UINT)mesh->verticesCpu.size();
+		info.geomDesc.Triangles.IndexBuffer = mesh->indexBuffer.gpuVA;
+		info.geomDesc.Triangles.VertexBuffer.StartAddress = mesh->vertexBuffer.gpuVA;
+		info.geomDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(glRaytracingVertex_t);
+
+		info.inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+		info.inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+		info.inputs.NumDescs = 1;
+		info.inputs.pGeometryDescs = &info.geomDesc;
+		info.inputs.Flags = mesh->descCpu.allowUpdate
+			? (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+				D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE)
+			: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+
+		const bool canUpdateInPlace = (mesh->blasBuilt != 0) && (mesh->descCpu.allowUpdate != 0);
+		if (canUpdateInPlace)
+			info.inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild = {};
+		g_glRaytracingCmd.device->GetRaytracingAccelerationStructurePrebuildInfo(&info.inputs, &prebuild);
+		if (prebuild.ResultDataMaxSizeInBytes == 0)
+		{
+			glRaytracingFatal("BLAS prebuild size is zero");
+			return 0;
+		}
+
+		if (!glRaytracingEnsureMeshScratch(mesh, prebuild.ScratchDataSizeInBytes))
+			return 0;
+		if (!glRaytracingEnsureMeshResultBuffers(mesh, prebuild.ResultDataMaxSizeInBytes))
+			return 0;
+
+		const int oldIndex = mesh->currentBlasIndex & 1;
+		info.newBlasIndex = (mesh->descCpu.allowUpdate && mesh->blasBuilt) ? (oldIndex ^ 1) : oldIndex;
+
+		info.buildDesc.Inputs = info.inputs;
+		info.buildDesc.ScratchAccelerationStructureData = mesh->blasScratch.gpuVA;
+		info.buildDesc.DestAccelerationStructureData = mesh->blasResult[info.newBlasIndex].gpuVA;
+		info.buildDesc.SourceAccelerationStructureData = 0;
+
+		if (canUpdateInPlace)
+			info.buildDesc.SourceAccelerationStructureData = mesh->blasResult[oldIndex].gpuVA;
+
+		info.barrierResource = mesh->blasResult[info.newBlasIndex].resource.Get();
+	}
+
+	if (!glRaytracingBeginCmd())
+		return 0;
+
+	for (size_t i = 0; i < builds.size(); ++i)
+	{
+		g_glRaytracingCmd.cmdList->BuildRaytracingAccelerationStructure(&builds[i].buildDesc, 0, nullptr);
+
+		D3D12_RESOURCE_BARRIER uav = {};
+		uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+		uav.UAV.pResource = builds[i].barrierResource;
+		g_glRaytracingCmd.cmdList->ResourceBarrier(1, &uav);
+	}
+
+	if (!glRaytracingEndCmd())
+		return 0;
+
+	for (size_t i = 0; i < builds.size(); ++i)
+	{
+		glRaytracingMeshRecord_t* mesh = builds[i].mesh;
+		mesh->currentBlasIndex = builds[i].newBlasIndex;
+		mesh->blasBuilt = 1;
+		mesh->dirty = 0;
+	}
+
+	return 1;
 }
 
 static int glRaytracingUploadMeshBuffers(glRaytracingMeshRecord_t* mesh)
 {
-    if (!mesh)
-        return 0;
+	if (!mesh)
+		return 0;
 
-    if (mesh->verticesCpu.empty() || mesh->indicesCpu.empty())
-        return 0;
+	if (mesh->verticesCpu.empty() || mesh->indicesCpu.empty())
+		return 0;
 
-    const UINT64 vbBytes = UINT64(mesh->verticesCpu.size()) * sizeof(glRaytracingVertex_t);
-    const UINT64 ibBytes = UINT64(mesh->indicesCpu.size()) * sizeof(uint32_t);
+	const UINT64 vbBytes = UINT64(mesh->verticesCpu.size()) * sizeof(glRaytracingVertex_t);
+	const UINT64 ibBytes = UINT64(mesh->indicesCpu.size()) * sizeof(uint32_t);
 
-    mesh->vertexBuffer = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        vbBytes,
-        D3D12_HEAP_TYPE_UPLOAD,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_FLAG_NONE);
+	mesh->vertexBuffer = glRaytracingCreateBuffer(
+		g_glRaytracingCmd.device.Get(),
+		vbBytes,
+		D3D12_HEAP_TYPE_UPLOAD,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_FLAG_NONE);
 
-    mesh->indexBuffer = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        ibBytes,
-        D3D12_HEAP_TYPE_UPLOAD,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_FLAG_NONE);
+	mesh->indexBuffer = glRaytracingCreateBuffer(
+		g_glRaytracingCmd.device.Get(),
+		ibBytes,
+		D3D12_HEAP_TYPE_UPLOAD,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_FLAG_NONE);
 
-    if (!mesh->vertexBuffer.resource || !mesh->indexBuffer.resource)
-        return 0;
+	if (!mesh->vertexBuffer.resource || !mesh->indexBuffer.resource)
+		return 0;
 
-    glRaytracingMapCopy(mesh->vertexBuffer.resource.Get(), mesh->verticesCpu.data(), (size_t)vbBytes);
-    glRaytracingMapCopy(mesh->indexBuffer.resource.Get(), mesh->indicesCpu.data(), (size_t)ibBytes);
+	glRaytracingMapCopy(mesh->vertexBuffer.resource.Get(), mesh->verticesCpu.data(), (size_t)vbBytes);
+	glRaytracingMapCopy(mesh->indexBuffer.resource.Get(), mesh->indicesCpu.data(), (size_t)ibBytes);
 
-    return 1;
+	return 1;
 }
 
 static int glRaytracingBuildMeshInternal(glRaytracingMeshRecord_t* mesh)
 {
-    if (!mesh)
-        return 0;
+	if (!mesh)
+		return 0;
 
-    if (!mesh->vertexBuffer.resource || !mesh->indexBuffer.resource)
-    {
-        if (!glRaytracingUploadMeshBuffers(mesh))
-            return 0;
-    }
-
-    D3D12_RAYTRACING_GEOMETRY_DESC geomDesc = {};
-    geomDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    geomDesc.Flags = mesh->descCpu.opaque
-        ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE
-        : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
-
-    geomDesc.Triangles.Transform3x4 = 0;
-    geomDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-    geomDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-    geomDesc.Triangles.IndexCount = (UINT)mesh->indicesCpu.size();
-    geomDesc.Triangles.VertexCount = (UINT)mesh->verticesCpu.size();
-    geomDesc.Triangles.IndexBuffer = mesh->indexBuffer.gpuVA;
-    geomDesc.Triangles.VertexBuffer.StartAddress = mesh->vertexBuffer.gpuVA;
-    geomDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(glRaytracingVertex_t);
-
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
-    inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-    inputs.NumDescs = 1;
-    inputs.pGeometryDescs = &geomDesc;
-    inputs.Flags = mesh->descCpu.allowUpdate
-        ? (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
-            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE)
-        : D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-
-    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild = {};
-    g_glRaytracingCmd.device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &prebuild);
-
-    if (prebuild.ResultDataMaxSizeInBytes == 0)
-    {
-        glRaytracingFatal("BLAS prebuild size is zero");
-        return 0;
-    }
-
-    mesh->blasScratchSize = glRaytracingAlignUp(prebuild.ScratchDataSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
-    mesh->blasResultSize = glRaytracingAlignUp(prebuild.ResultDataMaxSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
-
-    mesh->blasScratch = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        mesh->blasScratchSize,
-        D3D12_HEAP_TYPE_DEFAULT,
-        D3D12_RESOURCE_STATE_COMMON,
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-    mesh->blasResult = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        mesh->blasResultSize,
-        D3D12_HEAP_TYPE_DEFAULT,
-        D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-    if (!mesh->blasScratch.resource || !mesh->blasResult.resource)
-        return 0;
-
-    if (!glRaytracingBeginCmd())
-        return 0;
-
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
-    buildDesc.Inputs = inputs;
-    buildDesc.ScratchAccelerationStructureData = mesh->blasScratch.gpuVA;
-    buildDesc.DestAccelerationStructureData = mesh->blasResult.gpuVA;
-    buildDesc.SourceAccelerationStructureData = 0;
-
-    g_glRaytracingCmd.cmdList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
-
-    D3D12_RESOURCE_BARRIER uav = {};
-    uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    uav.UAV.pResource = mesh->blasResult.resource.Get();
-    g_glRaytracingCmd.cmdList->ResourceBarrier(1, &uav);
-
-    if (!glRaytracingEndCmd())
-        return 0;
-
-    mesh->blasBuilt = 1;
-    mesh->dirty = 0;
-    return 1;
+	const int oldDirty = mesh->dirty;
+	mesh->dirty = 1;
+	const int ok = glRaytracingBuildDirtyMeshesInternal();
+	if (!ok)
+		mesh->dirty = oldDirty;
+	return ok;
 }
 
 static int glRaytracingEnsureSceneUploadBuffer(UINT64 requiredBytes)
 {
-    if (requiredBytes == 0)
-        requiredBytes = D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT;
+	glRaytracingSceneUploadBuffer_t* upload = glRaytracingGetBuildInstanceUpload();
 
-    requiredBytes = glRaytracingAlignUp(
-        requiredBytes,
-        D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
+	if (requiredBytes == 0)
+		requiredBytes = D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT;
 
-    if (g_glRaytracingScene.instanceDescUpload.resource &&
-        g_glRaytracingScene.instanceDescCapacityBytes >= requiredBytes &&
-        g_glRaytracingScene.mappedInstanceDescs)
-    {
-        return 1;
-    }
+	requiredBytes = glRaytracingAlignUp(
+		requiredBytes,
+		D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
 
-    g_glRaytracingScene.mappedInstanceDescs = nullptr;
-    g_glRaytracingScene.instanceDescUpload.resource.Reset();
-    g_glRaytracingScene.instanceDescCapacityBytes = 0;
+	if (upload->buffer.resource &&
+		upload->capacityBytes >= requiredBytes &&
+		upload->mapped)
+	{
+		return 1;
+	}
 
-    g_glRaytracingScene.instanceDescUpload = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        requiredBytes,
-        D3D12_HEAP_TYPE_UPLOAD,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_FLAG_NONE);
+	if (upload->buffer.resource && upload->mapped)
+		upload->buffer.resource->Unmap(0, nullptr);
 
-    if (!g_glRaytracingScene.instanceDescUpload.resource)
-        return 0;
+	upload->mapped = nullptr;
+	upload->buffer.resource.Reset();
+	upload->capacityBytes = 0;
 
-    void* mapped = nullptr;
-    D3D12_RANGE readRange = {};
-    if (FAILED(g_glRaytracingScene.instanceDescUpload.resource->Map(0, &readRange, &mapped)) || !mapped)
-    {
-        g_glRaytracingScene.instanceDescUpload.resource.Reset();
-        return 0;
-    }
+	upload->buffer = glRaytracingCreateBuffer(
+		g_glRaytracingCmd.device.Get(),
+		requiredBytes,
+		D3D12_HEAP_TYPE_UPLOAD,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_FLAG_NONE);
 
-    g_glRaytracingScene.mappedInstanceDescs = (D3D12_RAYTRACING_INSTANCE_DESC*)mapped;
-    g_glRaytracingScene.instanceDescCapacityBytes = requiredBytes;
-    return 1;
+	if (!upload->buffer.resource)
+		return 0;
+
+	void* mapped = nullptr;
+	D3D12_RANGE readRange = {};
+	if (FAILED(upload->buffer.resource->Map(0, &readRange, &mapped)) || !mapped)
+	{
+		upload->buffer.resource.Reset();
+		return 0;
+	}
+
+	upload->mapped = (D3D12_RAYTRACING_INSTANCE_DESC*)mapped;
+	upload->capacityBytes = requiredBytes;
+	return 1;
 }
 
 static int glRaytracingBuildSceneInternal(void)
 {
-    UINT activeCount = 0;
-    int anyDirty = 0;
-    int needsRebuild = g_glRaytracingScene.tlasNeedsRebuild;
-    int needsUpdate  = g_glRaytracingScene.tlasNeedsUpdate;
+	UINT activeCount = 0;
+	int anyDirty = 0;
+	int needsRebuild = g_glRaytracingScene.tlasNeedsRebuild;
+	int needsUpdate = g_glRaytracingScene.tlasNeedsUpdate;
 
-    // Pass 1: count alive instances and see whether any instance changed.
-    for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
-    {
-        const glRaytracingInstanceRecord_t& inst = g_glRaytracingScene.instances[i];
-        if (!inst.alive)
-            continue;
+	for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
+	{
+		const glRaytracingInstanceRecord_t& inst = g_glRaytracingScene.instances[i];
+		if (!inst.alive)
+			continue;
 
-        ++activeCount;
+		++activeCount;
+		if (inst.dirty)
+			anyDirty = 1;
+	}
 
-        if (inst.dirty)
-            anyDirty = 1;
-    }
+	if (activeCount == 0)
+	{
+		g_glRaytracingScene.activeInstanceCount = 0;
+		g_glRaytracingScene.builtInstanceCount = 0;
+		g_glRaytracingScene.tlasBuilt = 0;
+		g_glRaytracingScene.tlasNeedsRebuild = 0;
+		g_glRaytracingScene.tlasNeedsUpdate = 0;
+		return 1;
+	}
 
-    if (activeCount == 0)
-    {
-        g_glRaytracingScene.activeInstanceCount = 0;
-        g_glRaytracingScene.builtInstanceCount  = 0;
-        g_glRaytracingScene.tlasBuilt           = 0;
-        g_glRaytracingScene.tlasNeedsRebuild    = 0;
-        g_glRaytracingScene.tlasNeedsUpdate     = 0;
-        return 1;
-    }
+	if (!g_glRaytracingScene.tlasBuilt)
+		needsRebuild = 1;
 
-    if (!g_glRaytracingScene.tlasBuilt)
-        needsRebuild = 1;
+	if (activeCount != g_glRaytracingScene.builtInstanceCount)
+		needsRebuild = 1;
 
-    if (activeCount != g_glRaytracingScene.builtInstanceCount)
-        needsRebuild = 1;
+	if (!needsRebuild && !needsUpdate && !anyDirty)
+	{
+		g_glRaytracingScene.activeInstanceCount = activeCount;
+		return 1;
+	}
 
-    // Nothing changed at all.
-    if (!needsRebuild && !needsUpdate && !anyDirty)
-    {
-        g_glRaytracingScene.activeInstanceCount = activeCount;
-        return 1;
-    }
+	const UINT64 instBytes = glRaytracingAlignUp(
+		(UINT64)activeCount * (UINT64)sizeof(D3D12_RAYTRACING_INSTANCE_DESC),
+		D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
 
-    const UINT64 instBytes = glRaytracingAlignUp(
-        (UINT64)activeCount * (UINT64)sizeof(D3D12_RAYTRACING_INSTANCE_DESC),
-        D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
+	if (!glRaytracingEnsureSceneUploadBuffer(instBytes))
+		return 0;
 
-    if (!glRaytracingEnsureSceneUploadBuffer(instBytes))
-        return 0;
+	glRaytracingSceneUploadBuffer_t* upload = glRaytracingGetBuildInstanceUpload();
+	D3D12_RAYTRACING_INSTANCE_DESC* mappedInstanceDescs = upload->mapped;
 
-    // Pass 2: emit only valid live instances whose BLAS is ready.
-    UINT outIndex = 0;
-    for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
-    {
-        const glRaytracingInstanceRecord_t& inst = g_glRaytracingScene.instances[i];
-        if (!inst.alive)
-            continue;
+	std::vector<size_t> validIndices;
+	validIndices.reserve(activeCount);
 
-        const glRaytracingMeshRecord_t* mesh = glRaytracingFindMeshConst(inst.descCpu.meshHandle);
-        if (!mesh || !mesh->blasBuilt || !mesh->blasResult.resource || mesh->blasResult.gpuVA == 0)
-            continue;
+	for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
+	{
+		const glRaytracingInstanceRecord_t& inst = g_glRaytracingScene.instances[i];
+		if (!inst.alive)
+			continue;
 
-        D3D12_RAYTRACING_INSTANCE_DESC& d = g_glRaytracingScene.mappedInstanceDescs[outIndex];
+		const glRaytracingMeshRecord_t* mesh = glRaytracingFindMeshConst(inst.descCpu.meshHandle);
+		const glRaytracingBuffer_t* blas = glRaytracingGetMeshCurrentBLASConst(mesh);
+		if (!mesh || !mesh->blasBuilt || !blas || !blas->resource || blas->gpuVA == 0)
+			continue;
 
-        memcpy(d.Transform, inst.descCpu.transform, sizeof(float) * 12);
-        d.InstanceID = inst.descCpu.instanceID;
-        d.InstanceMask = (UINT8)(inst.descCpu.mask ? inst.descCpu.mask : 0xFF);
-        d.InstanceContributionToHitGroupIndex = 0;
-        d.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-        d.AccelerationStructure = mesh->blasResult.gpuVA;
+		validIndices.push_back(i);
+	}
 
-        ++outIndex;
-    }
+	activeCount = (UINT)validIndices.size();
+	if (activeCount == 0)
+	{
+		g_glRaytracingScene.activeInstanceCount = 0;
+		g_glRaytracingScene.builtInstanceCount = 0;
+		g_glRaytracingScene.tlasBuilt = 0;
+		g_glRaytracingScene.tlasNeedsRebuild = 0;
+		g_glRaytracingScene.tlasNeedsUpdate = 0;
+		return 1;
+	}
 
-    activeCount = outIndex;
+	if (!g_glRaytracingScene.tlasBuilt || activeCount != g_glRaytracingScene.builtInstanceCount)
+		needsRebuild = 1;
 
-    if (activeCount == 0)
-    {
-        g_glRaytracingScene.activeInstanceCount = 0;
-        g_glRaytracingScene.builtInstanceCount  = 0;
-        g_glRaytracingScene.tlasBuilt           = 0;
-        g_glRaytracingScene.tlasNeedsRebuild    = 0;
-        g_glRaytracingScene.tlasNeedsUpdate     = 0;
-        return 1;
-    }
+	const size_t workerCount = std::min<size_t>(
+		validIndices.size(),
+		std::max<unsigned int>(1u, std::thread::hardware_concurrency()));
 
-    // If the number of actually emitted instances changed because some BLAS
-    // was missing, force a rebuild.
-    if (!g_glRaytracingScene.tlasBuilt || activeCount != g_glRaytracingScene.builtInstanceCount)
-        needsRebuild = 1;
+	if (workerCount <= 1 || validIndices.size() < 256)
+	{
+		for (size_t i = 0; i < validIndices.size(); ++i)
+		{
+			const glRaytracingInstanceRecord_t& inst = g_glRaytracingScene.instances[validIndices[i]];
+			const glRaytracingMeshRecord_t* mesh = glRaytracingFindMeshConst(inst.descCpu.meshHandle);
+			glRaytracingBuildInstanceDesc(&mappedInstanceDescs[i], inst, *mesh);
+		}
+	}
+	else
+	{
+		std::atomic<size_t> nextIndex(0);
+		std::vector<std::thread> workers;
+		workers.reserve(workerCount);
 
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
-    inputs.Type        = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-    inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-    inputs.NumDescs    = activeCount;
-    inputs.InstanceDescs = g_glRaytracingScene.instanceDescUpload.gpuVA;
-    inputs.Flags =
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+		for (size_t worker = 0; worker < workerCount; ++worker)
+		{
+			workers.emplace_back([&]() {
+				for (;;)
+				{
+					const size_t i = nextIndex.fetch_add(1, std::memory_order_relaxed);
+					if (i >= validIndices.size())
+						break;
 
-    if (!glRaytracingEnsureTLASBuffers(&inputs))
-        return 0;
+					const glRaytracingInstanceRecord_t& inst = g_glRaytracingScene.instances[validIndices[i]];
+					const glRaytracingMeshRecord_t* mesh = glRaytracingFindMeshConst(inst.descCpu.meshHandle);
+					glRaytracingBuildInstanceDesc(&mappedInstanceDescs[i], inst, *mesh);
+				}
+				});
+		}
 
-    if (!glRaytracingBeginCmd())
-        return 0;
+		for (size_t i = 0; i < workers.size(); ++i)
+			workers[i].join();
+	}
 
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
-    buildDesc.Inputs = inputs;
-    buildDesc.ScratchAccelerationStructureData = g_glRaytracingScene.tlasScratch.gpuVA;
-    buildDesc.DestAccelerationStructureData    = g_glRaytracingScene.tlasResult.gpuVA;
-    buildDesc.SourceAccelerationStructureData  = 0;
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+	inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+	inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+	inputs.NumDescs = activeCount;
+	inputs.InstanceDescs = upload->buffer.gpuVA;
+	inputs.Flags =
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
 
-    if (!needsRebuild && g_glRaytracingScene.tlasBuilt)
-    {
-        buildDesc.Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
-        buildDesc.SourceAccelerationStructureData = g_glRaytracingScene.tlasResult.gpuVA;
-    }
+	if (!glRaytracingEnsureTLASBuffers(&inputs))
+		return 0;
 
-    g_glRaytracingCmd.cmdList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+	glRaytracingBuffer_t* dstTLAS = glRaytracingGetBuildTLASBuffer();
+	const glRaytracingBuffer_t* srcTLAS = glRaytracingGetCurrentTLASBufferConst();
 
-    D3D12_RESOURCE_BARRIER uav = {};
-    uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    uav.UAV.pResource = g_glRaytracingScene.tlasResult.resource.Get();
-    g_glRaytracingCmd.cmdList->ResourceBarrier(1, &uav);
+	if (!glRaytracingBeginCmd())
+		return 0;
 
-    if (!glRaytracingEndCmd())
-        return 0;
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+	buildDesc.Inputs = inputs;
+	buildDesc.ScratchAccelerationStructureData = g_glRaytracingScene.tlasScratch.gpuVA;
+	buildDesc.DestAccelerationStructureData = dstTLAS->gpuVA;
+	buildDesc.SourceAccelerationStructureData = 0;
 
-    g_glRaytracingScene.activeInstanceCount = activeCount;
-    g_glRaytracingScene.builtInstanceCount  = activeCount;
-    g_glRaytracingScene.tlasBuilt           = 1;
-    g_glRaytracingScene.tlasNeedsRebuild    = 0;
-    g_glRaytracingScene.tlasNeedsUpdate     = 0;
+	if (!needsRebuild && g_glRaytracingScene.tlasBuilt)
+	{
+		buildDesc.Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+		buildDesc.SourceAccelerationStructureData = srcTLAS->gpuVA;
+	}
 
-    for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
-    {
-        if (g_glRaytracingScene.instances[i].alive)
-            g_glRaytracingScene.instances[i].dirty = 0;
-    }
+	g_glRaytracingCmd.cmdList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
 
-    return 1;
+	D3D12_RESOURCE_BARRIER uav = {};
+	uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+	uav.UAV.pResource = dstTLAS->resource.Get();
+	g_glRaytracingCmd.cmdList->ResourceBarrier(1, &uav);
+
+	if (!glRaytracingEndCmd())
+		return 0;
+
+	g_glRaytracingScene.currentTLASIndex = glRaytracingGetInactiveTLASIndex();
+	g_glRaytracingScene.activeInstanceCount = activeCount;
+	g_glRaytracingScene.builtInstanceCount = activeCount;
+	g_glRaytracingScene.tlasBuilt = 1;
+	g_glRaytracingScene.tlasNeedsRebuild = 0;
+	g_glRaytracingScene.tlasNeedsUpdate = 0;
+
+	for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
+	{
+		if (g_glRaytracingScene.instances[i].alive)
+			g_glRaytracingScene.instances[i].dirty = 0;
+	}
+
+	return 1;
 }
 
 // ============================================================
@@ -826,251 +1054,252 @@ static int glRaytracingBuildSceneInternal(void)
 
 extern "C" int glRaytracingInit(void)
 {
-    if (g_glRaytracingScene.initialized)
-        return 1;
+	if (g_glRaytracingScene.initialized)
+		return 1;
 
-    if (!glRaytracingInitCmdContext())
-        return 0;
+	if (!glRaytracingInitCmdContext())
+		return 0;
 
-    g_glRaytracingScene.initialized = 1;
-    glRaytracingLog("glRaytracingInit ok");
-    return 1;
+	g_glRaytracingScene.initialized = 1;
+	glRaytracingLog("glRaytracingInit ok");
+	return 1;
 }
 
 extern "C" void glRaytracingShutdown(void)
 {
-    if (!g_glRaytracingScene.initialized)
-        return;
+	if (!g_glRaytracingScene.initialized)
+		return;
 
-    g_glRaytracingScene = glRaytracingSceneState_t();
-    glRaytracingShutdownCmdContext();
+	glRaytracingClear();
+	g_glRaytracingScene = glRaytracingSceneState_t();
+	glRaytracingShutdownCmdContext();
 }
 
 extern "C" void glRaytracingClear(void)
 {
-    g_glRaytracingScene.meshes.clear();
-    g_glRaytracingScene.instances.clear();
+	g_glRaytracingScene.meshes.clear();
+	g_glRaytracingScene.instances.clear();
+	g_glRaytracingScene.meshHandleToIndex.clear();
+	g_glRaytracingScene.instanceHandleToIndex.clear();
 
-    g_glRaytracingScene.instanceDescUpload.resource.Reset();
-    g_glRaytracingScene.tlasScratch.resource.Reset();
-    g_glRaytracingScene.tlasResult.resource.Reset();
-    g_glRaytracingScene.tlasScratchSize = 0;
-    g_glRaytracingScene.tlasResultSize = 0;
+	for (int i = 0; i < 2; ++i)
+	{
+		if (g_glRaytracingScene.instanceDescUpload[i].buffer.resource && g_glRaytracingScene.instanceDescUpload[i].mapped)
+			g_glRaytracingScene.instanceDescUpload[i].buffer.resource->Unmap(0, nullptr);
 
-    if (g_glRaytracingScene.instanceDescUpload.resource && g_glRaytracingScene.mappedInstanceDescs)
-    {
-        g_glRaytracingScene.instanceDescUpload.resource->Unmap(0, nullptr);
-        g_glRaytracingScene.mappedInstanceDescs = nullptr;
-    }
+		g_glRaytracingScene.instanceDescUpload[i] = glRaytracingSceneUploadBuffer_t();
+		g_glRaytracingScene.tlasResult[i].resource.Reset();
+	}
 
-    g_glRaytracingScene.instanceDescCapacityBytes = 0;
-    g_glRaytracingScene.activeInstanceCount = 0;
-    g_glRaytracingScene.builtInstanceCount = 0;
-    g_glRaytracingScene.tlasBuilt = 0;
-    g_glRaytracingScene.tlasNeedsRebuild = 1;
-    g_glRaytracingScene.tlasNeedsUpdate = 1;
+	g_glRaytracingScene.tlasScratch.resource.Reset();
+	g_glRaytracingScene.tlasScratchSize = 0;
+	g_glRaytracingScene.tlasResultSize = 0;
+	g_glRaytracingScene.activeInstanceCount = 0;
+	g_glRaytracingScene.builtInstanceCount = 0;
+	g_glRaytracingScene.tlasBuilt = 0;
+	g_glRaytracingScene.tlasNeedsRebuild = 1;
+	g_glRaytracingScene.tlasNeedsUpdate = 1;
+	g_glRaytracingScene.currentTLASIndex = 0;
 }
 
 extern "C" glRaytracingMeshHandle_t glRaytracingCreateMesh(const glRaytracingMeshDesc_t* desc)
 {
-    if (!g_glRaytracingScene.initialized || !desc)
-        return 0;
+	if (!g_glRaytracingScene.initialized || !desc)
+		return 0;
 
-    if (!desc->vertices || !desc->indices || desc->vertexCount == 0 || desc->indexCount == 0)
-        return 0;
+	if (!desc->vertices || !desc->indices || desc->vertexCount == 0 || desc->indexCount == 0)
+		return 0;
 
-    glRaytracingMeshRecord_t mesh;
-    mesh.handle = g_glRaytracingScene.nextMeshHandle++;
-    mesh.alive = 1;
-    mesh.descCpu = *desc;
-    mesh.verticesCpu.assign(desc->vertices, desc->vertices + desc->vertexCount);
-    mesh.indicesCpu.assign(desc->indices, desc->indices + desc->indexCount);
-    mesh.descCpu.vertices = nullptr;
-    mesh.descCpu.indices = nullptr;
-    mesh.dirty = 1;
+	glRaytracingMeshRecord_t mesh;
+	mesh.handle = g_glRaytracingScene.nextMeshHandle++;
+	mesh.alive = 1;
+	mesh.descCpu = *desc;
+	mesh.verticesCpu.assign(desc->vertices, desc->vertices + desc->vertexCount);
+	mesh.indicesCpu.assign(desc->indices, desc->indices + desc->indexCount);
+	mesh.descCpu.vertices = nullptr;
+	mesh.descCpu.indices = nullptr;
+	mesh.dirty = 1;
 
-    g_glRaytracingScene.meshes.push_back(mesh);
-    const size_t newIndex = g_glRaytracingScene.meshes.size() - 1;
-    glRaytracingEnsureMeshHandleTable(mesh.handle);
-    g_glRaytracingScene.meshHandleToIndex[mesh.handle] = (int)newIndex;
+	g_glRaytracingScene.meshes.push_back(mesh);
+	const size_t newIndex = g_glRaytracingScene.meshes.size() - 1;
+	glRaytracingEnsureMeshHandleTable(mesh.handle);
+	g_glRaytracingScene.meshHandleToIndex[mesh.handle] = (int)newIndex;
 
-    return mesh.handle;
+	return mesh.handle;
 }
 
 extern "C" int glRaytracingUpdateMesh(glRaytracingMeshHandle_t meshHandle, const glRaytracingMeshDesc_t* desc)
 {
-    if (!g_glRaytracingScene.initialized || !desc)
-        return 0;
+	if (!g_glRaytracingScene.initialized || !desc)
+		return 0;
 
-    glRaytracingMeshRecord_t* mesh = glRaytracingFindMesh(meshHandle);
-    if (!mesh)
-        return 0;
+	glRaytracingMeshRecord_t* mesh = glRaytracingFindMesh(meshHandle);
+	if (!mesh)
+		return 0;
 
-    if (!desc->vertices || !desc->indices || desc->vertexCount == 0 || desc->indexCount == 0)
-        return 0;
+	if (!desc->vertices || !desc->indices || desc->vertexCount == 0 || desc->indexCount == 0)
+		return 0;
 
-    mesh->descCpu = *desc;
-    mesh->verticesCpu.assign(desc->vertices, desc->vertices + desc->vertexCount);
-    mesh->indicesCpu.assign(desc->indices, desc->indices + desc->indexCount);
-    mesh->descCpu.vertices = nullptr;
-    mesh->descCpu.indices = nullptr;
+	mesh->descCpu = *desc;
+	mesh->verticesCpu.assign(desc->vertices, desc->vertices + desc->vertexCount);
+	mesh->indicesCpu.assign(desc->indices, desc->indices + desc->indexCount);
+	mesh->descCpu.vertices = nullptr;
+	mesh->descCpu.indices = nullptr;
 
-    mesh->vertexBuffer.resource.Reset();
-    mesh->indexBuffer.resource.Reset();
-    mesh->blasScratch.resource.Reset();
-    mesh->blasResult.resource.Reset();
-    mesh->blasBuilt = 0;
-    mesh->dirty = 1;
-    g_glRaytracingScene.tlasNeedsRebuild = 1;
+	mesh->vertexBuffer.resource.Reset();
+	mesh->indexBuffer.resource.Reset();
+	mesh->blasScratch.resource.Reset();
+	mesh->blasResult[0].resource.Reset();
+	mesh->blasResult[1].resource.Reset();
+	mesh->blasBuilt = 0;
+	mesh->dirty = 1;
+	mesh->currentBlasIndex = 0;
+	g_glRaytracingScene.tlasNeedsRebuild = 1;
 
-    return 1;
+	return 1;
 }
 
 extern "C" void glRaytracingDeleteMesh(glRaytracingMeshHandle_t meshHandle)
 {
-    glRaytracingMeshRecord_t* mesh = glRaytracingFindMesh(meshHandle);
-    if (!mesh)
-        return;
+	glRaytracingMeshRecord_t* mesh = glRaytracingFindMesh(meshHandle);
+	if (!mesh)
+		return;
 
-    for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
-    {
-        if (g_glRaytracingScene.instances[i].alive &&
-            g_glRaytracingScene.instances[i].descCpu.meshHandle == meshHandle)
-        {
-            g_glRaytracingScene.instances[i].alive = 0;
-        }
-    }
+	for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
+	{
+		if (g_glRaytracingScene.instances[i].alive &&
+			g_glRaytracingScene.instances[i].descCpu.meshHandle == meshHandle)
+		{
+			g_glRaytracingScene.instances[i].alive = 0;
+			if (g_glRaytracingScene.instances[i].handle < g_glRaytracingScene.instanceHandleToIndex.size())
+				g_glRaytracingScene.instanceHandleToIndex[g_glRaytracingScene.instances[i].handle] = -1;
+		}
+	}
 
-    mesh->alive = 0;
+	mesh->alive = 0;
 
-    if (meshHandle < g_glRaytracingScene.meshHandleToIndex.size())
-        g_glRaytracingScene.meshHandleToIndex[meshHandle] = -1;
+	if (meshHandle < g_glRaytracingScene.meshHandleToIndex.size())
+		g_glRaytracingScene.meshHandleToIndex[meshHandle] = -1;
 
-    g_glRaytracingScene.tlasNeedsRebuild = 1;
+	g_glRaytracingScene.tlasNeedsRebuild = 1;
 }
 
 extern "C" glRaytracingInstanceHandle_t glRaytracingCreateInstance(const glRaytracingInstanceDesc_t* desc)
 {
-    if (!g_glRaytracingScene.initialized || !desc)
-        return 0;
+	if (!g_glRaytracingScene.initialized || !desc)
+		return 0;
 
-    if (!glRaytracingFindMeshConst(desc->meshHandle))
-        return 0;
+	if (!glRaytracingFindMeshConst(desc->meshHandle))
+		return 0;
 
-    glRaytracingInstanceRecord_t inst;
-    inst.handle = g_glRaytracingScene.nextInstanceHandle++;
-    inst.alive = 1;
-    inst.descCpu = *desc;
-    inst.dirty = 1;
+	glRaytracingInstanceRecord_t inst;
+	inst.handle = g_glRaytracingScene.nextInstanceHandle++;
+	inst.alive = 1;
+	inst.descCpu = *desc;
+	inst.dirty = 1;
 
-    g_glRaytracingScene.instances.push_back(inst);
-    g_glRaytracingScene.tlasNeedsRebuild = 1;
-    return inst.handle;
+	g_glRaytracingScene.instances.push_back(inst);
+	const size_t newIndex = g_glRaytracingScene.instances.size() - 1;
+	glRaytracingEnsureInstanceHandleTable(inst.handle);
+	g_glRaytracingScene.instanceHandleToIndex[inst.handle] = (int)newIndex;
+	g_glRaytracingScene.tlasNeedsRebuild = 1;
+	return inst.handle;
 }
 
 extern "C" int glRaytracingUpdateInstance(glRaytracingInstanceHandle_t instanceHandle, const glRaytracingInstanceDesc_t* desc)
 {
-    if (!g_glRaytracingScene.initialized || !desc)
-        return 0;
+	if (!g_glRaytracingScene.initialized || !desc)
+		return 0;
 
-    if (!glRaytracingFindMeshConst(desc->meshHandle))
-        return 0;
+	if (!glRaytracingFindMeshConst(desc->meshHandle))
+		return 0;
 
-    glRaytracingInstanceRecord_t* inst = glRaytracingFindInstance(instanceHandle);
-    if (!inst)
-        return 0;
+	glRaytracingInstanceRecord_t* inst = glRaytracingFindInstance(instanceHandle);
+	if (!inst)
+		return 0;
 
-    const uint32_t oldMeshHandle = inst->descCpu.meshHandle;
+	const uint32_t oldMeshHandle = inst->descCpu.meshHandle;
 
-    inst->descCpu = *desc;
-    inst->dirty = 1;
+	inst->descCpu = *desc;
+	inst->dirty = 1;
 
-    if (oldMeshHandle != desc->meshHandle)
-        g_glRaytracingScene.tlasNeedsRebuild = 1;
-    else
-        g_glRaytracingScene.tlasNeedsUpdate = 1;
+	if (oldMeshHandle != desc->meshHandle)
+		g_glRaytracingScene.tlasNeedsRebuild = 1;
+	else
+		g_glRaytracingScene.tlasNeedsUpdate = 1;
 
-    return 1;
+	return 1;
 }
 
 extern "C" void glRaytracingDeleteInstance(glRaytracingInstanceHandle_t instanceHandle)
 {
-    glRaytracingInstanceRecord_t* inst = glRaytracingFindInstance(instanceHandle);
-    if (!inst)
-        return;
+	glRaytracingInstanceRecord_t* inst = glRaytracingFindInstance(instanceHandle);
+	if (!inst)
+		return;
 
-    inst->alive = 0;
+	inst->alive = 0;
+	if (instanceHandle < g_glRaytracingScene.instanceHandleToIndex.size())
+		g_glRaytracingScene.instanceHandleToIndex[instanceHandle] = -1;
+	g_glRaytracingScene.tlasNeedsRebuild = 1;
+	g_glRaytracingScene.tlasNeedsUpdate = 0;
 }
 
 extern "C" int glRaytracingBuildMesh(glRaytracingMeshHandle_t meshHandle)
 {
-    if (!g_glRaytracingScene.initialized)
-        return 0;
+	if (!g_glRaytracingScene.initialized)
+		return 0;
 
-    glRaytracingMeshRecord_t* mesh = glRaytracingFindMesh(meshHandle);
-    if (!mesh)
-        return 0;
+	glRaytracingMeshRecord_t* mesh = glRaytracingFindMesh(meshHandle);
+	if (!mesh)
+		return 0;
 
-    return glRaytracingBuildMeshInternal(mesh);
+	return glRaytracingBuildMeshInternal(mesh);
 }
 
 extern "C" int glRaytracingBuildAllMeshes(void)
 {
-    if (!g_glRaytracingScene.initialized)
-        return 0;
+	if (!g_glRaytracingScene.initialized)
+		return 0;
 
-    for (size_t i = 0; i < g_glRaytracingScene.meshes.size(); ++i)
-    {
-        glRaytracingMeshRecord_t& mesh = g_glRaytracingScene.meshes[i];
-        if (!mesh.alive)
-            continue;
-
-        if (!mesh.blasBuilt || mesh.dirty)
-        {
-            if (!glRaytracingBuildMeshInternal(&mesh))
-                return 0;
-        }
-    }
-
-    return 1;
+	return glRaytracingBuildDirtyMeshesInternal();
 }
 
 extern "C" int glRaytracingBuildScene(void)
 {
-    if (!g_glRaytracingScene.initialized)
-        return 0;
+	if (!g_glRaytracingScene.initialized)
+		return 0;
 
-    if (!glRaytracingBuildAllMeshes())
-        return 0;
+	if (!glRaytracingBuildAllMeshes())
+		return 0;
 
-    return glRaytracingBuildSceneInternal();
+	return glRaytracingBuildSceneInternal();
 }
 
 extern "C" ID3D12Resource* glRaytracingGetTopLevelAS(void)
 {
-    return g_glRaytracingScene.tlasResult.resource.Get();
+	return glRaytracingGetCurrentTLASBuffer()->resource.Get();
 }
 
 extern "C" uint32_t glRaytracingGetMeshCount(void)
 {
-    uint32_t count = 0;
-    for (size_t i = 0; i < g_glRaytracingScene.meshes.size(); ++i)
-    {
-        if (g_glRaytracingScene.meshes[i].alive)
-            ++count;
-    }
-    return count;
+	uint32_t count = 0;
+	for (size_t i = 0; i < g_glRaytracingScene.meshes.size(); ++i)
+	{
+		if (g_glRaytracingScene.meshes[i].alive)
+			++count;
+	}
+	return count;
 }
 
 extern "C" uint32_t glRaytracingGetInstanceCount(void)
 {
-    uint32_t count = 0;
-    for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
-    {
-        if (g_glRaytracingScene.instances[i].alive)
-            ++count;
-    }
-    return count;
+	uint32_t count = 0;
+	for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
+	{
+		if (g_glRaytracingScene.instances[i].alive)
+			++count;
+	}
+	return count;
 }
 
 // ============================================================
@@ -1079,47 +1308,47 @@ extern "C" uint32_t glRaytracingGetInstanceCount(void)
 
 struct glRaytracingLightingConstants_t
 {
-    float invViewProj[16];
-    float invViewMatrix[16];
-    float cameraPos[4];
-    float ambientColor[4];
-    float screenSize[4];
-    float normalReconstructZ;
-    uint32_t lightCount;
-    uint32_t enableSpecular;
-    uint32_t enableHalfLambert;
-    float shadowBias;
+	float invViewProj[16];
+	float invViewMatrix[16];
+	float cameraPos[4];
+	float ambientColor[4];
+	float screenSize[4];
+	float normalReconstructZ;
+	uint32_t lightCount;
+	uint32_t enableSpecular;
+	uint32_t enableHalfLambert;
+	float shadowBias;
 };
 
 struct glRaytracingLightingState_t
 {
-    std::vector<glRaytracingLight_t> cpuLights;
-    glRaytracingLightingConstants_t constants;
+	std::vector<glRaytracingLight_t> cpuLights;
+	glRaytracingLightingConstants_t constants;
 
-    ComPtr<ID3D12DescriptorHeap> descriptorHeap;
-    UINT descriptorStride;
+	ComPtr<ID3D12DescriptorHeap> descriptorHeap;
+	UINT descriptorStride;
 
-    glRaytracingBuffer_t constantBuffer;
-    glRaytracingBuffer_t lightBuffer;
+	glRaytracingBuffer_t constantBuffer;
+	glRaytracingBuffer_t lightBuffer;
 
-    ComPtr<ID3D12RootSignature> globalRootSig;
-    ComPtr<ID3D12RootSignature> localRootSig;
+	ComPtr<ID3D12RootSignature> globalRootSig;
+	ComPtr<ID3D12RootSignature> localRootSig;
 
-    ComPtr<ID3D12StateObject> rtStateObject;
-    ComPtr<ID3D12StateObjectProperties> rtStateProps;
+	ComPtr<ID3D12StateObject> rtStateObject;
+	ComPtr<ID3D12StateObjectProperties> rtStateProps;
 
-    glRaytracingBuffer_t raygenTable;
-    glRaytracingBuffer_t missTable;
-    glRaytracingBuffer_t hitTable;
+	glRaytracingBuffer_t raygenTable;
+	glRaytracingBuffer_t missTable;
+	glRaytracingBuffer_t hitTable;
 
-    bool initialized;
+	bool initialized;
 
-    glRaytracingLightingState_t()
-    {
-        memset(&constants, 0, sizeof(constants));
-        descriptorStride = 0;
-        initialized = false;
-    }
+	glRaytracingLightingState_t()
+	{
+		memset(&constants, 0, sizeof(constants));
+		descriptorStride = 0;
+		initialized = false;
+	}
 };
 
 static glRaytracingLightingState_t g_glRaytracingLighting;
@@ -1663,411 +1892,411 @@ void RayGen()
 
 static ComPtr<IDxcBlob> glRaytracingLightingCompileLibrary(const char* src)
 {
-    ComPtr<IDxcUtils> utils;
-    ComPtr<IDxcCompiler3> compiler;
-    ComPtr<IDxcIncludeHandler> includeHandler;
+	ComPtr<IDxcUtils> utils;
+	ComPtr<IDxcCompiler3> compiler;
+	ComPtr<IDxcIncludeHandler> includeHandler;
 
-    HRESULT hr = DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils));
-    if (FAILED(hr))
-    {
-        glRaytracingFatal("DxcCreateInstance utils failed 0x%08X", (unsigned)hr);
-        return nullptr;
-    }
+	HRESULT hr = DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils));
+	if (FAILED(hr))
+	{
+		glRaytracingFatal("DxcCreateInstance utils failed 0x%08X", (unsigned)hr);
+		return nullptr;
+	}
 
-    hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler));
-    if (FAILED(hr))
-    {
-        glRaytracingFatal("DxcCreateInstance compiler failed 0x%08X", (unsigned)hr);
-        return nullptr;
-    }
+	hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler));
+	if (FAILED(hr))
+	{
+		glRaytracingFatal("DxcCreateInstance compiler failed 0x%08X", (unsigned)hr);
+		return nullptr;
+	}
 
-    hr = utils->CreateDefaultIncludeHandler(&includeHandler);
-    if (FAILED(hr))
-    {
-        glRaytracingFatal("CreateDefaultIncludeHandler failed 0x%08X", (unsigned)hr);
-        return nullptr;
-    }
+	hr = utils->CreateDefaultIncludeHandler(&includeHandler);
+	if (FAILED(hr))
+	{
+		glRaytracingFatal("CreateDefaultIncludeHandler failed 0x%08X", (unsigned)hr);
+		return nullptr;
+	}
 
-    DxcBuffer source = {};
-    source.Ptr = src;
-    source.Size = strlen(src);
-    source.Encoding = DXC_CP_UTF8;
+	DxcBuffer source = {};
+	source.Ptr = src;
+	source.Size = strlen(src);
+	source.Encoding = DXC_CP_UTF8;
 
-    const wchar_t* args[] =
-    {
-        L"-T", L"lib_6_3",
-        L"-Zi",
-        L"-Qembed_debug",
-        L"-O3",
-        L"-all_resources_bound"
-    };
+	const wchar_t* args[] =
+	{
+		L"-T", L"lib_6_3",
+		L"-Zi",
+		L"-Qembed_debug",
+		L"-O3",
+		L"-all_resources_bound"
+	};
 
-    ComPtr<IDxcResult> result;
-    hr = compiler->Compile(&source, args, _countof(args), includeHandler.Get(), IID_PPV_ARGS(&result));
-    if (FAILED(hr))
-    {
-        glRaytracingFatal("DXC compile failed 0x%08X", (unsigned)hr);
-        return nullptr;
-    }
+	ComPtr<IDxcResult> result;
+	hr = compiler->Compile(&source, args, _countof(args), includeHandler.Get(), IID_PPV_ARGS(&result));
+	if (FAILED(hr))
+	{
+		glRaytracingFatal("DXC compile failed 0x%08X", (unsigned)hr);
+		return nullptr;
+	}
 
-    ComPtr<IDxcBlobUtf8> errors;
-    result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr);
-    if (errors && errors->GetStringLength() > 0)
-    {
-        OutputDebugStringA(errors->GetStringPointer());
-        OutputDebugStringA("\n");
-    }
+	ComPtr<IDxcBlobUtf8> errors;
+	result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr);
+	if (errors && errors->GetStringLength() > 0)
+	{
+		OutputDebugStringA(errors->GetStringPointer());
+		OutputDebugStringA("\n");
+	}
 
-    HRESULT status = S_OK;
-    result->GetStatus(&status);
-    if (FAILED(status))
-    {
-        glRaytracingFatal("DXIL compile status failed 0x%08X", (unsigned)status);
-        return nullptr;
-    }
+	HRESULT status = S_OK;
+	result->GetStatus(&status);
+	if (FAILED(status))
+	{
+		glRaytracingFatal("DXIL compile status failed 0x%08X", (unsigned)status);
+		return nullptr;
+	}
 
-    ComPtr<IDxcBlob> dxil;
-    result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&dxil), nullptr);
-    return dxil;
+	ComPtr<IDxcBlob> dxil;
+	result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&dxil), nullptr);
+	return dxil;
 }
 
 static int glRaytracingLightingCreateDescriptorHeap(void)
 {
-    D3D12_DESCRIPTOR_HEAP_DESC hd = {};
-    hd.NumDescriptors = 7;
-    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+	hd.NumDescriptors = 7;
+	hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
-    GLR_CHECK(g_glRaytracingCmd.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_glRaytracingLighting.descriptorHeap)));
-    g_glRaytracingLighting.descriptorStride =
-        g_glRaytracingCmd.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	GLR_CHECK(g_glRaytracingCmd.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_glRaytracingLighting.descriptorHeap)));
+	g_glRaytracingLighting.descriptorStride =
+		g_glRaytracingCmd.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    return 1;
+	return 1;
 }
 
 static int glRaytracingLightingCreateRootSignatures(void)
 {
-    {
-        D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+	{
+		D3D12_DESCRIPTOR_RANGE ranges[2] = {};
 
-        ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        ranges[0].NumDescriptors = 6;
-        ranges[0].BaseShaderRegister = 0;
-        ranges[0].RegisterSpace = 0;
-        ranges[0].OffsetInDescriptorsFromTableStart = 0;
+		ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		ranges[0].NumDescriptors = 6;
+		ranges[0].BaseShaderRegister = 0;
+		ranges[0].RegisterSpace = 0;
+		ranges[0].OffsetInDescriptorsFromTableStart = 0;
 
-        ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        ranges[1].NumDescriptors = 1;
-        ranges[1].BaseShaderRegister = 0;
-        ranges[1].RegisterSpace = 0;
-        ranges[1].OffsetInDescriptorsFromTableStart = 0;
+		ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+		ranges[1].NumDescriptors = 1;
+		ranges[1].BaseShaderRegister = 0;
+		ranges[1].RegisterSpace = 0;
+		ranges[1].OffsetInDescriptorsFromTableStart = 0;
 
-        D3D12_ROOT_PARAMETER params[3] = {};
+		D3D12_ROOT_PARAMETER params[3] = {};
 
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[0].DescriptorTable.NumDescriptorRanges = 1;
-        params[0].DescriptorTable.pDescriptorRanges = &ranges[0];
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+		params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		params[0].DescriptorTable.NumDescriptorRanges = 1;
+		params[0].DescriptorTable.pDescriptorRanges = &ranges[0];
+		params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &ranges[1];
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+		params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		params[1].DescriptorTable.NumDescriptorRanges = 1;
+		params[1].DescriptorTable.pDescriptorRanges = &ranges[1];
+		params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        params[2].Descriptor.ShaderRegister = 0;
-        params[2].Descriptor.RegisterSpace = 0;
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+		params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		params[2].Descriptor.ShaderRegister = 0;
+		params[2].Descriptor.RegisterSpace = 0;
+		params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        D3D12_ROOT_SIGNATURE_DESC rsd = {};
-        rsd.NumParameters = _countof(params);
-        rsd.pParameters = params;
-        rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+		D3D12_ROOT_SIGNATURE_DESC rsd = {};
+		rsd.NumParameters = _countof(params);
+		rsd.pParameters = params;
+		rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
-        ComPtr<ID3DBlob> sig;
-        ComPtr<ID3DBlob> err;
-        GLR_CHECK(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err));
-        GLR_CHECK(g_glRaytracingCmd.device->CreateRootSignature(
-            0, sig->GetBufferPointer(), sig->GetBufferSize(),
-            IID_PPV_ARGS(&g_glRaytracingLighting.globalRootSig)));
-    }
+		ComPtr<ID3DBlob> sig;
+		ComPtr<ID3DBlob> err;
+		GLR_CHECK(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err));
+		GLR_CHECK(g_glRaytracingCmd.device->CreateRootSignature(
+			0, sig->GetBufferPointer(), sig->GetBufferSize(),
+			IID_PPV_ARGS(&g_glRaytracingLighting.globalRootSig)));
+	}
 
-    {
-        D3D12_ROOT_SIGNATURE_DESC rsd = {};
-        rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+	{
+		D3D12_ROOT_SIGNATURE_DESC rsd = {};
+		rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
 
-        ComPtr<ID3DBlob> sig;
-        ComPtr<ID3DBlob> err;
-        GLR_CHECK(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err));
-        GLR_CHECK(g_glRaytracingCmd.device->CreateRootSignature(
-            0, sig->GetBufferPointer(), sig->GetBufferSize(),
-            IID_PPV_ARGS(&g_glRaytracingLighting.localRootSig)));
-    }
+		ComPtr<ID3DBlob> sig;
+		ComPtr<ID3DBlob> err;
+		GLR_CHECK(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err));
+		GLR_CHECK(g_glRaytracingCmd.device->CreateRootSignature(
+			0, sig->GetBufferPointer(), sig->GetBufferSize(),
+			IID_PPV_ARGS(&g_glRaytracingLighting.localRootSig)));
+	}
 
-    return 1;
+	return 1;
 }
 
 static int glRaytracingLightingCreateBuffers(void)
 {
-    g_glRaytracingLighting.constantBuffer = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        glRaytracingAlignUp(sizeof(glRaytracingLightingConstants_t), 256),
-        D3D12_HEAP_TYPE_UPLOAD,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_FLAG_NONE);
+	g_glRaytracingLighting.constantBuffer = glRaytracingCreateBuffer(
+		g_glRaytracingCmd.device.Get(),
+		glRaytracingAlignUp(sizeof(glRaytracingLightingConstants_t), 256),
+		D3D12_HEAP_TYPE_UPLOAD,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_FLAG_NONE);
 
-    g_glRaytracingLighting.lightBuffer = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        sizeof(glRaytracingLight_t) * GL_RAYTRACING_MAX_LIGHTS,
-        D3D12_HEAP_TYPE_UPLOAD,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_FLAG_NONE);
+	g_glRaytracingLighting.lightBuffer = glRaytracingCreateBuffer(
+		g_glRaytracingCmd.device.Get(),
+		sizeof(glRaytracingLight_t) * GL_RAYTRACING_MAX_LIGHTS,
+		D3D12_HEAP_TYPE_UPLOAD,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_FLAG_NONE);
 
-    return g_glRaytracingLighting.constantBuffer.resource && g_glRaytracingLighting.lightBuffer.resource;
+	return g_glRaytracingLighting.constantBuffer.resource && g_glRaytracingLighting.lightBuffer.resource;
 }
 
 static void glRaytracingLightingUpdateConstants(void)
 {
-    glRaytracingMapCopy(
-        g_glRaytracingLighting.constantBuffer.resource.Get(),
-        &g_glRaytracingLighting.constants,
-        sizeof(g_glRaytracingLighting.constants));
+	glRaytracingMapCopy(
+		g_glRaytracingLighting.constantBuffer.resource.Get(),
+		&g_glRaytracingLighting.constants,
+		sizeof(g_glRaytracingLighting.constants));
 }
 
 static void glRaytracingLightingUpdateLights(void)
 {
-    if (g_glRaytracingLighting.cpuLights.empty())
-        return;
+	if (g_glRaytracingLighting.cpuLights.empty())
+		return;
 
-    glRaytracingMapCopy(
-        g_glRaytracingLighting.lightBuffer.resource.Get(),
-        g_glRaytracingLighting.cpuLights.data(),
-        g_glRaytracingLighting.cpuLights.size() * sizeof(glRaytracingLight_t));
+	glRaytracingMapCopy(
+		g_glRaytracingLighting.lightBuffer.resource.Get(),
+		g_glRaytracingLighting.cpuLights.data(),
+		g_glRaytracingLighting.cpuLights.size() * sizeof(glRaytracingLight_t));
 }
 
 static void glRaytracingLightingCreatePersistentLightSRV(void)
 {
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-    srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Format = DXGI_FORMAT_UNKNOWN;
-    srv.Buffer.FirstElement = 0;
-    srv.Buffer.NumElements = GL_RAYTRACING_MAX_LIGHTS;
-    srv.Buffer.StructureByteStride = sizeof(glRaytracingLight_t);
-    srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Format = DXGI_FORMAT_UNKNOWN;
+	srv.Buffer.FirstElement = 0;
+	srv.Buffer.NumElements = GL_RAYTRACING_MAX_LIGHTS;
+	srv.Buffer.StructureByteStride = sizeof(glRaytracingLight_t);
+	srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE base = g_glRaytracingLighting.descriptorHeap->GetCPUDescriptorHandleForHeapStart();
-    g_glRaytracingCmd.device->CreateShaderResourceView(
-        g_glRaytracingLighting.lightBuffer.resource.Get(),
-        &srv,
-        glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 0));
+	D3D12_CPU_DESCRIPTOR_HANDLE base = g_glRaytracingLighting.descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+	g_glRaytracingCmd.device->CreateShaderResourceView(
+		g_glRaytracingLighting.lightBuffer.resource.Get(),
+		&srv,
+		glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 0));
 }
 
 static int glRaytracingLightingCreateStateObject(void)
 {
-    ComPtr<IDxcBlob> dxil = glRaytracingLightingCompileLibrary(g_glRaytracingLightingHlsl);
-    if (!dxil)
-        return 0;
+	ComPtr<IDxcBlob> dxil = glRaytracingLightingCompileLibrary(g_glRaytracingLightingHlsl);
+	if (!dxil)
+		return 0;
 
-    D3D12_EXPORT_DESC exports[3] = {};
-    exports[0].Name = L"RayGen";
-    exports[1].Name = L"ShadowMiss";
-    exports[2].Name = L"ShadowClosestHit";
+	D3D12_EXPORT_DESC exports[3] = {};
+	exports[0].Name = L"RayGen";
+	exports[1].Name = L"ShadowMiss";
+	exports[2].Name = L"ShadowClosestHit";
 
-    D3D12_DXIL_LIBRARY_DESC libDesc = {};
-    D3D12_SHADER_BYTECODE libBytecode = {};
-    libBytecode.pShaderBytecode = dxil->GetBufferPointer();
-    libBytecode.BytecodeLength = dxil->GetBufferSize();
-    libDesc.DXILLibrary = libBytecode;
-    libDesc.NumExports = _countof(exports);
-    libDesc.pExports = exports;
+	D3D12_DXIL_LIBRARY_DESC libDesc = {};
+	D3D12_SHADER_BYTECODE libBytecode = {};
+	libBytecode.pShaderBytecode = dxil->GetBufferPointer();
+	libBytecode.BytecodeLength = dxil->GetBufferSize();
+	libDesc.DXILLibrary = libBytecode;
+	libDesc.NumExports = _countof(exports);
+	libDesc.pExports = exports;
 
-    D3D12_HIT_GROUP_DESC hitGroup = {};
-    hitGroup.HitGroupExport = L"ShadowHitGroup";
-    hitGroup.ClosestHitShaderImport = L"ShadowClosestHit";
-    hitGroup.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+	D3D12_HIT_GROUP_DESC hitGroup = {};
+	hitGroup.HitGroupExport = L"ShadowHitGroup";
+	hitGroup.ClosestHitShaderImport = L"ShadowClosestHit";
+	hitGroup.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
 
-    D3D12_RAYTRACING_SHADER_CONFIG shaderConfig = {};
-    shaderConfig.MaxPayloadSizeInBytes = sizeof(uint32_t);
-    shaderConfig.MaxAttributeSizeInBytes = 8;
+	D3D12_RAYTRACING_SHADER_CONFIG shaderConfig = {};
+	shaderConfig.MaxPayloadSizeInBytes = sizeof(uint32_t);
+	shaderConfig.MaxAttributeSizeInBytes = 8;
 
-    D3D12_GLOBAL_ROOT_SIGNATURE globalRS = {};
-    globalRS.pGlobalRootSignature = g_glRaytracingLighting.globalRootSig.Get();
+	D3D12_GLOBAL_ROOT_SIGNATURE globalRS = {};
+	globalRS.pGlobalRootSignature = g_glRaytracingLighting.globalRootSig.Get();
 
-    D3D12_LOCAL_ROOT_SIGNATURE localRS = {};
-    localRS.pLocalRootSignature = g_glRaytracingLighting.localRootSig.Get();
+	D3D12_LOCAL_ROOT_SIGNATURE localRS = {};
+	localRS.pLocalRootSignature = g_glRaytracingLighting.localRootSig.Get();
 
-    D3D12_STATE_SUBOBJECT subobjects[8] = {};
-    UINT sub = 0;
+	D3D12_STATE_SUBOBJECT subobjects[8] = {};
+	UINT sub = 0;
 
-    subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
-    subobjects[sub].pDesc = &libDesc;
-    ++sub;
+	subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
+	subobjects[sub].pDesc = &libDesc;
+	++sub;
 
-    subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
-    subobjects[sub].pDesc = &hitGroup;
-    ++sub;
+	subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
+	subobjects[sub].pDesc = &hitGroup;
+	++sub;
 
-    subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
-    subobjects[sub].pDesc = &shaderConfig;
-    ++sub;
+	subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
+	subobjects[sub].pDesc = &shaderConfig;
+	++sub;
 
-    subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
-    subobjects[sub].pDesc = &globalRS;
-    ++sub;
+	subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
+	subobjects[sub].pDesc = &globalRS;
+	++sub;
 
-    subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
-    subobjects[sub].pDesc = &localRS;
-    ++sub;
+	subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
+	subobjects[sub].pDesc = &localRS;
+	++sub;
 
-    LPCWSTR localExports[] = { L"RayGen", L"ShadowMiss", L"ShadowHitGroup" };
-    D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION assoc = {};
-    assoc.pSubobjectToAssociate = &subobjects[4];
-    assoc.NumExports = _countof(localExports);
-    assoc.pExports = localExports;
+	LPCWSTR localExports[] = { L"RayGen", L"ShadowMiss", L"ShadowHitGroup" };
+	D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION assoc = {};
+	assoc.pSubobjectToAssociate = &subobjects[4];
+	assoc.NumExports = _countof(localExports);
+	assoc.pExports = localExports;
 
-    subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
-    subobjects[sub].pDesc = &assoc;
-    ++sub;
+	subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
+	subobjects[sub].pDesc = &assoc;
+	++sub;
 
-    D3D12_RAYTRACING_PIPELINE_CONFIG pipeConfig = {};
-    pipeConfig.MaxTraceRecursionDepth = 1;
+	D3D12_RAYTRACING_PIPELINE_CONFIG pipeConfig = {};
+	pipeConfig.MaxTraceRecursionDepth = 1;
 
-    subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
-    subobjects[sub].pDesc = &pipeConfig;
-    ++sub;
+	subobjects[sub].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
+	subobjects[sub].pDesc = &pipeConfig;
+	++sub;
 
-    D3D12_STATE_OBJECT_DESC soDesc = {};
-    soDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
-    soDesc.NumSubobjects = sub;
-    soDesc.pSubobjects = subobjects;
+	D3D12_STATE_OBJECT_DESC soDesc = {};
+	soDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+	soDesc.NumSubobjects = sub;
+	soDesc.pSubobjects = subobjects;
 
-    GLR_CHECK(g_glRaytracingCmd.device->CreateStateObject(&soDesc, IID_PPV_ARGS(&g_glRaytracingLighting.rtStateObject)));
-    GLR_CHECK(g_glRaytracingLighting.rtStateObject.As(&g_glRaytracingLighting.rtStateProps));
-    return 1;
+	GLR_CHECK(g_glRaytracingCmd.device->CreateStateObject(&soDesc, IID_PPV_ARGS(&g_glRaytracingLighting.rtStateObject)));
+	GLR_CHECK(g_glRaytracingLighting.rtStateObject.As(&g_glRaytracingLighting.rtStateProps));
+	return 1;
 }
 
 static int glRaytracingLightingCreateShaderTables(void)
 {
-    void* raygenId = g_glRaytracingLighting.rtStateProps->GetShaderIdentifier(L"RayGen");
-    void* missId = g_glRaytracingLighting.rtStateProps->GetShaderIdentifier(L"ShadowMiss");
-    void* hitId = g_glRaytracingLighting.rtStateProps->GetShaderIdentifier(L"ShadowHitGroup");
+	void* raygenId = g_glRaytracingLighting.rtStateProps->GetShaderIdentifier(L"RayGen");
+	void* missId = g_glRaytracingLighting.rtStateProps->GetShaderIdentifier(L"ShadowMiss");
+	void* hitId = g_glRaytracingLighting.rtStateProps->GetShaderIdentifier(L"ShadowHitGroup");
 
-    if (!raygenId || !missId || !hitId)
-    {
-        glRaytracingFatal("Failed to fetch shader identifiers");
-        return 0;
-    }
+	if (!raygenId || !missId || !hitId)
+	{
+		glRaytracingFatal("Failed to fetch shader identifiers");
+		return 0;
+	}
 
-    const UINT shaderIdSize = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-    const UINT recordSize = (UINT)glRaytracingAlignUp(shaderIdSize, D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT);
+	const UINT shaderIdSize = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+	const UINT recordSize = (UINT)glRaytracingAlignUp(shaderIdSize, D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT);
 
-    g_glRaytracingLighting.raygenTable = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        recordSize,
-        D3D12_HEAP_TYPE_UPLOAD,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_FLAG_NONE);
+	g_glRaytracingLighting.raygenTable = glRaytracingCreateBuffer(
+		g_glRaytracingCmd.device.Get(),
+		recordSize,
+		D3D12_HEAP_TYPE_UPLOAD,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_FLAG_NONE);
 
-    g_glRaytracingLighting.missTable = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        recordSize,
-        D3D12_HEAP_TYPE_UPLOAD,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_FLAG_NONE);
+	g_glRaytracingLighting.missTable = glRaytracingCreateBuffer(
+		g_glRaytracingCmd.device.Get(),
+		recordSize,
+		D3D12_HEAP_TYPE_UPLOAD,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_FLAG_NONE);
 
-    g_glRaytracingLighting.hitTable = glRaytracingCreateBuffer(
-        g_glRaytracingCmd.device.Get(),
-        recordSize,
-        D3D12_HEAP_TYPE_UPLOAD,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_FLAG_NONE);
+	g_glRaytracingLighting.hitTable = glRaytracingCreateBuffer(
+		g_glRaytracingCmd.device.Get(),
+		recordSize,
+		D3D12_HEAP_TYPE_UPLOAD,
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_FLAG_NONE);
 
-    if (!g_glRaytracingLighting.raygenTable.resource ||
-        !g_glRaytracingLighting.missTable.resource ||
-        !g_glRaytracingLighting.hitTable.resource)
-    {
-        return 0;
-    }
+	if (!g_glRaytracingLighting.raygenTable.resource ||
+		!g_glRaytracingLighting.missTable.resource ||
+		!g_glRaytracingLighting.hitTable.resource)
+	{
+		return 0;
+	}
 
-    uint8_t temp[256] = {};
+	uint8_t temp[256] = {};
 
-    memset(temp, 0, sizeof(temp));
-    memcpy(temp, raygenId, shaderIdSize);
-    glRaytracingMapCopy(g_glRaytracingLighting.raygenTable.resource.Get(), temp, recordSize);
+	memset(temp, 0, sizeof(temp));
+	memcpy(temp, raygenId, shaderIdSize);
+	glRaytracingMapCopy(g_glRaytracingLighting.raygenTable.resource.Get(), temp, recordSize);
 
-    memset(temp, 0, sizeof(temp));
-    memcpy(temp, missId, shaderIdSize);
-    glRaytracingMapCopy(g_glRaytracingLighting.missTable.resource.Get(), temp, recordSize);
+	memset(temp, 0, sizeof(temp));
+	memcpy(temp, missId, shaderIdSize);
+	glRaytracingMapCopy(g_glRaytracingLighting.missTable.resource.Get(), temp, recordSize);
 
-    memset(temp, 0, sizeof(temp));
-    memcpy(temp, hitId, shaderIdSize);
-    glRaytracingMapCopy(g_glRaytracingLighting.hitTable.resource.Get(), temp, recordSize);
+	memset(temp, 0, sizeof(temp));
+	memcpy(temp, hitId, shaderIdSize);
+	glRaytracingMapCopy(g_glRaytracingLighting.hitTable.resource.Get(), temp, recordSize);
 
-    return 1;
+	return 1;
 }
 
 static void glRaytracingLightingCreatePerPassDescriptors(const glRaytracingLightingPassDesc_t* pass)
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE base = g_glRaytracingLighting.descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_CPU_DESCRIPTOR_HANDLE base = g_glRaytracingLighting.descriptorHeap->GetCPUDescriptorHandleForHeapStart();
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC albedoSrv = {};
-    albedoSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    albedoSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    albedoSrv.Format = pass->albedoFormat;
-    albedoSrv.Texture2D.MipLevels = 1;
-    g_glRaytracingCmd.device->CreateShaderResourceView(
-        pass->albedoTexture,
-        &albedoSrv,
-        glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 1));
+	D3D12_SHADER_RESOURCE_VIEW_DESC albedoSrv = {};
+	albedoSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	albedoSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	albedoSrv.Format = pass->albedoFormat;
+	albedoSrv.Texture2D.MipLevels = 1;
+	g_glRaytracingCmd.device->CreateShaderResourceView(
+		pass->albedoTexture,
+		&albedoSrv,
+		glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 1));
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC depthSrv = {};
-    depthSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    depthSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    depthSrv.Format = glRaytracingGetSrvFormatForDepth(pass->depthFormat);
-    depthSrv.Texture2D.MipLevels = 1;
-    g_glRaytracingCmd.device->CreateShaderResourceView(
-        pass->depthTexture,
-        &depthSrv,
-        glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 2));
+	D3D12_SHADER_RESOURCE_VIEW_DESC depthSrv = {};
+	depthSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	depthSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	depthSrv.Format = glRaytracingGetSrvFormatForDepth(pass->depthFormat);
+	depthSrv.Texture2D.MipLevels = 1;
+	g_glRaytracingCmd.device->CreateShaderResourceView(
+		pass->depthTexture,
+		&depthSrv,
+		glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 2));
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC normalSrv = {};
-    normalSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    normalSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    normalSrv.Format = pass->normalFormat;
-    normalSrv.Texture2D.MipLevels = 1;
-    g_glRaytracingCmd.device->CreateShaderResourceView(
-        pass->normalTexture,
-        &normalSrv,
-        glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 3));
+	D3D12_SHADER_RESOURCE_VIEW_DESC normalSrv = {};
+	normalSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	normalSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	normalSrv.Format = pass->normalFormat;
+	normalSrv.Texture2D.MipLevels = 1;
+	g_glRaytracingCmd.device->CreateShaderResourceView(
+		pass->normalTexture,
+		&normalSrv,
+		glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 3));
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC positionSrv = {};
-    positionSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    positionSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    positionSrv.Format = pass->positionFormat;
-    positionSrv.Texture2D.MipLevels = 1;
-    g_glRaytracingCmd.device->CreateShaderResourceView(
-        pass->positionTexture,
-        &positionSrv,
-        glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 4));
+	D3D12_SHADER_RESOURCE_VIEW_DESC positionSrv = {};
+	positionSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	positionSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	positionSrv.Format = pass->positionFormat;
+	positionSrv.Texture2D.MipLevels = 1;
+	g_glRaytracingCmd.device->CreateShaderResourceView(
+		pass->positionTexture,
+		&positionSrv,
+		glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 4));
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC tlasSrv = {};
-    tlasSrv.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
-    tlasSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    tlasSrv.RaytracingAccelerationStructure.Location = pass->topLevelAS->GetGPUVirtualAddress();
-    g_glRaytracingCmd.device->CreateShaderResourceView(
-        nullptr,
-        &tlasSrv,
-        glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 5));
+	D3D12_SHADER_RESOURCE_VIEW_DESC tlasSrv = {};
+	tlasSrv.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+	tlasSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	tlasSrv.RaytracingAccelerationStructure.Location = pass->topLevelAS->GetGPUVirtualAddress();
+	g_glRaytracingCmd.device->CreateShaderResourceView(
+		nullptr,
+		&tlasSrv,
+		glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 5));
 
-    D3D12_UNORDERED_ACCESS_VIEW_DESC outputUav = {};
-    outputUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    outputUav.Format = pass->outputFormat;
-    g_glRaytracingCmd.device->CreateUnorderedAccessView(
-        pass->outputTexture,
-        nullptr,
-        &outputUav,
-        glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 6));
+	D3D12_UNORDERED_ACCESS_VIEW_DESC outputUav = {};
+	outputUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+	outputUav.Format = pass->outputFormat;
+	g_glRaytracingCmd.device->CreateUnorderedAccessView(
+		pass->outputTexture,
+		nullptr,
+		&outputUav,
+		glRaytracingOffsetCpu(base, g_glRaytracingLighting.descriptorStride, 6));
 }
 
 // ============================================================
@@ -2076,395 +2305,395 @@ static void glRaytracingLightingCreatePerPassDescriptors(const glRaytracingLight
 
 extern "C" bool glRaytracingLightingInit(void)
 {
-    if (g_glRaytracingLighting.initialized)
-        return true;
+	if (g_glRaytracingLighting.initialized)
+		return true;
 
-    if (!glRaytracingInitCmdContext())
-        return false;
+	if (!glRaytracingInitCmdContext())
+		return false;
 
-    if (!glRaytracingLightingCreateDescriptorHeap())
-        return false;
+	if (!glRaytracingLightingCreateDescriptorHeap())
+		return false;
 
-    if (!glRaytracingLightingCreateRootSignatures())
-        return false;
+	if (!glRaytracingLightingCreateRootSignatures())
+		return false;
 
-    if (!glRaytracingLightingCreateBuffers())
-        return false;
+	if (!glRaytracingLightingCreateBuffers())
+		return false;
 
-    glRaytracingLightingCreatePersistentLightSRV();
+	glRaytracingLightingCreatePersistentLightSRV();
 
-    if (!glRaytracingLightingCreateStateObject())
-        return false;
+	if (!glRaytracingLightingCreateStateObject())
+		return false;
 
-    if (!glRaytracingLightingCreateShaderTables())
-        return false;
+	if (!glRaytracingLightingCreateShaderTables())
+		return false;
 
-    memset(&g_glRaytracingLighting.constants, 0, sizeof(g_glRaytracingLighting.constants));
-    g_glRaytracingLighting.constants.ambientColor[0] = 0.08f;
-    g_glRaytracingLighting.constants.ambientColor[1] = 0.08f;
-    g_glRaytracingLighting.constants.ambientColor[2] = 0.09f;
-    g_glRaytracingLighting.constants.ambientColor[3] = 1.0f;
-    g_glRaytracingLighting.constants.enableSpecular = 1;
-    g_glRaytracingLighting.constants.enableHalfLambert = 1;
-    g_glRaytracingLighting.constants.normalReconstructZ = 1.0f;
-    g_glRaytracingLighting.constants.shadowBias = 1.5f;
+	memset(&g_glRaytracingLighting.constants, 0, sizeof(g_glRaytracingLighting.constants));
+	g_glRaytracingLighting.constants.ambientColor[0] = 0.08f;
+	g_glRaytracingLighting.constants.ambientColor[1] = 0.08f;
+	g_glRaytracingLighting.constants.ambientColor[2] = 0.09f;
+	g_glRaytracingLighting.constants.ambientColor[3] = 1.0f;
+	g_glRaytracingLighting.constants.enableSpecular = 1;
+	g_glRaytracingLighting.constants.enableHalfLambert = 1;
+	g_glRaytracingLighting.constants.normalReconstructZ = 1.0f;
+	g_glRaytracingLighting.constants.shadowBias = 1.5f;
 
-    glRaytracingLightingUpdateConstants();
+	glRaytracingLightingUpdateConstants();
 
-    g_glRaytracingLighting.initialized = true;
-    glRaytracingLog("glRaytracingLightingInit ok");
-    return true;
+	g_glRaytracingLighting.initialized = true;
+	glRaytracingLog("glRaytracingLightingInit ok");
+	return true;
 }
 
 extern "C" void glRaytracingLightingShutdown(void)
 {
-    if (!g_glRaytracingLighting.initialized)
-        return;
+	if (!g_glRaytracingLighting.initialized)
+		return;
 
-    g_glRaytracingLighting = glRaytracingLightingState_t();
+	g_glRaytracingLighting = glRaytracingLightingState_t();
 }
 
 extern "C" bool glRaytracingLightingIsInitialized(void)
 {
-    return g_glRaytracingLighting.initialized;
+	return g_glRaytracingLighting.initialized;
 }
 
 extern "C" void glRaytracingLightingClearLights(bool clearPersistant)
 {
-    if (clearPersistant)
-    {
-        g_glRaytracingLighting.cpuLights.clear();
-    }
-    else
-    {
-        size_t writeIndex = 0;
+	if (clearPersistant)
+	{
+		g_glRaytracingLighting.cpuLights.clear();
+	}
+	else
+	{
+		size_t writeIndex = 0;
 
-        for (size_t i = 0; i < g_glRaytracingLighting.cpuLights.size(); ++i)
-        {
-            if (g_glRaytracingLighting.cpuLights[i].persistant)
-            {
-                if (writeIndex != i)
-                {
-                    g_glRaytracingLighting.cpuLights[writeIndex] = g_glRaytracingLighting.cpuLights[i];
-                }
-                ++writeIndex;
-            }
-        }
+		for (size_t i = 0; i < g_glRaytracingLighting.cpuLights.size(); ++i)
+		{
+			if (g_glRaytracingLighting.cpuLights[i].persistant)
+			{
+				if (writeIndex != i)
+				{
+					g_glRaytracingLighting.cpuLights[writeIndex] = g_glRaytracingLighting.cpuLights[i];
+				}
+				++writeIndex;
+			}
+		}
 
-        g_glRaytracingLighting.cpuLights.resize(writeIndex);
-    }
+		g_glRaytracingLighting.cpuLights.resize(writeIndex);
+	}
 
-    g_glRaytracingLighting.constants.lightCount =
-        (uint32_t)g_glRaytracingLighting.cpuLights.size();
+	g_glRaytracingLighting.constants.lightCount =
+		(uint32_t)g_glRaytracingLighting.cpuLights.size();
 
-    glRaytracingLightingUpdateConstants();
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" bool glRaytracingLightingAddLight(const glRaytracingLight_t* light)
 {
-    if (!g_glRaytracingLighting.initialized || !light)
-        return false;
+	if (!g_glRaytracingLighting.initialized || !light)
+		return false;
 
-    if (g_glRaytracingLighting.cpuLights.size() >= GL_RAYTRACING_MAX_LIGHTS)
-        return false;
+	if (g_glRaytracingLighting.cpuLights.size() >= GL_RAYTRACING_MAX_LIGHTS)
+		return false;
 
-    g_glRaytracingLighting.cpuLights.push_back(*light);
-    g_glRaytracingLighting.constants.lightCount = (uint32_t)g_glRaytracingLighting.cpuLights.size();
+	g_glRaytracingLighting.cpuLights.push_back(*light);
+	g_glRaytracingLighting.constants.lightCount = (uint32_t)g_glRaytracingLighting.cpuLights.size();
 
-    glRaytracingLightingUpdateLights();
-    glRaytracingLightingUpdateConstants();
-    return true;
+	glRaytracingLightingUpdateLights();
+	glRaytracingLightingUpdateConstants();
+	return true;
 }
 
 extern "C" void glRaytracingLightingSetAmbient(float r, float g, float b, float intensity)
 {
-    g_glRaytracingLighting.constants.ambientColor[0] = r;
-    g_glRaytracingLighting.constants.ambientColor[1] = g;
-    g_glRaytracingLighting.constants.ambientColor[2] = b;
-    g_glRaytracingLighting.constants.ambientColor[3] = intensity;
-    glRaytracingLightingUpdateConstants();
+	g_glRaytracingLighting.constants.ambientColor[0] = r;
+	g_glRaytracingLighting.constants.ambientColor[1] = g;
+	g_glRaytracingLighting.constants.ambientColor[2] = b;
+	g_glRaytracingLighting.constants.ambientColor[3] = intensity;
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" void glRaytracingLightingSetCameraPosition(float x, float y, float z)
 {
-    g_glRaytracingLighting.constants.cameraPos[0] = x;
-    g_glRaytracingLighting.constants.cameraPos[1] = y;
-    g_glRaytracingLighting.constants.cameraPos[2] = z;
-    g_glRaytracingLighting.constants.cameraPos[3] = 1.0f;
-    glRaytracingLightingUpdateConstants();
+	g_glRaytracingLighting.constants.cameraPos[0] = x;
+	g_glRaytracingLighting.constants.cameraPos[1] = y;
+	g_glRaytracingLighting.constants.cameraPos[2] = z;
+	g_glRaytracingLighting.constants.cameraPos[3] = 1.0f;
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" void glRaytracingLightingSetInvViewProjMatrix(const float* m16)
 {
-    if (!m16)
-        return;
+	if (!m16)
+		return;
 
-    memcpy(g_glRaytracingLighting.constants.invViewProj, m16, sizeof(float) * 16);
-    glRaytracingLightingUpdateConstants();
+	memcpy(g_glRaytracingLighting.constants.invViewProj, m16, sizeof(float) * 16);
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" void glRaytracingLightingSetInvViewMatrix(const float* m16)
 {
-    if (!m16)
-        return;
+	if (!m16)
+		return;
 
-    memcpy(g_glRaytracingLighting.constants.invViewMatrix, m16, sizeof(float) * 16);
-    glRaytracingLightingUpdateConstants();
+	memcpy(g_glRaytracingLighting.constants.invViewMatrix, m16, sizeof(float) * 16);
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" void glRaytracingLightingSetNormalReconstructSign(float signValue)
 {
-    g_glRaytracingLighting.constants.normalReconstructZ = signValue;
-    glRaytracingLightingUpdateConstants();
+	g_glRaytracingLighting.constants.normalReconstructZ = signValue;
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" void glRaytracingLightingEnableSpecular(int enable)
 {
-    g_glRaytracingLighting.constants.enableSpecular = enable ? 1u : 0u;
-    glRaytracingLightingUpdateConstants();
+	g_glRaytracingLighting.constants.enableSpecular = enable ? 1u : 0u;
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" void glRaytracingLightingEnableHalfLambert(int enable)
 {
-    g_glRaytracingLighting.constants.enableHalfLambert = enable ? 1u : 0u;
-    glRaytracingLightingUpdateConstants();
+	g_glRaytracingLighting.constants.enableHalfLambert = enable ? 1u : 0u;
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" void glRaytracingLightingSetShadowBias(float bias)
 {
-    g_glRaytracingLighting.constants.shadowBias = bias;
-    glRaytracingLightingUpdateConstants();
+	g_glRaytracingLighting.constants.shadowBias = bias;
+	glRaytracingLightingUpdateConstants();
 }
 
 extern "C" bool glRaytracingLightingExecute(const glRaytracingLightingPassDesc_t* pass)
 {
-    if (!g_glRaytracingLighting.initialized || !pass)
-        return false;
+	if (!g_glRaytracingLighting.initialized || !pass)
+		return false;
 
-    if (!pass->albedoTexture ||
-        !pass->depthTexture ||
-        !pass->normalTexture ||
-        !pass->positionTexture ||
-        !pass->outputTexture ||
-        !pass->topLevelAS)
-    {
-        return false;
-    }
+	if (!pass->albedoTexture ||
+		!pass->depthTexture ||
+		!pass->normalTexture ||
+		!pass->positionTexture ||
+		!pass->outputTexture ||
+		!pass->topLevelAS)
+	{
+		return false;
+	}
 
-    if (pass->width == 0 || pass->height == 0)
-        return false;
+	if (pass->width == 0 || pass->height == 0)
+		return false;
 
-    g_glRaytracingLighting.constants.screenSize[0] = (float)pass->width;
-    g_glRaytracingLighting.constants.screenSize[1] = (float)pass->height;
-    g_glRaytracingLighting.constants.screenSize[2] = 1.0f / (float)pass->width;
-    g_glRaytracingLighting.constants.screenSize[3] = 1.0f / (float)pass->height;
-    g_glRaytracingLighting.constants.lightCount =
-        (uint32_t)glRaytracingClamp<size_t>(g_glRaytracingLighting.cpuLights.size(), 0, GL_RAYTRACING_MAX_LIGHTS);
+	g_glRaytracingLighting.constants.screenSize[0] = (float)pass->width;
+	g_glRaytracingLighting.constants.screenSize[1] = (float)pass->height;
+	g_glRaytracingLighting.constants.screenSize[2] = 1.0f / (float)pass->width;
+	g_glRaytracingLighting.constants.screenSize[3] = 1.0f / (float)pass->height;
+	g_glRaytracingLighting.constants.lightCount =
+		(uint32_t)glRaytracingClamp<size_t>(g_glRaytracingLighting.cpuLights.size(), 0, GL_RAYTRACING_MAX_LIGHTS);
 
-    glRaytracingLightingUpdateLights();
-    glRaytracingLightingUpdateConstants();
-    glRaytracingLightingCreatePerPassDescriptors(pass);
+	glRaytracingLightingUpdateLights();
+	glRaytracingLightingUpdateConstants();
+	glRaytracingLightingCreatePerPassDescriptors(pass);
 
-    if (!glRaytracingBeginCmd())
-        return false;
+	if (!glRaytracingBeginCmd())
+		return false;
 
-    glRaytracingTransition(
-        g_glRaytracingCmd.cmdList.Get(),
-        pass->outputTexture,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	glRaytracingTransition(
+		g_glRaytracingCmd.cmdList.Get(),
+		pass->outputTexture,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-    ID3D12DescriptorHeap* heaps[] = { g_glRaytracingLighting.descriptorHeap.Get() };
-    g_glRaytracingCmd.cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
+	ID3D12DescriptorHeap* heaps[] = { g_glRaytracingLighting.descriptorHeap.Get() };
+	g_glRaytracingCmd.cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
 
-    g_glRaytracingCmd.cmdList->SetComputeRootSignature(g_glRaytracingLighting.globalRootSig.Get());
+	g_glRaytracingCmd.cmdList->SetComputeRootSignature(g_glRaytracingLighting.globalRootSig.Get());
 
-    D3D12_GPU_DESCRIPTOR_HANDLE gpuBase = g_glRaytracingLighting.descriptorHeap->GetGPUDescriptorHandleForHeapStart();
-    g_glRaytracingCmd.cmdList->SetComputeRootDescriptorTable(
-        0,
-        glRaytracingOffsetGpu(gpuBase, g_glRaytracingLighting.descriptorStride, 0));
-    g_glRaytracingCmd.cmdList->SetComputeRootDescriptorTable(
-        1,
-        glRaytracingOffsetGpu(gpuBase, g_glRaytracingLighting.descriptorStride, 6));
-    g_glRaytracingCmd.cmdList->SetComputeRootConstantBufferView(
-        2,
-        g_glRaytracingLighting.constantBuffer.gpuVA);
+	D3D12_GPU_DESCRIPTOR_HANDLE gpuBase = g_glRaytracingLighting.descriptorHeap->GetGPUDescriptorHandleForHeapStart();
+	g_glRaytracingCmd.cmdList->SetComputeRootDescriptorTable(
+		0,
+		glRaytracingOffsetGpu(gpuBase, g_glRaytracingLighting.descriptorStride, 0));
+	g_glRaytracingCmd.cmdList->SetComputeRootDescriptorTable(
+		1,
+		glRaytracingOffsetGpu(gpuBase, g_glRaytracingLighting.descriptorStride, 6));
+	g_glRaytracingCmd.cmdList->SetComputeRootConstantBufferView(
+		2,
+		g_glRaytracingLighting.constantBuffer.gpuVA);
 
-    g_glRaytracingCmd.cmdList->SetPipelineState1(g_glRaytracingLighting.rtStateObject.Get());
+	g_glRaytracingCmd.cmdList->SetPipelineState1(g_glRaytracingLighting.rtStateObject.Get());
 
-    const UINT shaderRecordSize =
-        (UINT)glRaytracingAlignUp(
-            D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES,
-            D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT);
+	const UINT shaderRecordSize =
+		(UINT)glRaytracingAlignUp(
+			D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES,
+			D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT);
 
-    D3D12_DISPATCH_RAYS_DESC rays = {};
-    rays.RayGenerationShaderRecord.StartAddress = g_glRaytracingLighting.raygenTable.gpuVA;
-    rays.RayGenerationShaderRecord.SizeInBytes = shaderRecordSize;
+	D3D12_DISPATCH_RAYS_DESC rays = {};
+	rays.RayGenerationShaderRecord.StartAddress = g_glRaytracingLighting.raygenTable.gpuVA;
+	rays.RayGenerationShaderRecord.SizeInBytes = shaderRecordSize;
 
-    rays.MissShaderTable.StartAddress = g_glRaytracingLighting.missTable.gpuVA;
-    rays.MissShaderTable.SizeInBytes = shaderRecordSize;
-    rays.MissShaderTable.StrideInBytes = shaderRecordSize;
+	rays.MissShaderTable.StartAddress = g_glRaytracingLighting.missTable.gpuVA;
+	rays.MissShaderTable.SizeInBytes = shaderRecordSize;
+	rays.MissShaderTable.StrideInBytes = shaderRecordSize;
 
-    rays.HitGroupTable.StartAddress = g_glRaytracingLighting.hitTable.gpuVA;
-    rays.HitGroupTable.SizeInBytes = shaderRecordSize;
-    rays.HitGroupTable.StrideInBytes = shaderRecordSize;
+	rays.HitGroupTable.StartAddress = g_glRaytracingLighting.hitTable.gpuVA;
+	rays.HitGroupTable.SizeInBytes = shaderRecordSize;
+	rays.HitGroupTable.StrideInBytes = shaderRecordSize;
 
-    rays.Width = pass->width;
-    rays.Height = pass->height;
-    rays.Depth = 1;
+	rays.Width = pass->width;
+	rays.Height = pass->height;
+	rays.Depth = 1;
 
-    g_glRaytracingCmd.cmdList->DispatchRays(&rays);
+	g_glRaytracingCmd.cmdList->DispatchRays(&rays);
 
-    D3D12_RESOURCE_BARRIER uav = {};
-    uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    uav.UAV.pResource = pass->outputTexture;
-    g_glRaytracingCmd.cmdList->ResourceBarrier(1, &uav);
+	D3D12_RESOURCE_BARRIER uav = {};
+	uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+	uav.UAV.pResource = pass->outputTexture;
+	g_glRaytracingCmd.cmdList->ResourceBarrier(1, &uav);
 
-    ID3D12Resource* backBuffer = QD3D12_GetCurrentBackBuffer();
-    if (backBuffer)
-    {
-        glRaytracingTransition(
-            g_glRaytracingCmd.cmdList.Get(),
-            pass->outputTexture,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_COPY_SOURCE);
+	ID3D12Resource* backBuffer = QD3D12_GetCurrentBackBuffer();
+	if (backBuffer)
+	{
+		glRaytracingTransition(
+			g_glRaytracingCmd.cmdList.Get(),
+			pass->outputTexture,
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			D3D12_RESOURCE_STATE_COPY_SOURCE);
 
-        glRaytracingTransition(
-            g_glRaytracingCmd.cmdList.Get(),
-            backBuffer,
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_COPY_DEST);
+		glRaytracingTransition(
+			g_glRaytracingCmd.cmdList.Get(),
+			backBuffer,
+			D3D12_RESOURCE_STATE_PRESENT,
+			D3D12_RESOURCE_STATE_COPY_DEST);
 
-        g_glRaytracingCmd.cmdList->CopyResource(backBuffer, pass->outputTexture);
+		g_glRaytracingCmd.cmdList->CopyResource(backBuffer, pass->outputTexture);
 
-        glRaytracingTransition(
-            g_glRaytracingCmd.cmdList.Get(),
-            backBuffer,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_PRESENT);
+		glRaytracingTransition(
+			g_glRaytracingCmd.cmdList.Get(),
+			backBuffer,
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			D3D12_RESOURCE_STATE_PRESENT);
 
-        glRaytracingTransition(
-            g_glRaytracingCmd.cmdList.Get(),
-            pass->outputTexture,
-            D3D12_RESOURCE_STATE_COPY_SOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    }
-    else
-    {
-        glRaytracingTransition(
-            g_glRaytracingCmd.cmdList.Get(),
-            pass->outputTexture,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    }
+		glRaytracingTransition(
+			g_glRaytracingCmd.cmdList.Get(),
+			pass->outputTexture,
+			D3D12_RESOURCE_STATE_COPY_SOURCE,
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	}
+	else
+	{
+		glRaytracingTransition(
+			g_glRaytracingCmd.cmdList.Get(),
+			pass->outputTexture,
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	}
 
-    if (!glRaytracingEndCmd())
-        return false;
+	if (!glRaytracingEndCmd())
+		return false;
 
-    return true;
+	return true;
 }
 
 extern "C" glRaytracingLight_t glRaytracingLightingMakePointLight(
-    float px, float py, float pz,
-    float radius,
-    float r, float g, float b,
-    float intensity)
+	float px, float py, float pz,
+	float radius,
+	float r, float g, float b,
+	float intensity)
 {
-    glRaytracingLight_t l = {};
-    l.position.x = px;
-    l.position.y = py;
-    l.position.z = pz;
-    l.radius = radius;
+	glRaytracingLight_t l = {};
+	l.position.x = px;
+	l.position.y = py;
+	l.position.z = pz;
+	l.radius = radius;
 
-    l.color.x = r;
-    l.color.y = g;
-    l.color.z = b;
-    l.intensity = intensity;
+	l.color.x = r;
+	l.color.y = g;
+	l.color.z = b;
+	l.intensity = intensity;
 
-    l.normal.x = 0.0f;
-    l.normal.y = 0.0f;
-    l.normal.z = 1.0f;
-    l.type = GL_RAYTRACING_LIGHT_TYPE_POINT;
+	l.normal.x = 0.0f;
+	l.normal.y = 0.0f;
+	l.normal.z = 1.0f;
+	l.type = GL_RAYTRACING_LIGHT_TYPE_POINT;
 
-    l.axisU.x = 1.0f;
-    l.axisU.y = 0.0f;
-    l.axisU.z = 0.0f;
-    l.halfWidth = 0.0f;
+	l.axisU.x = 1.0f;
+	l.axisU.y = 0.0f;
+	l.axisU.z = 0.0f;
+	l.halfWidth = 0.0f;
 
-    l.axisV.x = 0.0f;
-    l.axisV.y = 1.0f;
-    l.axisV.z = 0.0f;
-    l.halfHeight = 0.0f;
+	l.axisV.x = 0.0f;
+	l.axisV.y = 1.0f;
+	l.axisV.z = 0.0f;
+	l.halfHeight = 0.0f;
 
-    l.samples = 1;
-    l.twoSided = 0;
-    l.persistant = 0.0f;
-    l.pad1 = 0.0f;
-    return l;
+	l.samples = 1;
+	l.twoSided = 0;
+	l.persistant = 0.0f;
+	l.pad1 = 0.0f;
+	return l;
 }
 
 extern "C" glRaytracingLight_t glRaytracingLightingMakeRectLight(
-    float px, float py, float pz,
-    float nx, float ny, float nz,
-    float ux, float uy, float uz,
-    float vx, float vy, float vz,
-    float halfWidth, float halfHeight,
-    float r, float g, float b,
-    float intensity,
-    uint32_t samples,
-    uint32_t twoSided)
+	float px, float py, float pz,
+	float nx, float ny, float nz,
+	float ux, float uy, float uz,
+	float vx, float vy, float vz,
+	float halfWidth, float halfHeight,
+	float r, float g, float b,
+	float intensity,
+	uint32_t samples,
+	uint32_t twoSided)
 {
-    glRaytracingLight_t l = {};
+	glRaytracingLight_t l = {};
 
-    glRaytracingNormalize3(nx, ny, nz);
-    glRaytracingNormalize3(ux, uy, uz);
-    glRaytracingNormalize3(vx, vy, vz);
+	glRaytracingNormalize3(nx, ny, nz);
+	glRaytracingNormalize3(ux, uy, uz);
+	glRaytracingNormalize3(vx, vy, vz);
 
-    if ((nx == 0.0f && ny == 0.0f && nz == 0.0f) &&
-        !((ux == 0.0f && uy == 0.0f && uz == 0.0f) ||
-            (vx == 0.0f && vy == 0.0f && vz == 0.0f)))
-    {
-        glRaytracingCross3(ux, uy, uz, vx, vy, vz, nx, ny, nz);
-        glRaytracingNormalize3(nx, ny, nz);
-    }
+	if ((nx == 0.0f && ny == 0.0f && nz == 0.0f) &&
+		!((ux == 0.0f && uy == 0.0f && uz == 0.0f) ||
+			(vx == 0.0f && vy == 0.0f && vz == 0.0f)))
+	{
+		glRaytracingCross3(ux, uy, uz, vx, vy, vz, nx, ny, nz);
+		glRaytracingNormalize3(nx, ny, nz);
+	}
 
-    l.position.x = px;
-    l.position.y = py;
-    l.position.z = pz;
+	l.position.x = px;
+	l.position.y = py;
+	l.position.z = pz;
 
-    // Reuse radius as influence/falloff range for the rect light.
-    l.radius = (halfWidth > halfHeight ? halfWidth : halfHeight) * 6.0f;
+	// Reuse radius as influence/falloff range for the rect light.
+	l.radius = (halfWidth > halfHeight ? halfWidth : halfHeight) * 6.0f;
 
-    l.color.x = r;
-    l.color.y = g;
-    l.color.z = b;
-    l.intensity = intensity;
+	l.color.x = r;
+	l.color.y = g;
+	l.color.z = b;
+	l.intensity = intensity;
 
-    l.normal.x = nx;
-    l.normal.y = ny;
-    l.normal.z = nz;
-    l.type = GL_RAYTRACING_LIGHT_TYPE_RECT;
+	l.normal.x = nx;
+	l.normal.y = ny;
+	l.normal.z = nz;
+	l.type = GL_RAYTRACING_LIGHT_TYPE_RECT;
 
-    l.axisU.x = ux;
-    l.axisU.y = uy;
-    l.axisU.z = uz;
-    l.halfWidth = halfWidth;
+	l.axisU.x = ux;
+	l.axisU.y = uy;
+	l.axisU.z = uz;
+	l.halfWidth = halfWidth;
 
-    l.axisV.x = vx;
-    l.axisV.y = vy;
-    l.axisV.z = vz;
-    l.halfHeight = halfHeight;
+	l.axisV.x = vx;
+	l.axisV.y = vy;
+	l.axisV.z = vz;
+	l.halfHeight = halfHeight;
 
-    l.samples = samples ? samples : 4u;
-    l.twoSided = twoSided ? 1u : 0u;
-    l.persistant = 0.0f;
-    l.pad1 = 0.0f;
+	l.samples = samples ? samples : 4u;
+	l.twoSided = twoSided ? 1u : 0u;
+	l.persistant = 0.0f;
+	l.pad1 = 0.0f;
 
-    return l;
+	return l;
 }
 
 extern "C" uint32_t glRaytracingLightingGetLightCount(void)
 {
-    return (uint32_t)g_glRaytracingLighting.cpuLights.size();
+	return (uint32_t)g_glRaytracingLighting.cpuLights.size();
 }
 
