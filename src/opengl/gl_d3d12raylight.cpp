@@ -1661,7 +1661,7 @@ float TraceShadow(float3 origin, float3 dir, float maxT)
 
     TraceRay(
         gSceneBVH,
-        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_FRONT_FACING_TRIANGLES,
         0xFF,
         0,
         1,
@@ -2021,6 +2021,7 @@ void RayGen()
             float radius = max(Lgt.radius * 1.6, 1e-4);
 
             float atten = saturate((radius - dist) / radius);
+			atten = atten * atten;
 
             float wrap = 0.35;
             float NdotL = saturate((dot(N, L) + wrap) / (1.0 + wrap));
@@ -2087,7 +2088,7 @@ void RayGen()
         }
     }
 
-    lightingAccum = lightingAccum * ao * 1.5;
+    lightingAccum = lightingAccum * ao;
 
     if(geoFlag == GEOMETRY_FLAG_SKELETAL) {
         lightingAccum = lightingAccum * 1.2;

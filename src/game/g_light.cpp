@@ -14,6 +14,12 @@ Lights pointed at a target will be spotlights.
 void SP_light(gentity_t* self) {
 	self->s.eType = ET_LIGHT;
 
+	float fade;
+	float linearScale = 1.0f;
+	G_SpawnFloat("fade", "1", &fade);
+
+	self->s.light.lightRadius = (self->s.light.lightRadius * linearScale) / max(fade, 0.001f);
+
 	if (VectorLength(self->dl_color) == 0)
 	{
 		VectorSet(self->dl_color, 1, 1, 1, 1);
