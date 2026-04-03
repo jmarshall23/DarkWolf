@@ -2021,7 +2021,6 @@ void RayGen()
             float radius = max(Lgt.radius * 1.6, 1e-4);
 
             float atten = saturate((radius - dist) / radius);
-            atten = atten * atten;
 
             float wrap = 0.35;
             float NdotL = saturate((dot(N, L) + wrap) / (1.0 + wrap));
