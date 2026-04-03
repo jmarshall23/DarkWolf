@@ -1998,7 +1998,7 @@ void RayGen()
 
     float skyStrength = 2.0;
 
-    float3 lightingAccum = 0.05;
+    float3 lightingAccum = 0.2;
     lightingAccum += skyColor * (skyStrength * skyVis);
 
     if(geoFlag == GEOMETRY_FLAG_SKELETAL)
@@ -2018,7 +2018,7 @@ void RayGen()
             float  dist    = sqrt(max(distSq, 1e-6));
             float3 L       = toLight / dist;
 
-            float radius = max(Lgt.radius * 1.6, 1e-4);
+            float radius = max(Lgt.radius, 1e-4);
 
             float atten = saturate((radius - dist) / radius);
 			atten = atten * atten;
@@ -2033,7 +2033,7 @@ void RayGen()
             }
 
             float3 diffuse = Lgt.color * (Lgt.intensity * atten * NdotL * shadow);
-            lightingAccum += clamp(diffuse, 0.0, 1.0);
+            lightingAccum += diffuse;
         }
         else if (Lgt.type == GL_RAYTRACING_LIGHT_TYPE_RECT)
         {
