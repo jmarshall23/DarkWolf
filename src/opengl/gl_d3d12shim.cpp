@@ -1362,6 +1362,7 @@ static void QD3D12_CreateSwapChain()
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.SampleDesc.Count = 1;
+    sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
     ComPtr<IDXGISwapChain1> sc1;
     QD3D12_CHECK(g_gl.factory->CreateSwapChainForHwnd(
@@ -2180,7 +2181,7 @@ void QD3D12_EndFrame()
 
 void QD3D12_Present()
 {
-    QD3D12_CHECK(g_gl.swapChain->Present(1, 0));
+    QD3D12_CHECK(g_gl.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
 
     FrameResources& fr = g_gl.frames[g_gl.frameIndex];
     const UINT64 signalValue = g_gl.nextFenceValue++;
