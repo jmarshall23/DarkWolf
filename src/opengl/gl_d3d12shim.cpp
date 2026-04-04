@@ -58,6 +58,31 @@ static void QD3D12_Fatal(const char* fmt, ...)
 
 #define QD3D12_CHECK(x) do { HRESULT _hr = (x); if (FAILED(_hr)) { QD3D12_Fatal("HRESULT failed 0x%08X at %s:%d", (unsigned)_hr, __FILE__, __LINE__); } } while(0)
 
+struct GLOcclusionQuery
+{
+    GLuint id          = 0;
+    bool   active      = false;
+    bool   pending     = false;
+    bool   resultReady = false;
+
+    UINT   heapIndex      = UINT_MAX;
+    UINT64 result         = 0;
+    UINT64 submittedFence = 0;
+};
+
+struct QueryMarker
+{
+    enum Type
+    {
+        Begin,
+        End
+    };
+
+    Type   type = Begin;
+    GLuint id   = 0;
+};
+
+static const UINT QD3D12_MaxQueries = 2048;
 
 // ============================================================
 // SECTION 3: D3D12 renderer structs
@@ -164,6 +189,19 @@ struct DrawConstants
     float _fogPad2;
 
     float fogColor[4];
+};
+
+struct GLBufferObject
+{
+    GLuint               id           = 0;
+    GLenum               target       = 0;
+    GLbitfield           storageFlags = 0;
+    std::vector<uint8_t> data;
+
+    bool       mapped       = false;
+    GLintptr   mappedOffset = 0;
+    GLsizeiptr mappedLength = 0;
+    GLbitfield mappedAccess = 0;
 };
 
 const char* vendor = "Justin Marshall";
@@ -273,12 +311,29 @@ struct QueuedBatch
 {
     BatchKey key;
     std::vector<GLVertex> verts;
+    size_t markerBegin = 0;
+    size_t markerEnd   = 0;
 };
 struct GLState
 {
     HWND hwnd = nullptr;
     UINT width = 640;
     UINT height = 480;
+
+    std::unordered_map<GLuint, GLOcclusionQuery> queries;
+    GLuint                                       nextQueryId  = 1;
+    GLuint                                       currentQuery = 0;
+
+    std::vector<QueryMarker> queryMarkers;
+
+    ComPtr<ID3D12QueryHeap> occlusionQueryHeap;
+    ComPtr<ID3D12Resource>  occlusionReadback;
+    uint64_t               *occlusionReadbackCpu = nullptr;
+
+    std::unordered_map<GLuint, GLBufferObject> buffers;
+    GLuint                                     nextBufferId            = 1;
+    GLuint                                     boundArrayBuffer        = 0;
+    GLuint                                     boundElementArrayBuffer = 0;
 
     Mat4 modelMatrix = Mat4::Identity();
 
@@ -467,6 +522,70 @@ static D3D12_CPU_DESCRIPTOR_HANDLE CurrentPositionRTV()
     return h;
 }
 
+static GLBufferObject *QD3D12_GetBuffer(GLuint id)
+{
+    if (id == 0)
+        return nullptr;
+
+    auto it = g_gl.buffers.find(id);
+    if (it == g_gl.buffers.end())
+        return nullptr;
+
+    return &it->second;
+}
+
+static const uint8_t *QD3D12_ResolveArrayPointer(const void *ptr)
+{
+    if (g_gl.boundArrayBuffer != 0)
+    {
+        GLBufferObject *bo = QD3D12_GetBuffer(g_gl.boundArrayBuffer);
+        if (!bo)
+            return nullptr;
+
+        const size_t offset = (size_t)ptr;
+        if (offset > bo->data.size())
+            return nullptr;
+
+        return bo->data.data() + offset;
+    }
+
+    return reinterpret_cast<const uint8_t *>(ptr);
+}
+
+static const void *QD3D12_ResolveElementPointer(const void *ptr, GLenum indexType, GLsizei count)
+{
+    if (g_gl.boundElementArrayBuffer != 0)
+    {
+        GLBufferObject *bo = QD3D12_GetBuffer(g_gl.boundElementArrayBuffer);
+        if (!bo)
+            return nullptr;
+
+        size_t indexSize = 0;
+        switch (indexType)
+        {
+            case GL_UNSIGNED_INT:
+                indexSize = sizeof(GLuint);
+                break;
+            case GL_UNSIGNED_SHORT:
+                indexSize = sizeof(GLushort);
+                break;
+            case GL_UNSIGNED_BYTE:
+                indexSize = sizeof(GLubyte);
+                break;
+            default:
+                return nullptr;
+        }
+
+        const size_t offset      = (size_t)ptr;
+        const size_t bytesNeeded = (size_t)count * indexSize;
+        if (offset > bo->data.size() || bytesNeeded > (bo->data.size() - offset))
+            return nullptr;
+
+        return bo->data.data() + offset;
+    }
+
+    return ptr;
+}
 
 static void QD3D12_RetireResource(ComPtr<ID3D12Resource>& res)
 {
@@ -1334,6 +1453,32 @@ static UploadAlloc QD3D12_AllocUpload(UINT bytes, UINT alignment)
 // SECTION 7: D3D12 initialization
 // ============================================================
 
+static void QD3D12_CreateOcclusionQueryObjects()
+{
+    D3D12_QUERY_HEAP_DESC qh {};
+    qh.Count    = QD3D12_MaxQueries;
+    qh.NodeMask = 0;
+    qh.Type     = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
+    QD3D12_CHECK(g_gl.device->CreateQueryHeap(&qh, IID_PPV_ARGS(&g_gl.occlusionQueryHeap)));
+
+    D3D12_HEAP_PROPERTIES hp {};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+
+    D3D12_RESOURCE_DESC rd {};
+    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width            = sizeof(UINT64) * QD3D12_MaxQueries;
+    rd.Height           = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels        = 1;
+    rd.SampleDesc.Count = 1;
+    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    QD3D12_CHECK(
+    g_gl.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_gl.occlusionReadback)));
+
+    QD3D12_CHECK(g_gl.occlusionReadback->Map(0, nullptr, (void **)&g_gl.occlusionReadbackCpu));
+}
+
 static void QD3D12_CreateDevice()
 {
 #if defined(_DEBUG)
@@ -2075,6 +2220,7 @@ bool QD3D12_InitForQuake(HWND hwnd, int width, int height)
     QD3D12_CreatePSOs();
     QD3D12_UpdateViewportState();
     QD3D12_CreateWhiteTexture();
+    QD3D12_CreateOcclusionQueryObjects();
 
     QD3D12_Log("QD3D12 initialized: %ux%u", g_gl.width, g_gl.height);
     return true;
@@ -2913,6 +3059,18 @@ void glLoadModelMatrixf(const float* m16)
     memcpy(g_gl.modelMatrix.m, m.m, sizeof(g_gl.modelMatrix.m));
 }
 
+extern "C" void APIENTRY glMultMatrixf(const GLfloat *m)
+{
+    if (!m)
+        return;
+
+    Mat4 rhs {};
+    memcpy(rhs.m, m, sizeof(rhs.m));
+
+    auto &top = QD3D12_CurrentMatrixStack().back();
+    top       = Mat4::Multiply(top, rhs);
+}
+
 static Mat4 CurrentModelMatrix()
 {
     return g_gl.modelMatrix;
@@ -2958,16 +3116,20 @@ static void QueueExpandedVertices(GLenum originalMode, const std::vector<GLVerte
 
     BatchKey key = BuildCurrentBatchKey(originalMode, tex0, tex1);
 
-    if (!g_gl.queuedBatches.empty() && BatchKeyEquals(g_gl.queuedBatches.back().key, key))
+    const size_t markerCursor = g_gl.queryMarkers.size();
+
+    if (!g_gl.queuedBatches.empty() && BatchKeyEquals(g_gl.queuedBatches.back().key, key) && g_gl.queuedBatches.back().markerEnd == markerCursor)
     {
-        auto& dst = g_gl.queuedBatches.back().verts;
+        auto &dst = g_gl.queuedBatches.back().verts;
         dst.insert(dst.end(), verts.begin(), verts.end());
     }
     else
     {
-        QueuedBatch batch{};
-        batch.key = key;
-        batch.verts = verts;
+        QueuedBatch batch {};
+        batch.key         = key;
+        batch.verts       = verts;
+        batch.markerBegin = markerCursor;
+        batch.markerEnd   = markerCursor;
         g_gl.queuedBatches.push_back(std::move(batch));
     }
 }
@@ -2977,6 +3139,35 @@ static void FlushImmediate(GLenum mode, const std::vector<GLVertex>& src)
     std::vector<GLVertex> expanded;
     ExpandImmediate(mode, src, expanded);
     QueueExpandedVertices(mode, expanded);
+}
+
+static void QD3D12_EmitQueryMarkers(size_t beginIdx, size_t endIdx)
+{
+    for (size_t i = beginIdx; i < endIdx; ++i)
+    {
+        const QueryMarker &m  = g_gl.queryMarkers[i];
+        auto               it = g_gl.queries.find(m.id);
+        if (it == g_gl.queries.end())
+            continue;
+
+        GLOcclusionQuery &q = it->second;
+        if (q.heapIndex == UINT_MAX)
+            continue;
+
+        if (m.type == QueryMarker::Begin)
+        {
+            g_gl.cmdList->BeginQuery(g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex);
+        }
+        else
+        {
+            g_gl.cmdList->EndQuery(g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex);
+
+            g_gl.cmdList->ResolveQueryData(
+            g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex, 1, g_gl.occlusionReadback.Get(), sizeof(UINT64) * q.heapIndex);
+
+            q.submittedFence = QD3D12_CurrentSubmissionFenceValue();
+        }
+    }
 }
 
 static void QD3D12_FlushQueuedBatches()
@@ -3007,6 +3198,8 @@ static void QD3D12_FlushQueuedBatches()
         const QueuedBatch& batch = g_gl.queuedBatches[i];
         if (batch.verts.empty())
             continue;
+
+        QD3D12_EmitQueryMarkers(batch.markerBegin, batch.markerEnd);
 
         g_gl.cmdList->RSSetViewports(1, &batch.key.viewport);
         g_gl.cmdList->RSSetScissorRects(1, &batch.key.scissor);
@@ -3631,73 +3824,109 @@ extern "C" void APIENTRY glLoadMatrixf(const GLfloat* m)
     memcpy(top.m, m, sizeof(top.m));
 }
 
-extern "C" void APIENTRY glGetIntegerv(GLenum pname, GLint* params) {
-    if (!params) return;
-
-    switch (pname) {
-    case GL_MAX_TEXTURES_SGIS:
-    case GL_MAX_ACTIVE_TEXTURES_ARB:
-        *params = (GLint)QD3D12_MaxTextureUnits;
-        break;
-
-    case GL_FOG_MODE:
-        *params = (GLint)g_gl.fogMode;
-        break;
-    case GL_FOG_HINT:
-        *params = (GLint)g_gl.fogHint;
-        break;
-
-    case GL_SELECTED_TEXTURE_SGIS:
-        *params = (GLint)(GL_TEXTURE0_SGIS + g_gl.activeTextureUnit);
-        break;
-
-    case GL_ACTIVE_TEXTURE_ARB:
-        *params = (GLint)(GL_TEXTURE0_ARB + g_gl.activeTextureUnit);
-        break;
-
-    case GL_CLIENT_ACTIVE_TEXTURE_ARB:
-        *params = (GLint)(GL_TEXTURE0_ARB + g_gl.clientActiveTextureUnit);
-        break;
-
-    case GL_MAX_TEXTURE_SIZE:
-        *params = 4096;
-        break;
-
-    default:
-        *params = 0;
-        break;
-    }
-}
-
-extern "C" void APIENTRY glGetFloatv(GLenum pname, GLfloat* params)
+extern "C" void APIENTRY glGetIntegerv(GLenum pname, GLint *params)
 {
     if (!params)
         return;
 
     switch (pname)
     {
-    case GL_FOG_DENSITY:
-        params[0] = g_gl.fogDensity;
-        break;
-    case GL_FOG_START:
-        params[0] = g_gl.fogStart;
-        break;
-    case GL_FOG_END:
-        params[0] = g_gl.fogEnd;
-        break;
-    case GL_FOG_COLOR:
-        params[0] = g_gl.fogColor[0];
-        params[1] = g_gl.fogColor[1];
-        params[2] = g_gl.fogColor[2];
-        params[3] = g_gl.fogColor[3];
-        break;
-    case GL_MODELVIEW_MATRIX:
-        memcpy(params, g_gl.modelStack.back().m, sizeof(g_gl.modelStack.back().m));
-        break;
+        case GL_MAX_TEXTURES_SGIS:
+        case GL_MAX_ACTIVE_TEXTURES_ARB:
+            *params = (GLint)QD3D12_MaxTextureUnits;
+            break;
 
-    default:
-        memset(params, 0, sizeof(GLfloat) * 16);
-        break;
+        case GL_VIEWPORT:
+            params[0] = g_gl.viewportX;
+            params[1] = g_gl.viewportY;
+            params[2] = (GLint)g_gl.viewportW;
+            params[3] = (GLint)g_gl.viewportH;
+            break;
+
+        case GL_FOG_MODE:
+            *params = (GLint)g_gl.fogMode;
+            break;
+        case GL_FOG_HINT:
+            *params = (GLint)g_gl.fogHint;
+            break;
+
+        case GL_SELECTED_TEXTURE_SGIS:
+            *params = (GLint)(GL_TEXTURE0_SGIS + g_gl.activeTextureUnit);
+            break;
+
+        case GL_ACTIVE_TEXTURE_ARB:
+            *params = (GLint)(GL_TEXTURE0_ARB + g_gl.activeTextureUnit);
+            break;
+
+        case GL_CLIENT_ACTIVE_TEXTURE_ARB:
+            *params = (GLint)(GL_TEXTURE0_ARB + g_gl.clientActiveTextureUnit);
+            break;
+
+        case GL_MAX_TEXTURE_SIZE:
+            *params = 4096;
+            break;
+
+        default:
+            *params = 0;
+            break;
+    }
+}
+
+extern "C" void APIENTRY glGetFloatv(GLenum pname, GLfloat *params)
+{
+    if (!params)
+        return;
+
+    switch (pname)
+    {
+        case GL_FOG_DENSITY:
+            params[0] = g_gl.fogDensity;
+            break;
+        case GL_FOG_START:
+            params[0] = g_gl.fogStart;
+            break;
+        case GL_FOG_END:
+            params[0] = g_gl.fogEnd;
+            break;
+        case GL_FOG_COLOR:
+            params[0] = g_gl.fogColor[0];
+            params[1] = g_gl.fogColor[1];
+            params[2] = g_gl.fogColor[2];
+            params[3] = g_gl.fogColor[3];
+            break;
+        case GL_MODELVIEW_MATRIX:
+            memcpy(params, g_gl.modelStack.back().m, sizeof(GLfloat) * 16);
+            break;
+        case GL_PROJECTION_MATRIX:
+            memcpy(params, g_gl.projStack.back().m, sizeof(GLfloat) * 16);
+            break;
+        default:
+            memset(params, 0, sizeof(GLfloat) * 16);
+            break;
+    }
+}
+
+extern "C" void APIENTRY glGetDoublev(GLenum pname, GLdouble *params)
+{
+    if (!params)
+        return;
+
+    switch (pname)
+    {
+        case GL_MODELVIEW_MATRIX:
+            for (int i = 0; i < 16; ++i)
+                params[i] = (GLdouble)g_gl.modelStack.back().m[i];
+            break;
+
+        case GL_PROJECTION_MATRIX:
+            for (int i = 0; i < 16; ++i)
+                params[i] = (GLdouble)g_gl.projStack.back().m[i];
+            break;
+
+        default:
+            for (int i = 0; i < 16; ++i)
+                params[i] = 0.0;
+            break;
     }
 }
 
@@ -4035,12 +4264,12 @@ extern "C" void APIENTRY glLockArraysEXT(GLint first, GLsizei count) {
 extern "C" void APIENTRY glUnlockArraysEXT(void) {
 }
 
-extern "C" void APIENTRY glNormalPointer(GLenum type, GLsizei stride, const void* pointer)
+extern "C" void APIENTRY glNormalPointer(GLenum type, GLsizei stride, const void *pointer)
 {
-    g_gl.normalArray.size = 3;
-    g_gl.normalArray.type = type;
+    g_gl.normalArray.size   = 3;
+    g_gl.normalArray.type   = type;
     g_gl.normalArray.stride = stride;
-    g_gl.normalArray.ptr = reinterpret_cast<const uint8_t*>(pointer);
+    g_gl.normalArray.ptr    = QD3D12_ResolveArrayPointer(pointer);
 }
 
 extern "C" void APIENTRY glEnableClientState(GLenum array)
@@ -4085,26 +4314,29 @@ extern "C" void APIENTRY glDisableClientState(GLenum array)
     }
 }
 
-extern "C" void APIENTRY glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr) {
-    g_gl.vertexArray.size = size;
-    g_gl.vertexArray.type = type;
+extern "C" void APIENTRY glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr)
+{
+    g_gl.vertexArray.size   = size;
+    g_gl.vertexArray.type   = type;
     g_gl.vertexArray.stride = stride;
-    g_gl.vertexArray.ptr = (const uint8_t*)ptr;
+    g_gl.vertexArray.ptr    = QD3D12_ResolveArrayPointer(ptr);
 }
 
-extern "C" void APIENTRY glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr) {
-    g_gl.colorArray.size = size;
-    g_gl.colorArray.type = type;
+extern "C" void APIENTRY glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr)
+{
+    g_gl.colorArray.size   = size;
+    g_gl.colorArray.type   = type;
     g_gl.colorArray.stride = stride;
-    g_gl.colorArray.ptr = (const uint8_t*)ptr;
+    g_gl.colorArray.ptr    = QD3D12_ResolveArrayPointer(ptr);
 }
 
-extern "C" void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr) {
-    auto& tc = g_gl.texCoordArray[g_gl.clientActiveTextureUnit];
-    tc.size = size;
-    tc.type = type;
+extern "C" void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr)
+{
+    auto &tc  = g_gl.texCoordArray[g_gl.clientActiveTextureUnit];
+    tc.size   = size;
+    tc.type   = type;
     tc.stride = stride;
-    tc.ptr = (const uint8_t*)ptr;
+    tc.ptr    = QD3D12_ResolveArrayPointer(ptr);
 }
 
 extern "C" void APIENTRY glArrayElement(GLint i) {
@@ -4113,37 +4345,53 @@ extern "C" void APIENTRY glArrayElement(GLint i) {
     g_gl.immediateVerts.push_back(v);
 }
 
-extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices) {
-    if (!indices || count <= 0) return;
+extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
+{
+    if (count <= 0)
+        return;
+
+    const void *resolvedIndices = QD3D12_ResolveElementPointer(indices, type, count);
+    if (!resolvedIndices)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return;
+    }
 
     std::vector<GLVertex> verts;
     verts.reserve((size_t)count);
 
-    if (type == GL_UNSIGNED_INT) {
-        const GLuint* idx = (const GLuint*)indices;
-        for (GLsizei i = 0; i < count; ++i) {
-            GLVertex v{};
+    if (type == GL_UNSIGNED_INT)
+    {
+        const GLuint *idx = (const GLuint *)resolvedIndices;
+        for (GLsizei i = 0; i < count; ++i)
+        {
+            GLVertex v {};
             QD3D12_FetchArrayVertex((GLint)idx[i], v);
             verts.push_back(v);
         }
     }
-    else if (type == GL_UNSIGNED_SHORT) {
-        const GLushort* idx = (const GLushort*)indices;
-        for (GLsizei i = 0; i < count; ++i) {
-            GLVertex v{};
+    else if (type == GL_UNSIGNED_SHORT)
+    {
+        const GLushort *idx = (const GLushort *)resolvedIndices;
+        for (GLsizei i = 0; i < count; ++i)
+        {
+            GLVertex v {};
             QD3D12_FetchArrayVertex((GLint)idx[i], v);
             verts.push_back(v);
         }
     }
-    else if (type == GL_UNSIGNED_BYTE) {
-        const GLubyte* idx = (const GLubyte*)indices;
-        for (GLsizei i = 0; i < count; ++i) {
-            GLVertex v{};
+    else if (type == GL_UNSIGNED_BYTE)
+    {
+        const GLubyte *idx = (const GLubyte *)resolvedIndices;
+        for (GLsizei i = 0; i < count; ++i)
+        {
+            GLVertex v {};
             QD3D12_FetchArrayVertex((GLint)idx[i], v);
             verts.push_back(v);
         }
     }
-    else {
+    else
+    {
         g_gl.lastError = GL_INVALID_ENUM;
         return;
     }
@@ -4529,4 +4777,511 @@ ID3D12Resource* QD3D12_GetCurrentBackBuffer()
 extern "C" void APIENTRY glGeometryFlagf(GLfloat flag)
 {
     g_gl.currentGeometryFlag = flag;
+}
+
+extern "C" void APIENTRY glGenBuffers(GLsizei n, GLuint *buffers)
+{
+    if (n < 0)
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return;
+    }
+
+    if (!buffers)
+        return;
+
+    for (GLsizei i = 0; i < n; ++i)
+    {
+        GLuint         id = g_gl.nextBufferId++;
+        GLBufferObject bo {};
+        bo.id = id;
+        g_gl.buffers.emplace(id, std::move(bo));
+        buffers[i] = id;
+    }
+}
+
+extern "C" void APIENTRY glDeleteBuffers(GLsizei n, const GLuint *buffers)
+{
+    if (n < 0)
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return;
+    }
+
+    if (!buffers)
+        return;
+
+    for (GLsizei i = 0; i < n; ++i)
+    {
+        const GLuint id = buffers[i];
+        if (id == 0)
+            continue;
+
+        if (g_gl.boundArrayBuffer == id)
+            g_gl.boundArrayBuffer = 0;
+
+        if (g_gl.boundElementArrayBuffer == id)
+            g_gl.boundElementArrayBuffer = 0;
+
+        g_gl.buffers.erase(id);
+    }
+}
+
+extern "C" GLboolean APIENTRY glIsBuffer(GLuint buffer) { return g_gl.buffers.find(buffer) != g_gl.buffers.end() ? GL_TRUE : GL_FALSE; }
+
+extern "C" void APIENTRY glBindBuffer(GLenum target, GLuint buffer)
+{
+    switch (target)
+    {
+        case GL_ARRAY_BUFFER:
+            g_gl.boundArrayBuffer = buffer;
+            break;
+
+        case GL_ELEMENT_ARRAY_BUFFER:
+            g_gl.boundElementArrayBuffer = buffer;
+            break;
+
+        default:
+            g_gl.lastError = GL_INVALID_ENUM;
+            return;
+    }
+
+    if (buffer == 0)
+        return;
+
+    auto it = g_gl.buffers.find(buffer);
+    if (it == g_gl.buffers.end())
+    {
+        GLBufferObject bo {};
+        bo.id     = buffer;
+        bo.target = target;
+        g_gl.buffers.emplace(buffer, std::move(bo));
+    }
+    else
+    {
+        it->second.target = target;
+    }
+}
+
+extern "C" void APIENTRY glBufferStorage(GLenum target, GLsizeiptr size, const void *data, GLbitfield flags)
+{
+    GLuint bound = 0;
+
+    switch (target)
+    {
+        case GL_ARRAY_BUFFER:
+            bound = g_gl.boundArrayBuffer;
+            break;
+
+        case GL_ELEMENT_ARRAY_BUFFER:
+            bound = g_gl.boundElementArrayBuffer;
+            break;
+
+        default:
+            g_gl.lastError = GL_INVALID_ENUM;
+            return;
+    }
+
+    if (size < 0)
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return;
+    }
+
+    if (bound == 0)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return;
+    }
+
+    GLBufferObject *bo = QD3D12_GetBuffer(bound);
+    if (!bo)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return;
+    }
+
+    bo->target       = target;
+    bo->storageFlags = flags;
+    bo->data.resize((size_t)size);
+
+    if (size > 0)
+    {
+        if (data)
+            memcpy(bo->data.data(), data, (size_t)size);
+        else
+            memset(bo->data.data(), 0, (size_t)size);
+    }
+}
+
+extern "C" void APIENTRY glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage)
+{
+    (void)usage;
+    glBufferStorage(target, size, data, 0);
+}
+
+extern "C" void APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data)
+{
+    GLuint bound = 0;
+
+    switch (target)
+    {
+        case GL_ARRAY_BUFFER:
+            bound = g_gl.boundArrayBuffer;
+            break;
+
+        case GL_ELEMENT_ARRAY_BUFFER:
+            bound = g_gl.boundElementArrayBuffer;
+            break;
+
+        default:
+            g_gl.lastError = GL_INVALID_ENUM;
+            return;
+    }
+
+    if (offset < 0 || size < 0 || !data)
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return;
+    }
+
+    GLBufferObject *bo = QD3D12_GetBuffer(bound);
+    if (!bo)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return;
+    }
+
+    if ((size_t)offset > bo->data.size() || (size_t)size > (bo->data.size() - (size_t)offset))
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return;
+    }
+
+    memcpy(bo->data.data() + (size_t)offset, data, (size_t)size);
+}
+
+extern "C" void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
+{
+    if (count <= 0)
+        return;
+
+    if (first < 0)
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return;
+    }
+
+    std::vector<GLVertex> verts;
+    verts.reserve((size_t)count);
+
+    for (GLsizei i = 0; i < count; ++i)
+    {
+        GLVertex v {};
+        QD3D12_FetchArrayVertex(first + i, v);
+        verts.push_back(v);
+    }
+
+    FlushImmediate(mode, verts);
+}
+
+extern "C" void *APIENTRY glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
+{
+    GLuint bound = 0;
+
+    switch (target)
+    {
+        case GL_ARRAY_BUFFER:
+            bound = g_gl.boundArrayBuffer;
+            break;
+
+        case GL_ELEMENT_ARRAY_BUFFER:
+            bound = g_gl.boundElementArrayBuffer;
+            break;
+
+        default:
+            g_gl.lastError = GL_INVALID_ENUM;
+            return nullptr;
+    }
+
+    if (offset < 0 || length < 0)
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return nullptr;
+    }
+
+    GLBufferObject *bo = QD3D12_GetBuffer(bound);
+    if (!bo)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return nullptr;
+    }
+
+    if (bo->mapped)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return nullptr;
+    }
+
+    if ((size_t)offset > bo->data.size() || (size_t)length > (bo->data.size() - (size_t)offset))
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return nullptr;
+    }
+
+    // optional light validation
+    if ((access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) == 0)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return nullptr;
+    }
+
+    // emulate invalidation/orphan-ish behavior on CPU backing store
+#ifdef GL_MAP_INVALIDATE_RANGE_BIT
+    if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && length > 0)
+    {
+        memset(bo->data.data() + offset, 0, (size_t)length);
+    }
+#endif
+
+#ifdef GL_MAP_INVALIDATE_BUFFER_BIT
+    if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !bo->data.empty())
+    {
+        memset(bo->data.data(), 0, bo->data.size());
+    }
+#endif
+
+    bo->mapped       = true;
+    bo->mappedOffset = offset;
+    bo->mappedLength = length;
+    bo->mappedAccess = access;
+
+    return bo->data.data() + offset;
+}
+
+extern "C" GLboolean APIENTRY glUnmapBuffer(GLenum target)
+{
+    GLuint bound = 0;
+
+    switch (target)
+    {
+        case GL_ARRAY_BUFFER:
+            bound = g_gl.boundArrayBuffer;
+            break;
+
+        case GL_ELEMENT_ARRAY_BUFFER:
+            bound = g_gl.boundElementArrayBuffer;
+            break;
+
+        default:
+            g_gl.lastError = GL_INVALID_ENUM;
+            return GL_FALSE;
+    }
+
+    GLBufferObject *bo = QD3D12_GetBuffer(bound);
+    if (!bo)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return GL_FALSE;
+    }
+
+    if (!bo->mapped)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return GL_FALSE;
+    }
+
+    bo->mapped       = false;
+    bo->mappedOffset = 0;
+    bo->mappedLength = 0;
+    bo->mappedAccess = 0;
+
+    return GL_TRUE;
+}
+
+extern "C" void APIENTRY glGenQueries(GLsizei n, GLuint *ids)
+{
+    if (n < 0)
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return;
+    }
+
+    if (!ids)
+        return;
+
+    for (GLsizei i = 0; i < n; ++i)
+    {
+        GLuint           id = g_gl.nextQueryId++;
+        GLOcclusionQuery q {};
+        q.id        = id;
+        q.heapIndex = id % QD3D12_MaxQueries;  // simple scheme; good enough if IDs stay bounded
+        g_gl.queries.emplace(id, q);
+        ids[i] = id;
+    }
+}
+
+extern "C" void APIENTRY glDeleteQueries(GLsizei n, const GLuint *ids)
+{
+    if (n < 0)
+    {
+        g_gl.lastError = GL_INVALID_VALUE;
+        return;
+    }
+
+    if (!ids)
+        return;
+
+    for (GLsizei i = 0; i < n; ++i)
+    {
+        GLuint id = ids[i];
+        if (id == 0)
+            continue;
+
+        if (g_gl.currentQuery == id)
+        {
+            g_gl.lastError = GL_INVALID_OPERATION;
+            return;
+        }
+
+        g_gl.queries.erase(id);
+    }
+}
+
+extern "C" GLboolean APIENTRY glIsQuery(GLuint id) { return g_gl.queries.find(id) != g_gl.queries.end() ? GL_TRUE : GL_FALSE; }
+
+extern "C" void APIENTRY glBeginQuery(GLenum target, GLuint id)
+{
+    if (target != GL_SAMPLES_PASSED)
+    {
+        g_gl.lastError = GL_INVALID_ENUM;
+        return;
+    }
+
+    auto it = g_gl.queries.find(id);
+    if (it == g_gl.queries.end() || id == 0)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return;
+    }
+
+    if (g_gl.currentQuery != 0)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return;
+    }
+
+    GLOcclusionQuery &q = it->second;
+    q.active            = true;
+    q.pending           = false;
+    q.resultReady       = false;
+    q.result            = 0;
+
+    g_gl.currentQuery = id;
+
+    QueryMarker m {};
+    m.type = QueryMarker::Begin;
+    m.id   = id;
+    g_gl.queryMarkers.push_back(m);
+
+    if (!g_gl.queuedBatches.empty())
+        g_gl.queuedBatches.back().markerEnd = g_gl.queryMarkers.size();
+}
+
+extern "C" void APIENTRY glEndQuery(GLenum target)
+{
+    if (target != GL_SAMPLES_PASSED)
+    {
+        g_gl.lastError = GL_INVALID_ENUM;
+        return;
+    }
+
+    if (g_gl.currentQuery == 0)
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return;
+    }
+
+    auto it = g_gl.queries.find(g_gl.currentQuery);
+    if (it == g_gl.queries.end())
+    {
+        g_gl.lastError    = GL_INVALID_OPERATION;
+        g_gl.currentQuery = 0;
+        return;
+    }
+
+    it->second.active  = false;
+    it->second.pending = true;
+
+    QueryMarker m {};
+    m.type = QueryMarker::End;
+    m.id   = g_gl.currentQuery;
+    g_gl.queryMarkers.push_back(m);
+
+    g_gl.currentQuery = 0;
+
+    if (!g_gl.queuedBatches.empty())
+        g_gl.queuedBatches.back().markerEnd = g_gl.queryMarkers.size();
+}
+
+static void QD3D12_UpdateQueryResult(GLOcclusionQuery &q)
+{
+    if (!q.pending || q.resultReady)
+        return;
+
+    if (q.submittedFence == 0)
+        return;
+
+    if (g_gl.fence->GetCompletedValue() < q.submittedFence)
+        return;
+
+    q.result      = g_gl.occlusionReadbackCpu[q.heapIndex];
+    q.resultReady = true;
+    q.pending     = false;
+}
+
+extern "C" void APIENTRY glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint *params)
+{
+    if (!params)
+        return;
+
+    auto it = g_gl.queries.find(id);
+    if (it == g_gl.queries.end())
+    {
+        g_gl.lastError = GL_INVALID_OPERATION;
+        return;
+    }
+
+    GLOcclusionQuery &q = it->second;
+    QD3D12_UpdateQueryResult(q);
+
+    switch (pname)
+    {
+        case GL_QUERY_RESULT_AVAILABLE:
+            *params = q.resultReady ? GL_TRUE : GL_FALSE;
+            break;
+
+        case GL_QUERY_RESULT:
+            if (!q.resultReady)
+            {
+                QD3D12_WaitForGPU();
+                QD3D12_UpdateQueryResult(q);
+            }
+            *params = (GLuint)q.result;
+            break;
+
+        default:
+            g_gl.lastError = GL_INVALID_ENUM;
+            break;
+    }
+}
+
+extern "C" void APIENTRY glGetQueryObjectiv(GLuint id, GLenum pname, GLint *params)
+{
+    if (!params)
+        return;
+
+    GLuint u = 0;
+    glGetQueryObjectuiv(id, pname, &u);
+    *params = (GLint)u;
 }

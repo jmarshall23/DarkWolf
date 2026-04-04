@@ -1,5 +1,7 @@
 #pragma once
 
+#define __gl_h_
+
 #include <stddef.h>
 #include <stdint.h>
 #include <d3d12.h>
@@ -313,6 +315,22 @@ extern "C" {
 #endif
 #ifndef GL_TEXTURE
 #define GL_TEXTURE 0x1702
+#endif
+
+#ifndef GL_SAMPLES_PASSED
+#define GL_SAMPLES_PASSED 0x8914
+#endif
+
+#ifndef GL_QUERY_RESULT
+#define GL_QUERY_RESULT 0x8866
+#endif
+
+#ifndef GL_QUERY_RESULT_AVAILABLE
+#define GL_QUERY_RESULT_AVAILABLE 0x8867
+#endif
+
+#ifndef GL_CURRENT_QUERY
+#define GL_CURRENT_QUERY 0x8865
 #endif
 
 /* texture/env */
@@ -654,6 +672,30 @@ extern "C" {
 #define GL_RGBA8 0x8058
 #endif
 
+#ifndef GL_MAP_READ_BIT
+#define GL_MAP_READ_BIT 0x0001
+#endif
+
+#ifndef GL_MAP_WRITE_BIT
+#define GL_MAP_WRITE_BIT 0x0002
+#endif
+
+#ifndef GL_MAP_INVALIDATE_RANGE_BIT
+#define GL_MAP_INVALIDATE_RANGE_BIT 0x0004
+#endif
+
+#ifndef GL_MAP_INVALIDATE_BUFFER_BIT
+#define GL_MAP_INVALIDATE_BUFFER_BIT 0x0008
+#endif
+
+#ifndef GL_MAP_FLUSH_EXPLICIT_BIT
+#define GL_MAP_FLUSH_EXPLICIT_BIT 0x0010
+#endif
+
+#ifndef GL_MAP_UNSYNCHRONIZED_BIT
+#define GL_MAP_UNSYNCHRONIZED_BIT 0x0020
+#endif
+
 /* hints / queries / errors */
 #ifndef GL_PERSPECTIVE_CORRECTION_HINT
 #define GL_PERSPECTIVE_CORRECTION_HINT 0x0C50
@@ -670,6 +712,15 @@ extern "C" {
 #ifndef GL_MAX_TEXTURE_SIZE
 #define GL_MAX_TEXTURE_SIZE 0x0D33
 #endif
+
+#ifndef GL_VIEWPORT
+#define GL_VIEWPORT 0x0BA2
+#endif
+
+#ifndef GL_PROJECTION_MATRIX
+#define GL_PROJECTION_MATRIX 0x0BA7
+#endif
+
 #ifndef GL_NO_ERROR
 #define GL_NO_ERROR 0
 #endif
@@ -719,6 +770,19 @@ extern "C" {
 #ifndef GL_TEXTURE3_ARB
 #define GL_TEXTURE3_ARB 0x84C3
 #endif
+#ifndef GL_TEXTURE0
+#define GL_TEXTURE0 0x84C0
+#endif
+#ifndef GL_TEXTURE1
+#define GL_TEXTURE1 0x84C1
+#endif
+#ifndef GL_TEXTURE2
+#define GL_TEXTURE2 0x84C2
+#endif
+#ifndef GL_TEXTURE3
+#define GL_TEXTURE3 0x84C3
+#endif
+
 #ifndef GL_ACTIVE_TEXTURE_ARB
 #define GL_ACTIVE_TEXTURE_ARB 0x84E0
 #endif
@@ -810,6 +874,8 @@ extern "C" {
     WINGDIAPI void APIENTRY glLoadMatrixf(const GLfloat* m);
     WINGDIAPI void APIENTRY glLoadModelMatrixf(const float* m16);
     WINGDIAPI void APIENTRY glGetFloatv(GLenum pname, GLfloat* params);
+    WINGDIAPI void APIENTRY glMultMatrixf(const GLfloat *m);
+    WINGDIAPI void APIENTRY glGetDoublev(GLenum pname, GLdouble *params);
     WINGDIAPI void APIENTRY glGetIntegerv(GLenum pname, GLint* params);
     WINGDIAPI void APIENTRY glFrustum(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar);
     WINGDIAPI void APIENTRY glDepthFunc(GLenum func);
@@ -820,7 +886,13 @@ extern "C" {
     WINGDIAPI void APIENTRY glViewport(GLint x, GLint y, GLsizei width, GLsizei height);
     WINGDIAPI void APIENTRY glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
     WINGDIAPI GLenum APIENTRY glGetError(void);
-
+    WINGDIAPI void APIENTRY          glGenBuffers(GLsizei n, GLuint *buffers);
+    WINGDIAPI void APIENTRY          glDeleteBuffers(GLsizei n, const GLuint *buffers);
+    WINGDIAPI void APIENTRY          glBindBuffer(GLenum target, GLuint buffer);
+    WINGDIAPI void APIENTRY          glBufferStorage(GLenum target, GLsizeiptr size, const void *data, GLbitfield flags);
+    WINGDIAPI void APIENTRY          glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage);
+    WINGDIAPI void APIENTRY          glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data);
+    WINGDIAPI void APIENTRY          glDrawArrays(GLenum mode, GLint first, GLsizei count);
     WINGDIAPI void APIENTRY glEnable(GLenum cap);
     WINGDIAPI void APIENTRY glDisable(GLenum cap);
     WINGDIAPI void APIENTRY glBlendFunc(GLenum sfactor, GLenum dfactor);
@@ -891,6 +963,9 @@ extern "C" {
     WINGDIAPI void APIENTRY glStencilOp(GLenum sfail, GLenum dpfail, GLenum dppass);
     WINGDIAPI void APIENTRY glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a);
 
+    WINGDIAPI void *APIENTRY      glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);
+    WINGDIAPI GLboolean APIENTRY glUnmapBuffer(GLenum target);
+
     WINGDIAPI void APIENTRY glActiveTextureARB(GLenum texture);
     WINGDIAPI void APIENTRY glClientActiveTextureARB(GLenum texture);
     WINGDIAPI void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t);
@@ -903,6 +978,15 @@ extern "C" {
     WINGDIAPI void APIENTRY glFogfv(GLenum pname, const GLfloat* params);
     WINGDIAPI void APIENTRY glFogi(GLenum pname, GLint param);
     WINGDIAPI void APIENTRY glFogf(GLenum pname, GLfloat param);
+
+    WINGDIAPI void APIENTRY      glGenQueries(GLsizei n, GLuint *ids);
+    WINGDIAPI void APIENTRY      glDeleteQueries(GLsizei n, const GLuint *ids);
+    WINGDIAPI GLboolean APIENTRY glIsQuery(GLuint id);
+    WINGDIAPI void APIENTRY      glBeginQuery(GLenum target, GLuint id);
+    WINGDIAPI void APIENTRY      glEndQuery(GLenum target);
+    WINGDIAPI void APIENTRY      glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint *params);
+    WINGDIAPI void APIENTRY      glGetQueryObjectiv(GLuint id, GLenum pname, GLint *params);
+    WINGDIAPI void APIENTRY      glGetIntegerv(GLenum pname, GLint *params);
 
 #endif /* QD3D12_NO_GL_PROTOTYPES */
 
