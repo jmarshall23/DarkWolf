@@ -161,7 +161,7 @@
     </ResourceCompile>
     <Link>
       <AdditionalDependencies>openal/libs/win64/OpenAL32.lib;dxgi.lib;d3d12.lib;d3dcompiler.lib;winmm.lib;wsock32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <OutputFile>../WolfSP.exe</OutputFile>
+      <OutputFile>../WolfSP_d.exe</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>.\Debug/WolfSP.pdb</ProgramDatabaseFile>
@@ -255,7 +255,7 @@
     </ResourceCompile>
     <Link>
       <AdditionalDependencies>openal/libs/win64/OpenAL32.lib;dxgi.lib;d3d12.lib;d3dcompiler.lib;winmm.lib;wsock32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <OutputFile>.\Release/WolfSP.exe</OutputFile>
+      <OutputFile>../WolfSP.exe</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <IgnoreSpecificDefaultLibraries>libc;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <GenerateDebugInformation>true</GenerateDebugInformation>

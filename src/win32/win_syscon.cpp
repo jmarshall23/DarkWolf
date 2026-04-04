@@ -48,7 +48,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define INPUT_ID        101
 
 #define SYS_CONSOLE_CLASS   "Q3WinConsole_x64"
-#define SYS_CONSOLE_TITLE   "Quake III Arena Console"
+#define SYS_CONSOLE_TITLE   "Wolfenstein Console"
 
 #define SYS_CLIENT_WIDTH    540
 #define SYS_CLIENT_HEIGHT   450
