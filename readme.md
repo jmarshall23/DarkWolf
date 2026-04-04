@@ -53,12 +53,6 @@ https://ibb.co/C3jNFwfy
 
 ---
 
-## Notes
-
-This project is intended for research, learning, and preservation of classic rendering techniques combined with modern graphics APIs.
-
----
-
 ## Tags
 
 `rtcw` `wolfenstein` `dxr` `d3d12` `raytracing` `opengl` `idtech3` `graphics` `rendering`
