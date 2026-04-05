@@ -1622,7 +1622,7 @@ static const uint GL_RAYTRACING_LIGHT_TYPE_POINT = 0;
 static const uint GL_RAYTRACING_LIGHT_TYPE_RECT  = 1;
 
 static const uint GEOMETRY_FLAG_SKELETAL = 1;
-static const uint GEOMETRY_FLAG_UNLIT = 2;
+static const uint GEOMETRY_FLAG_UNLIT    = 2;
 
 float3 LoadScenePosition(uint2 pixel)
 {
@@ -1773,6 +1773,7 @@ float TraceSoftShadow(float3 worldPos, float3 N, Light Lgt, float3 toLight, floa
 
     return shadowAccum / (float)SHADOW_SAMPLES;
 }
+
 float RectLightShadow(float3 worldPos, float3 N, Light Lgt, uint2 pixel)
 {
     uint sampleCount = max(Lgt.samples, 1u);
@@ -1782,7 +1783,6 @@ float RectLightShadow(float3 worldPos, float3 N, Light Lgt, uint2 pixel)
 
     float rand = Hash12((float2)pixel + worldPos.xy + float2(worldPos.z, dot(N.xy, N.xy)));
 
-    // receiver bias only
     float NoL_center = saturate(dot(N, normalize(Lgt.position - worldPos)));
     float normalBias = lerp(gShadowBias * 4.0, gShadowBias * 0.75, NoL_center);
     float3 baseOrigin = worldPos + N * normalBias;
@@ -1793,7 +1793,6 @@ float RectLightShadow(float3 worldPos, float3 N, Light Lgt, uint2 pixel)
         float2 xi = Hammersley2D(s, sampleCount, rand);
         float2 uv = xi * 2.0 - 1.0;
 
-        // sample directly on the rect surface
         float3 sampleLightPos =
             Lgt.position +
             Lgt.axisU * (uv.x * Lgt.halfWidth) +
@@ -1810,14 +1809,12 @@ float RectLightShadow(float3 worldPos, float3 N, Light Lgt, uint2 pixel)
 
         float3 L = toLight / distToLight;
 
-        // receiver must face the light
         float NdotL = dot(N, L);
         if (NdotL <= 0.0)
         {
             continue;
         }
 
-        // emitter must face the receiver
         float emitTerm = (Lgt.twoSided != 0)
             ? abs(dot(Lgt.normal, -L))
             : dot(Lgt.normal, -L);
@@ -1827,7 +1824,6 @@ float RectLightShadow(float3 worldPos, float3 N, Light Lgt, uint2 pixel)
             continue;
         }
 
-        // small ray-direction push helps self-hit rejection
         float3 shadowOrigin = baseOrigin + L * (gShadowBias * 0.5);
         float shadowTMax = max(distToLight - gShadowBias, 0.001);
 
@@ -1862,7 +1858,7 @@ float ComputeAmbientOcclusion(float3 worldPos, float3 N, uint2 pixel)
 
         aoDir = normalize(aoDir);
 
-        float3 aoOrigin = worldPos + N * (gShadowBias * 2.0) + aoDir * (gShadowBias * 1.5);
+        float3 aoOrigin = worldPos + N * (gShadowBias * 0.15);
 
         visibility += TraceShadow(aoOrigin, aoDir, AO_RADIUS);
     }
@@ -1872,6 +1868,7 @@ float ComputeAmbientOcclusion(float3 worldPos, float3 N, uint2 pixel)
 
     return visibility;
 }
+
 
 float ComputeSkyVisibility(float3 worldPos, float3 N, uint2 pixel)
 {
@@ -1958,6 +1955,38 @@ float ComputeCavity(uint2 pixel, float3 worldPos, float3 N)
     return 1.0 - cavity * 0.18;
 }
 
+float3 ComputeSpecular(float3 N, float3 V, float3 L, float3 lightColor, float lightIntensity, float atten, float shadow, float3 baseAlbedo)
+{
+    if (gEnableSpecular == 0)
+        return 0.0;
+
+    float3 H = normalize(V + L);
+
+    float NdotL = saturate(dot(N, L));
+    float NdotV = saturate(dot(N, V));
+    float NdotH = saturate(dot(N, H));
+    float VdotH = saturate(dot(V, H));
+
+    if (NdotL <= 0.0 || NdotV <= 0.0)
+        return 0.0;
+
+    float shininess = 48.0;
+    float specPow = pow(NdotH, shininess);
+
+    float3 dielectricF0 = float3(0.04, 0.04, 0.04);
+    float luminance = dot(baseAlbedo, float3(0.299, 0.587, 0.114));
+    float metalHint = saturate((max(max(baseAlbedo.r, baseAlbedo.g), baseAlbedo.b) - 0.75) * 1.5);
+    float3 F0 = lerp(dielectricF0, baseAlbedo, metalHint);
+
+    float3 fresnel = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+
+    float energyNorm = (shininess + 8.0) * 0.125;
+    float3 spec = fresnel * specPow * energyNorm;
+
+    return lightColor * (lightIntensity * atten * shadow * NdotL) * spec;
+}
+)"
+R"(
 [shader("raygeneration")]
 void RayGen()
 {
@@ -1975,11 +2004,11 @@ void RayGen()
         return;
     }
 
-    float3 baseAlbedo = albedoSample.rgb;
-    float3 worldPos   = LoadScenePosition(pixel);
+    float3 baseAlbedo    = albedoSample.rgb;
+    float3 worldPos      = LoadScenePosition(pixel);
     float4 normalSample  = LoadSceneNormal(pixel);
-    float3 N = normalize(normalSample.xyz);
-    float3 V          = normalize(gCameraPos.xyz - worldPos);
+    float3 N             = normalize(normalSample.xyz);
+    float3 V             = normalize(gCameraPos.xyz - worldPos);
 
     float geoFlag = normalSample.w;
 
@@ -1988,7 +2017,8 @@ void RayGen()
     float3 albedo = baseAlbedo * cavity;
     albedo *= microShadow;
 
-    float ao      = ComputeAmbientOcclusion(worldPos, N, pixel);
+    float aoRay      = ComputeAmbientOcclusion(worldPos, N, pixel);
+	float ao         = aoRay;
     float skyVis  = ComputeSkyVisibility(worldPos, N, pixel);
 
     float upness = saturate(N.z * 0.5 + 0.5);
@@ -1999,9 +2029,11 @@ void RayGen()
     float skyStrength = 2.0;
 
     float3 lightingAccum = 0.2;
+    float3 specularAccum = 0.0;
+
     lightingAccum += skyColor * (skyStrength * skyVis);
 
-    if(geoFlag == GEOMETRY_FLAG_SKELETAL)
+    if (geoFlag == GEOMETRY_FLAG_SKELETAL)
     {
         lightingAccum += 0.2;
     }
@@ -2021,19 +2053,21 @@ void RayGen()
             float radius = max(Lgt.radius, 1e-4);
 
             float atten = saturate((radius - dist) / radius);
-			atten = atten * atten;
+            atten = atten * atten;
 
             float wrap = 0.35;
-            float NdotL = saturate((dot(N, L) + wrap) / (1.0 + wrap));
+            float NdotLWrap = saturate((dot(N, L) + wrap) / (1.0 + wrap));
 
             float shadow = 1.0;
-            if (NdotL > 0.0001 && atten > 0.0 && dist > 0.01)
+            if (NdotLWrap > 0.0001 && atten > 0.0 && dist > 0.01)
             {
                 shadow = TraceSoftShadow(worldPos, N, Lgt, toLight, dist);
             }
 
-            float3 diffuse = Lgt.color * (Lgt.intensity * atten * NdotL * shadow);
+            float3 diffuse = Lgt.color * (Lgt.intensity * atten * NdotLWrap * shadow);
             lightingAccum += diffuse;
+
+            specularAccum += ComputeSpecular(N, V, L, Lgt.color, Lgt.intensity, atten, shadow, baseAlbedo);
         }
         else if (Lgt.type == GL_RAYTRACING_LIGHT_TYPE_RECT)
         {
@@ -2055,7 +2089,8 @@ void RayGen()
             uint sampleCount = max(Lgt.samples, 1u);
             sampleCount = min(sampleCount, 16u);
 
-            float3 rectAccum = 0.0;
+            float3 rectDiffuseAccum = 0.0;
+            float3 rectSpecAccum = 0.0;
             float rand = Hash12((float2)pixel * 0.73 + worldPos.xy + float2(worldPos.z, centerDist));
 
             [loop]
@@ -2080,27 +2115,46 @@ void RayGen()
                     ? abs(dot(-L, Lgt.normal))
                     : saturate(dot(-L, Lgt.normal));
 
-                rectAccum += Lgt.color * (Lgt.intensity * NdotL * faceTerm);
+                float sampleWeight = Lgt.intensity * NdotL * faceTerm;
+
+                rectDiffuseAccum += Lgt.color * sampleWeight;
+
+                rectSpecAccum += ComputeSpecular(
+                    N,
+                    V,
+                    L,
+                    Lgt.color,
+                    Lgt.intensity * faceTerm,
+                    1.0,
+                    1.0,
+                    baseAlbedo);
             }
 
-            rectAccum /= (float)sampleCount;
-            lightingAccum += clamp(rectAccum * atten * shadow, 0.0, 4.0);
+            rectDiffuseAccum /= (float)sampleCount;
+            rectSpecAccum    /= (float)sampleCount;
+
+            lightingAccum += clamp(rectDiffuseAccum * atten * shadow, 0.0, 4.0);
+            specularAccum += rectSpecAccum * atten * shadow;
         }
     }
 
-    lightingAccum = lightingAccum * ao;
+    lightingAccum *= ao;
+    specularAccum *= ao;
 
-    if(geoFlag == GEOMETRY_FLAG_SKELETAL) {
-        lightingAccum = lightingAccum * 1.2;
+    if (geoFlag == GEOMETRY_FLAG_SKELETAL)
+    {
+        lightingAccum *= 1.2;
+        specularAccum *= 1.15;
     }
 
-    if(geoFlag == GEOMETRY_FLAG_UNLIT) 
+    if (geoFlag == GEOMETRY_FLAG_UNLIT)
     {
         gOutputTex[pixel] = float4(baseAlbedo, albedoSample.a);
     }
     else
     {
-        gOutputTex[pixel] = float4(albedo * lightingAccum, albedoSample.a);
+        float3 finalColor = albedo * lightingAccum + specularAccum;
+        gOutputTex[pixel] = float4(finalColor, albedoSample.a);
     }
 }
 )";

@@ -1084,6 +1084,9 @@ void Bullet_Fire_Extended( gentity_t *source, gentity_t *attacker, vec3_t start,
 				return;
 			}
 			// done.
+// jmarshall
+			attacker->client->ps.weaponTime += 2;
+// jmarshall end
 
 			oldHealth = traceEnt->health;
 			G_Damage( traceEnt, attacker, attacker, forward, tr.endpos, damage, dflags, ammoTable[attacker->s.weapon].mod );
