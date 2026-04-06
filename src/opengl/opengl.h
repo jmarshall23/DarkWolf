@@ -333,6 +333,31 @@ extern "C" {
 #define GL_CURRENT_QUERY 0x8865
 #endif
 
+#ifndef GL_POINT_SIZE
+#define GL_POINT_SIZE 0x0B11
+#endif
+
+#ifndef GL_POINT_SMOOTH
+#define GL_POINT_SMOOTH 0x0B10
+#endif
+
+#ifndef GL_POINT_SIZE_MIN_EXT
+#define GL_POINT_SIZE_MIN_EXT 0x8126
+#endif
+
+#ifndef GL_POINT_SIZE_MAX_EXT
+#define GL_POINT_SIZE_MAX_EXT 0x8127
+#endif
+
+#ifndef GL_POINT_FADE_THRESHOLD_SIZE_EXT
+#define GL_POINT_FADE_THRESHOLD_SIZE_EXT 0x8128
+#endif
+
+#ifndef GL_DISTANCE_ATTENUATION_EXT
+#define GL_DISTANCE_ATTENUATION_EXT 0x8129
+#endif
+
+
 /* texture/env */
 #ifndef GL_TEXTURE_2D
 #define GL_TEXTURE_2D 0x0DE1
@@ -947,6 +972,10 @@ extern "C" {
         GLenum format, GLenum type, GLvoid* data);
     WINGDIAPI void APIENTRY glDrawBuffer(GLenum mode);
     WINGDIAPI void APIENTRY glReadBuffer(GLenum mode);
+
+    WINGDIAPI void APIENTRY glPointSize(GLfloat size);
+    WINGDIAPI void APIENTRY glPointParameterfEXT(GLenum pname, GLfloat param);
+    WINGDIAPI void APIENTRY glPointParameterfvEXT(GLenum pname, const GLfloat* params);
 
     WINGDIAPI void APIENTRY glEnableClientState(GLenum array);
     WINGDIAPI void APIENTRY glDisableClientState(GLenum array);
