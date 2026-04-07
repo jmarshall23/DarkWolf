@@ -190,26 +190,42 @@ int R_ComputeLOD( trRefEntity_t *ent ) {
 	float flod, lodscale;
 	float projectedRadius;
 	md3Frame_t *frame;
+	mdrHeader_t* mdr;
+	mdrFrame_t* mdrframe;
 	int lod;
 
 	if ( tr.currentModel->numLods < 2 ) {
 		// model has only 1 LOD level, skip computations and bias
 		lod = 0;
-	} else
+	}
+	else
 	{
 		// multiple LODs exist, so compute projected bounding sphere
 		// and use that as a criteria for selecting LOD
 
 		// RF, checked for a forced lowest LOD
-		if ( ent->e.reFlags & REFLAG_FORCE_LOD ) {
-			return ( tr.currentModel->numLods - 1 );
+		if (ent->e.reFlags & REFLAG_FORCE_LOD) {
+			return (tr.currentModel->numLods - 1);
 		}
 
-		frame = ( md3Frame_t * )( ( ( unsigned char * ) tr.currentModel->md3[0] ) + tr.currentModel->md3[0]->ofsFrames );
+		if (tr.currentModel->type == MOD_MDR)
+		{
+			int frameSize;
+			mdr = (mdrHeader_t*)tr.currentModel->modelData;
+			frameSize = (size_t)(&((mdrFrame_t*)0)->bones[mdr->numBones]);
 
-		frame += ent->e.frame;
+			mdrframe = (mdrFrame_t*)((byte*)mdr + mdr->ofsFrames + frameSize * ent->e.frame);
 
-		radius = RadiusFromBounds( frame->bounds[0], frame->bounds[1] );
+			radius = RadiusFromBounds(mdrframe->bounds[0], mdrframe->bounds[1]);
+		}
+		else
+		{
+			frame = (md3Frame_t*)(((unsigned char*)tr.currentModel->md3[0]) + tr.currentModel->md3[0]->ofsFrames);
+
+			frame += ent->e.frame;
+
+			radius = RadiusFromBounds(frame->bounds[0], frame->bounds[1]);
+		}
 
 		//----(SA)	testing
 		if ( ent->e.reFlags & REFLAG_ORIENT_LOD ) {

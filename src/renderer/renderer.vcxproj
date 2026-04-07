@@ -267,6 +267,7 @@
     <ClCompile Include="..\jpeg-6\jutils.c" />
     <ClCompile Include="..\win32\win_glimp.cpp" />
     <ClCompile Include="tr_animation.cpp" />
+    <ClCompile Include="tr_animation_mdr.cpp" />
     <ClCompile Include="tr_backend.cpp" />
     <ClCompile Include="tr_bsp.cpp" />
     <ClCompile Include="tr_cmds.cpp" />
