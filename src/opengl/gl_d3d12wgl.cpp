@@ -1,7 +1,7 @@
 #include "opengl.h"
 
 // Your D3D12 wrapper exports
-extern bool QD3D12_InitForQuake(HWND hwnd, int width, int height);
+extern bool QD3D12_InitForQuakeWindow(struct QD3D12Window* window, HWND hwnd, int width, int height, bool fastPath);
 extern void QD3D12_ShutdownForQuake(void);
 extern void QD3D12_BeginFrame();
 extern "C" void APIENTRY glSelectTextureSGIS(GLenum texture);
@@ -12,15 +12,21 @@ extern "C" void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat
 // Existing GL wrapper function from your compatibility layer
 extern "C" void APIENTRY glBindTexture(unsigned int target, unsigned int texture);
 
+void QD3D12_SetCurrentWindow(struct QD3D12Window* window);
+
 struct QD3D12FakeContext
 {
     HDC   dc;
     HWND  hwnd;
     bool  initialized;
+    struct QD3D12Window* window;
 };
 
 static QD3D12FakeContext* g_currentContext = nullptr;
 static HDC                g_currentDC = nullptr;
+
+struct QD3D12Window* AllocD3D12Window();
+void FreeD3D12Window(struct QD3D12Window* wnd);
 
 static void QD3D12_GetClientSize(HWND hwnd, int& w, int& h)
 {
@@ -46,6 +52,7 @@ extern "C" QD3D12_HGLRC WINAPI qd3d12_wglCreateContext(HDC hdc)
     ctx->dc = hdc;
     ctx->hwnd = hwnd;
     ctx->initialized = false;
+    ctx->window = AllocD3D12Window();
     return (QD3D12_HGLRC)ctx;
 }
 
@@ -55,20 +62,22 @@ extern "C" BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
     {
         g_currentDC = nullptr;
         g_currentContext = nullptr;
+        QD3D12_SetCurrentWindow(NULL);
         return TRUE;
     }
 
     QD3D12FakeContext* ctx = (QD3D12FakeContext*)hglrc;
     ctx->dc = hdc;
 
-    if (!ctx->initialized)
-    {
-        int w = 640, h = 480;
-        QD3D12_GetClientSize(ctx->hwnd, w, h);
+    
+    int w = 640, h = 480;
+    QD3D12_GetClientSize(ctx->hwnd, w, h);
 
-        if (!QD3D12_InitForQuake(ctx->hwnd, w, h))
-            return FALSE;
+    if (!QD3D12_InitForQuakeWindow(ctx->window,ctx->hwnd, w, h, ctx->initialized))
+       return FALSE;
 
+	if (!ctx->initialized)
+	{
         if(!glRaytracingInit())
             return FALSE;
 
@@ -82,6 +91,7 @@ extern "C" BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
 
     g_currentDC = hdc;
     g_currentContext = ctx;
+    QD3D12_SetCurrentWindow(ctx->window);
     return TRUE;
 }
 
@@ -110,6 +120,8 @@ extern "C" BOOL WINAPI qd3d12_wglDeleteContext(QD3D12_HGLRC hglrc)
         g_currentContext = nullptr;
         g_currentDC = nullptr;
     }
+
+    FreeD3D12Window(ctx->window);
 
     delete ctx;
     return TRUE;

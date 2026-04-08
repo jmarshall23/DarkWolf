@@ -28,7 +28,6 @@ using Microsoft::WRL::ComPtr;
 #include "opengl.h"
 
 static D3D12_GPU_DESCRIPTOR_HANDLE QD3D12_SrvGpu(UINT index);
-static void QD3D12_CreateDSV();
 static D3D12_CPU_DESCRIPTOR_HANDLE QD3D12_SrvCpu(UINT index);
 static Mat4 CurrentModelMatrix();
 
@@ -314,12 +313,56 @@ struct QueuedBatch
     size_t markerBegin = 0;
     size_t markerEnd   = 0;
 };
-struct GLState
+
+struct QD3D12Window
 {
     HWND hwnd = nullptr;
+    HDC  hdc = nullptr;
+
     UINT width = 640;
     UINT height = 480;
 
+    ComPtr<IDXGISwapChain3> swapChain;
+    UINT frameIndex = 0;
+
+    ComPtr<ID3D12DescriptorHeap> rtvHeap;
+    UINT rtvStride = 0;
+    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> backBuffers;
+    D3D12_RESOURCE_STATES backBufferState[QD3D12_FrameCount] = {};
+
+    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> normalBuffers;
+    D3D12_RESOURCE_STATES normalBufferState[QD3D12_FrameCount] = {};
+
+    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> positionBuffers;
+    D3D12_RESOURCE_STATES positionBufferState[QD3D12_FrameCount] = {};
+
+    ComPtr<ID3D12DescriptorHeap> dsvHeap;
+    ComPtr<ID3D12Resource> depthBuffer;
+
+    UINT normalSrvIndex[QD3D12_FrameCount] = { UINT_MAX, UINT_MAX };
+    D3D12_CPU_DESCRIPTOR_HANDLE normalSrvCpu[QD3D12_FrameCount]{};
+    D3D12_GPU_DESCRIPTOR_HANDLE normalSrvGpu[QD3D12_FrameCount]{};
+
+    UINT positionSrvIndex[QD3D12_FrameCount] = { UINT_MAX, UINT_MAX };
+    D3D12_CPU_DESCRIPTOR_HANDLE positionSrvCpu[QD3D12_FrameCount]{};
+    D3D12_GPU_DESCRIPTOR_HANDLE positionSrvGpu[QD3D12_FrameCount]{};
+
+    D3D12_VIEWPORT viewport{};
+    D3D12_RECT scissor{};
+
+    FrameResources frames[QD3D12_FrameCount];
+};
+
+struct QD3D12Window* AllocD3D12Window() {
+    return new QD3D12Window();
+}
+
+void FreeD3D12Window(struct QD3D12Window* wnd) {
+    delete wnd;
+}
+
+struct GLState
+{
     GLfloat pointSize = 1.0f;
     GLfloat pointSizeMin = 1.0f;
     GLfloat pointSizeMax = 64.0f;
@@ -450,36 +493,9 @@ struct GLState
     ComPtr<IDXGIFactory4> factory;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
-    ComPtr<IDXGISwapChain3> swapChain;
-    UINT frameIndex = 0;
-
-    ComPtr<ID3D12DescriptorHeap> rtvHeap;
-    UINT rtvStride = 0;
-    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> backBuffers;
-
-    // MRT 1: normals
-    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> normalBuffers;
-    D3D12_RESOURCE_STATES normalBufferState[QD3D12_FrameCount] = {};
-
-    // MRT 2: world-space positions
-    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> positionBuffers;
-    D3D12_RESOURCE_STATES positionBufferState[QD3D12_FrameCount] = {};
-
-    ComPtr<ID3D12DescriptorHeap> dsvHeap;
-    ComPtr<ID3D12Resource> depthBuffer;
 
     ComPtr<ID3D12DescriptorHeap> srvHeap;
     UINT srvStride = 0;
-
-    // SRVs for normal MRTs
-    UINT normalSrvIndex[QD3D12_FrameCount] = { UINT_MAX, UINT_MAX };
-    D3D12_CPU_DESCRIPTOR_HANDLE normalSrvCpu[QD3D12_FrameCount]{};
-    D3D12_GPU_DESCRIPTOR_HANDLE normalSrvGpu[QD3D12_FrameCount]{};
-
-    // SRVs for position MRTs
-    UINT positionSrvIndex[QD3D12_FrameCount] = { UINT_MAX, UINT_MAX };
-    D3D12_CPU_DESCRIPTOR_HANDLE positionSrvCpu[QD3D12_FrameCount]{};
-    D3D12_GPU_DESCRIPTOR_HANDLE positionSrvGpu[QD3D12_FrameCount]{};
 
     ComPtr<ID3D12GraphicsCommandList> cmdList;
     FrameResources frames[QD3D12_FrameCount];
@@ -496,9 +512,6 @@ struct GLState
     ComPtr<ID3DBlob> psAlphaBlob;
     ComPtr<ID3DBlob> psUntexturedBlob;
 
-    D3D12_VIEWPORT viewport{};
-    D3D12_RECT scissor{};
-
     D3D12_RESOURCE_STATES backBufferState[QD3D12_FrameCount] = {};
 
     TextureResource whiteTexture;
@@ -510,14 +523,22 @@ struct GLState
 };
 
 static GLState g_gl;
+static std::unordered_map<HWND, QD3D12Window> g_windows;
+ QD3D12Window* g_currentWindow = nullptr;
+
+ void QD3D12_SetCurrentWindow(struct QD3D12Window* window) {
+     g_currentWindow = window;
+ }
+
 static GLuint g_lightingTextureId = 0;
 static TextureResource* g_lightingTexture = nullptr;
 static D3D12_RESOURCE_STATES  g_lightingTextureState = D3D12_RESOURCE_STATE_COMMON;
 
 static D3D12_CPU_DESCRIPTOR_HANDLE CurrentPositionRTV()
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE h = g_gl.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += SIZE_T((QD3D12_FrameCount * 2) + g_gl.frameIndex) * SIZE_T(g_gl.rtvStride);
+    QD3D12Window& w = *g_currentWindow;
+    D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += SIZE_T((QD3D12_FrameCount * 2) + w.frameIndex) * SIZE_T(w.rtvStride);
     return h;
 }
 
@@ -599,7 +620,7 @@ static void QD3D12_RetireResource(ComPtr<ID3D12Resource>& res)
 
     if (g_gl.frameOpen)
     {
-        fenceValue = g_gl.frames[g_gl.frameIndex].fenceValue;
+        fenceValue = g_gl.frames[g_currentWindow->frameIndex].fenceValue;
         if (fenceValue == 0)
             fenceValue = g_gl.nextFenceValue;
     }
@@ -1183,8 +1204,8 @@ static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource*
     key.alphaRef = g_gl.alphaRef;
     key.useTex0 = useTex0 ? 1.0f : 0.0f;
     key.useTex1 = useTex1 ? 1.0f : 0.0f;
-    key.viewport = g_gl.viewport;
-    key.scissor = g_gl.scissor;
+    key.viewport = g_currentWindow->viewport;
+    key.scissor = g_currentWindow->scissor;
     key.tex1IsLightmap = useTex1 ? 1.0f : 0.0f;
     key.texEnvMode0 = MapTexEnvMode(g_gl.texEnvMode[0]);
     key.texEnvMode1 = MapTexEnvMode(g_gl.texEnvMode[1]);
@@ -1474,8 +1495,8 @@ static UploadAlloc QD3D12_AllocUpload(UINT bytes, UINT alignment)
 
     UploadAlloc out;
     out.offset = alignedOffset;
-    out.cpu = g_gl.upload.cpuBase[g_gl.frameIndex] + alignedOffset;
-    out.gpu = g_gl.upload.gpuBase[g_gl.frameIndex] + alignedOffset;
+    out.cpu = g_gl.upload.cpuBase[g_currentWindow->frameIndex] + alignedOffset;
+    out.gpu = g_gl.upload.gpuBase[g_currentWindow->frameIndex] + alignedOffset;
 
     g_gl.upload.offset = alignedOffset + bytes;
     return out;
@@ -1529,50 +1550,50 @@ qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 QD3D12_CHECK(g_gl.device->CreateCommandQueue(&qd, IID_PPV_ARGS(&g_gl.queue)));
 }
 
-static void QD3D12_CreateSwapChain()
+static void QD3D12_CreateSwapChainForWindow(QD3D12Window& w)
 {
-    DXGI_SWAP_CHAIN_DESC1 sd{};
-    sd.BufferCount = QD3D12_FrameCount;
-    sd.Width = g_gl.width;
-    sd.Height = g_gl.height;
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    sd.SampleDesc.Count = 1;
-    sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+	DXGI_SWAP_CHAIN_DESC1 sd{};
+	sd.BufferCount = QD3D12_FrameCount;
+	sd.Width = w.width;
+	sd.Height = w.height;
+	sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+	sd.SampleDesc.Count = 1;
+	sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
-    ComPtr<IDXGISwapChain1> sc1;
-    QD3D12_CHECK(g_gl.factory->CreateSwapChainForHwnd(
-        g_gl.queue.Get(),
-        g_gl.hwnd,
-        &sd,
-        nullptr,
-        nullptr,
-        &sc1));
+	ComPtr<IDXGISwapChain1> sc1;
+	QD3D12_CHECK(g_gl.factory->CreateSwapChainForHwnd(
+		g_gl.queue.Get(),
+		w.hwnd,
+		&sd,
+		nullptr,
+		nullptr,
+		&sc1));
 
-    QD3D12_CHECK(sc1.As(&g_gl.swapChain));
-    g_gl.frameIndex = g_gl.swapChain->GetCurrentBackBufferIndex();
+	QD3D12_CHECK(sc1.As(&w.swapChain));
+	w.frameIndex = w.swapChain->GetCurrentBackBufferIndex();
 }
 
-static void QD3D12_CreateRTVs()
+static void QD3D12_CreateRTVsForWindow(QD3D12Window& w)
 {
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
     hd.NumDescriptors = QD3D12_FrameCount * 3; // backbuffer + normal MRT + position MRT per frame
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_gl.rtvHeap)));
+    QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&w.rtvHeap)));
 
-    g_gl.rtvStride = g_gl.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    D3D12_CPU_DESCRIPTOR_HANDLE h = g_gl.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    w.rtvStride = g_gl.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
 
     //
     // 0 .. FrameCount-1 : swap chain backbuffers
     //
     for (UINT i = 0; i < QD3D12_FrameCount; ++i)
     {
-        QD3D12_CHECK(g_gl.swapChain->GetBuffer(i, IID_PPV_ARGS(&g_gl.backBuffers[i])));
-        g_gl.device->CreateRenderTargetView(g_gl.backBuffers[i].Get(), nullptr, h);
+        QD3D12_CHECK(w.swapChain->GetBuffer(i, IID_PPV_ARGS(&w.backBuffers[i])));
+        g_gl.device->CreateRenderTargetView(w.backBuffers[i].Get(), nullptr, h);
         g_gl.backBufferState[i] = D3D12_RESOURCE_STATE_PRESENT;
-        h.ptr += g_gl.rtvStride;
+        h.ptr += w.rtvStride;
     }
 
     //
@@ -1582,8 +1603,8 @@ static void QD3D12_CreateRTVs()
     {
         D3D12_RESOURCE_DESC rd{};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width = g_gl.width;
-        rd.Height = g_gl.height;
+        rd.Width = w.width;
+        rd.Height = w.height;
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
         rd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -1607,11 +1628,11 @@ static void QD3D12_CreateRTVs()
             &rd,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             &clear,
-            IID_PPV_ARGS(&g_gl.normalBuffers[i])));
+            IID_PPV_ARGS(&w.normalBuffers[i])));
 
-        g_gl.device->CreateRenderTargetView(g_gl.normalBuffers[i].Get(), nullptr, h);
-        g_gl.normalBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        h.ptr += g_gl.rtvStride;
+        g_gl.device->CreateRenderTargetView(w.normalBuffers[i].Get(), nullptr, h);
+        w.normalBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        h.ptr += w.rtvStride;
     }
 
     //
@@ -1621,8 +1642,8 @@ static void QD3D12_CreateRTVs()
     {
         D3D12_RESOURCE_DESC rd{};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width = g_gl.width;
-        rd.Height = g_gl.height;
+        rd.Width = w.width;
+        rd.Height = w.height;
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
         rd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -1646,11 +1667,11 @@ static void QD3D12_CreateRTVs()
             &rd,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             &clear,
-            IID_PPV_ARGS(&g_gl.positionBuffers[i])));
+            IID_PPV_ARGS(&w.positionBuffers[i])));
 
-        g_gl.device->CreateRenderTargetView(g_gl.positionBuffers[i].Get(), nullptr, h);
-        g_gl.positionBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        h.ptr += g_gl.rtvStride;
+        g_gl.device->CreateRenderTargetView(w.positionBuffers[i].Get(), nullptr, h);
+        w.positionBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        h.ptr += w.rtvStride;
     }
 
     //
@@ -1658,11 +1679,11 @@ static void QD3D12_CreateRTVs()
     //
     for (UINT i = 0; i < QD3D12_FrameCount; ++i)
     {
-        if (g_gl.normalSrvIndex[i] == UINT_MAX)
+        if (w.normalSrvIndex[i] == UINT_MAX)
         {
-            g_gl.normalSrvIndex[i] = g_gl.nextSrvIndex++;
-            g_gl.normalSrvCpu[i] = QD3D12_SrvCpu(g_gl.normalSrvIndex[i]);
-            g_gl.normalSrvGpu[i] = QD3D12_SrvGpu(g_gl.normalSrvIndex[i]);
+            w.normalSrvIndex[i] = g_gl.nextSrvIndex++;
+            w.normalSrvCpu[i] = QD3D12_SrvCpu(w.normalSrvIndex[i]);
+            w.normalSrvGpu[i] = QD3D12_SrvGpu(w.normalSrvIndex[i]);
         }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
@@ -1672,9 +1693,9 @@ static void QD3D12_CreateRTVs()
         sd.Texture2D.MipLevels = 1;
 
         g_gl.device->CreateShaderResourceView(
-            g_gl.normalBuffers[i].Get(),
+            w.normalBuffers[i].Get(),
             &sd,
-            g_gl.normalSrvCpu[i]);
+            w.normalSrvCpu[i]);
     }
 
     //
@@ -1682,11 +1703,11 @@ static void QD3D12_CreateRTVs()
     //
     for (UINT i = 0; i < QD3D12_FrameCount; ++i)
     {
-        if (g_gl.positionSrvIndex[i] == UINT_MAX)
+        if (w.positionSrvIndex[i] == UINT_MAX)
         {
-            g_gl.positionSrvIndex[i] = g_gl.nextSrvIndex++;
-            g_gl.positionSrvCpu[i] = QD3D12_SrvCpu(g_gl.positionSrvIndex[i]);
-            g_gl.positionSrvGpu[i] = QD3D12_SrvGpu(g_gl.positionSrvIndex[i]);
+            w.positionSrvIndex[i] = g_gl.nextSrvIndex++;
+            w.positionSrvCpu[i] = QD3D12_SrvCpu(w.positionSrvIndex[i]);
+            w.positionSrvGpu[i] = QD3D12_SrvGpu(w.positionSrvIndex[i]);
         }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
@@ -1696,23 +1717,23 @@ static void QD3D12_CreateRTVs()
         sd.Texture2D.MipLevels = 1;
 
         g_gl.device->CreateShaderResourceView(
-            g_gl.positionBuffers[i].Get(),
+            g_currentWindow->positionBuffers[i].Get(),
             &sd,
-            g_gl.positionSrvCpu[i]);
+            g_currentWindow->positionSrvCpu[i]);
     }
 }
 
-static void QD3D12_CreateDSV()
+void QD3D12_CreateDSVForWindow(QD3D12Window &w)
 {
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
     hd.NumDescriptors = 1;
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_gl.dsvHeap)));
+    QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&w.dsvHeap)));
 
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    rd.Width = g_gl.width;
-    rd.Height = g_gl.height;
+    rd.Width = w.width;
+    rd.Height = w.height;
     rd.DepthOrArraySize = 1;
     rd.MipLevels = 1;
     rd.Format = DXGI_FORMAT_D32_FLOAT;
@@ -1733,9 +1754,9 @@ static void QD3D12_CreateDSV()
         &rd,
         D3D12_RESOURCE_STATE_DEPTH_WRITE,
         &clear,
-        IID_PPV_ARGS(&g_gl.depthBuffer)));
+        IID_PPV_ARGS(&g_currentWindow->depthBuffer)));
 
-    g_gl.device->CreateDepthStencilView(g_gl.depthBuffer.Get(), nullptr, g_gl.dsvHeap->GetCPUDescriptorHandleForHeapStart());
+    g_gl.device->CreateDepthStencilView(g_currentWindow->depthBuffer.Get(), nullptr, g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
 static void QD3D12_CreateSrvHeap()
@@ -1913,10 +1934,12 @@ static UINT8 BuildColorWriteMask()
 
 static D3D12_CPU_DESCRIPTOR_HANDLE CurrentNormalRTV()
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE h = g_gl.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += SIZE_T(QD3D12_FrameCount + g_gl.frameIndex) * SIZE_T(g_gl.rtvStride);
+    QD3D12Window& w = *g_currentWindow;
+    D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += SIZE_T(QD3D12_FrameCount + w.frameIndex) * SIZE_T(w.rtvStride);
     return h;
 }
+
 static D3D12_GRAPHICS_PIPELINE_STATE_DESC BuildPSODesc(
     PipelineMode mode,
     ID3DBlob* vs,
@@ -2101,8 +2124,8 @@ static void QD3D12_CreateWhiteTexture()
     g_gl.device->CreateShaderResourceView(g_gl.whiteTexture.texture.Get(), &sd, g_gl.whiteTexture.srvCpu);
 
     // Upload 1x1 white using a one-time command list.
-    QD3D12_CHECK(g_gl.frames[g_gl.frameIndex].cmdAlloc->Reset());
-    QD3D12_CHECK(g_gl.cmdList->Reset(g_gl.frames[g_gl.frameIndex].cmdAlloc.Get(), nullptr));
+    QD3D12_CHECK(g_gl.frames[g_currentWindow->frameIndex].cmdAlloc->Reset());
+    QD3D12_CHECK(g_gl.cmdList->Reset(g_gl.frames[g_currentWindow->frameIndex].cmdAlloc.Get(), nullptr));
 
     const UINT64 uploadPitch = 256;
     const UINT64 uploadSize = uploadPitch;
@@ -2119,7 +2142,7 @@ static void QD3D12_CreateWhiteTexture()
     dst.SubresourceIndex = 0;
 
     D3D12_TEXTURE_COPY_LOCATION src{};
-    src.pResource = g_gl.upload.resource[g_gl.frameIndex].Get();
+    src.pResource = g_gl.upload.resource[g_currentWindow->frameIndex].Get();
     src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     src.PlacedFootprint.Offset = alloc.offset;
     src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -2150,45 +2173,58 @@ static void QD3D12_CreateWhiteTexture()
 
 static void QD3D12_UpdateViewportState()
 {
-    g_gl.viewport.TopLeftX = (float)g_gl.viewportX;
-    g_gl.viewport.TopLeftY = (float)(g_gl.height - (g_gl.viewportY + g_gl.viewportH));
-    g_gl.viewport.Width = (float)g_gl.viewportW;
-    g_gl.viewport.Height = (float)g_gl.viewportH;
-    g_gl.viewport.MinDepth = (float)ClampValue<GLclampd>(g_gl.depthRangeNear, 0.0, 1.0);
-    g_gl.viewport.MaxDepth = (float)ClampValue<GLclampd>(g_gl.depthRangeFar, 0.0, 1.0);
+    QD3D12Window& w = *g_currentWindow;
+    w.viewport.TopLeftX = (float)g_gl.viewportX;
+    w.viewport.TopLeftY = (float)(g_currentWindow->height - (g_gl.viewportY + g_gl.viewportH));
+    w.viewport.Width = (float)g_gl.viewportW;
+    w.viewport.Height = (float)g_gl.viewportH;
+    w.viewport.MinDepth = (float)ClampValue<GLclampd>(g_gl.depthRangeNear, 0.0, 1.0);
+    w.viewport.MaxDepth = (float)ClampValue<GLclampd>(g_gl.depthRangeFar, 0.0, 1.0);
 
-    g_gl.scissor.left = g_gl.viewportX;
-    g_gl.scissor.top = g_gl.height - (g_gl.viewportY + g_gl.viewportH);
-    g_gl.scissor.right = g_gl.viewportX + g_gl.viewportW;
-    g_gl.scissor.bottom = g_gl.height - g_gl.viewportY;
+    w.scissor.left = g_gl.viewportX;
+    w.scissor.top = g_currentWindow->height - (g_gl.viewportY + g_gl.viewportH);
+    w.scissor.right = g_gl.viewportX + g_gl.viewportW;
+    w.scissor.bottom = g_currentWindow->height - g_gl.viewportY;
 }
 
-bool QD3D12_InitForQuake(HWND hwnd, int width, int height)
+bool QD3D12_InitForQuakeWindow(struct QD3D12Window *window, HWND hwnd, int width, int height, bool fastPath)
 {
-    g_gl.hwnd = hwnd;
-    g_gl.width = (UINT)width;
-    g_gl.height = (UINT)height;
+    window->hwnd = hwnd;
+    window->width = (UINT)width;
+    window->height = (UINT)height;
     g_gl.viewportW = width;
     g_gl.viewportH = height;
 
-    QD3D12_CreateDevice();
-    QD3D12_CreateSwapChain();
+    g_currentWindow = window;
+
+    if (!fastPath)
+    {
+        QD3D12_CreateDevice();
+    }
+    QD3D12_CreateSwapChainForWindow(*window);
 
     // SRV heap must exist before any code that allocates SRV indices/handles.
-    QD3D12_CreateSrvHeap();
+    if (!fastPath)
+    {
+        QD3D12_CreateSrvHeap();
+    }
 
-    QD3D12_CreateRTVs();
-    QD3D12_CreateDSV();
-    QD3D12_CreateCommandObjects();
-    QD3D12_CreateUploadRing();
-    QD3D12_CompileShaders();
-    QD3D12_CreateRootSignature();
-    QD3D12_CreatePSOs();
-    QD3D12_UpdateViewportState();
-    QD3D12_CreateWhiteTexture();
-    QD3D12_CreateOcclusionQueryObjects();
+    QD3D12_CreateRTVsForWindow(*window);
+    QD3D12_CreateDSVForWindow(*window);
 
-    QD3D12_Log("QD3D12 initialized: %ux%u", g_gl.width, g_gl.height);
+    if (!fastPath)
+    {
+        QD3D12_CreateCommandObjects();
+        QD3D12_CreateUploadRing();
+        QD3D12_CompileShaders();
+        QD3D12_CreateRootSignature();
+        QD3D12_CreatePSOs();
+        QD3D12_UpdateViewportState();
+        QD3D12_CreateWhiteTexture();
+        QD3D12_CreateOcclusionQueryObjects();
+    }
+
+    QD3D12_Log("QD3D12 initialized: %ux%u", window->width, window->height);
     return true;
 }
 
@@ -2214,44 +2250,47 @@ void QD3D12_ShutdownForQuake()
 
 static D3D12_CPU_DESCRIPTOR_HANDLE CurrentRTV()
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE h = g_gl.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += SIZE_T(g_gl.frameIndex) * SIZE_T(g_gl.rtvStride);
+    QD3D12Window& w = *g_currentWindow;
+    D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += SIZE_T(w.frameIndex) * SIZE_T(w.rtvStride);
     return h;
 }
 
 void QD3D12_BeginFrame()
 {
+    QD3D12Window& w = *g_currentWindow;
+
     g_gl.queuedBatches.clear();
-    g_gl.frameIndex = g_gl.swapChain->GetCurrentBackBufferIndex();
-    QD3D12_WaitForFrame(g_gl.frameIndex);
+    w.frameIndex = w.swapChain->GetCurrentBackBufferIndex();
+    QD3D12_WaitForFrame(w.frameIndex);
     QD3D12_ResetUploadRing();
 
-    FrameResources& fr = g_gl.frames[g_gl.frameIndex];
+    FrameResources& fr = g_gl.frames[w.frameIndex];
     QD3D12_CHECK(fr.cmdAlloc->Reset());
     QD3D12_CHECK(g_gl.cmdList->Reset(fr.cmdAlloc.Get(), nullptr));
 
-    if (g_gl.backBufferState[g_gl.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    if (g_gl.backBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_gl.backBuffers[g_gl.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.backBufferState[g_gl.frameIndex];
+        b.Transition.pResource = w.backBuffers[w.frameIndex].Get();
+        b.Transition.StateBefore = g_gl.backBufferState[w.frameIndex];
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.backBufferState[g_gl.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        g_gl.backBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
-    if (g_gl.normalBufferState[g_gl.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    if (w.normalBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_gl.normalBuffers[g_gl.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.normalBufferState[g_gl.frameIndex];
+        b.Transition.pResource = w.normalBuffers[w.frameIndex].Get();
+        b.Transition.StateBefore = w.normalBufferState[w.frameIndex];
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.normalBufferState[g_gl.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        w.normalBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
@@ -2261,10 +2300,10 @@ void QD3D12_BeginFrame()
         CurrentPositionRTV()
     };
 
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_gl.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = w.dsvHeap->GetCPUDescriptorHandleForHeapStart();
     g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
-    g_gl.cmdList->RSSetViewports(1, &g_gl.viewport);
-    g_gl.cmdList->RSSetScissorRects(1, &g_gl.scissor);
+    g_gl.cmdList->RSSetViewports(1, &w.viewport);
+    g_gl.cmdList->RSSetScissorRects(1, &w.scissor);
 
     const float normalClear[4] = { 0.5f, 0.5f, 1.0f, 1.0f };
     g_gl.cmdList->ClearRenderTargetView(CurrentNormalRTV(), normalClear, 0, nullptr);
@@ -2272,18 +2311,20 @@ void QD3D12_BeginFrame()
 
 void QD3D12_EndFrame()
 {
+    QD3D12Window& w = *g_currentWindow;
+
     QD3D12_FlushQueuedBatches();
 
-    if (g_gl.backBufferState[g_gl.frameIndex] != D3D12_RESOURCE_STATE_PRESENT)
+    if (g_gl.backBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_PRESENT)
     {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_gl.backBuffers[g_gl.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.backBufferState[g_gl.frameIndex];
+        b.Transition.pResource = w.backBuffers[w.frameIndex].Get();
+        b.Transition.StateBefore = g_gl.backBufferState[w.frameIndex];
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.backBufferState[g_gl.frameIndex] = D3D12_RESOURCE_STATE_PRESENT;
+        g_gl.backBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_PRESENT;
     }
 
     QD3D12_CHECK(g_gl.cmdList->Close());
@@ -2293,9 +2334,10 @@ void QD3D12_EndFrame()
 
 void QD3D12_Present()
 {
-    QD3D12_CHECK(g_gl.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
+    QD3D12Window& w = *g_currentWindow;
+    QD3D12_CHECK(w.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
 
-    FrameResources& fr = g_gl.frames[g_gl.frameIndex];
+    FrameResources& fr = g_gl.frames[w.frameIndex];
     const UINT64 signalValue = g_gl.nextFenceValue++;
     QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
     fr.fenceValue = signalValue;
@@ -2888,7 +2930,7 @@ static void UploadTexture(TextureResource& tex)
     }
 
     D3D12_TEXTURE_COPY_LOCATION srcLoc{};
-    srcLoc.pResource = g_gl.upload.resource[g_gl.frameIndex].Get();
+    srcLoc.pResource = g_gl.upload.resource[g_currentWindow->frameIndex].Get();
     srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     srcLoc.PlacedFootprint.Offset = alloc.offset;
     srcLoc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -3004,8 +3046,8 @@ static void SetDynamicFixedFunctionState(ID3D12GraphicsCommandList* cl)
     cl->SetGraphicsRootSignature(g_gl.rootSig.Get());
     ID3D12DescriptorHeap* heaps[] = { g_gl.srvHeap.Get() };
     cl->SetDescriptorHeaps(1, heaps);
-    cl->RSSetViewports(1, &g_gl.viewport);
-    cl->RSSetScissorRects(1, &g_gl.scissor);
+    cl->RSSetViewports(1, &g_currentWindow->viewport);
+    cl->RSSetScissorRects(1, &g_currentWindow->scissor);
 }
 
 static Mat4 CurrentMVP()
@@ -3149,7 +3191,7 @@ static void QD3D12_FlushQueuedBatches()
         CurrentNormalRTV(),
         CurrentPositionRTV()
     };
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_gl.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
     g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
 
     ID3D12PipelineState* lastPSO = nullptr;
@@ -3317,15 +3359,15 @@ static D3D12_RECT QD3D12_GetActiveClearRect()
     if (g_gl.scissorTest)
     {
         D3D12_RECT r{};
-        r.left   = ClampValue<LONG>(g_gl.scissorX, 0, (LONG)g_gl.width);
-        r.right  = ClampValue<LONG>(g_gl.scissorX + g_gl.scissorW, 0, (LONG)g_gl.width);
+        r.left   = ClampValue<LONG>(g_gl.scissorX, 0, (LONG)g_currentWindow->width);
+        r.right  = ClampValue<LONG>(g_gl.scissorX + g_gl.scissorW, 0, (LONG)g_currentWindow->width);
 
         // OpenGL scissor is bottom-left origin, D3D12 is top-left origin.
         const LONG topGL    = g_gl.scissorY + g_gl.scissorH;
         const LONG bottomGL = g_gl.scissorY;
 
-        r.top    = ClampValue<LONG>((LONG)g_gl.height - topGL, 0, (LONG)g_gl.height);
-        r.bottom = ClampValue<LONG>((LONG)g_gl.height - bottomGL, 0, (LONG)g_gl.height);
+        r.top    = ClampValue<LONG>((LONG)g_currentWindow->height - topGL, 0, (LONG)g_currentWindow->height);
+        r.bottom = ClampValue<LONG>((LONG)g_currentWindow->height - bottomGL, 0, (LONG)g_currentWindow->height);
 
         if (r.right < r.left)   std::swap(r.right, r.left);
         if (r.bottom < r.top)   std::swap(r.bottom, r.top);
@@ -3335,8 +3377,8 @@ static D3D12_RECT QD3D12_GetActiveClearRect()
     D3D12_RECT r{};
     r.left = 0;
     r.top = 0;
-    r.right = (LONG)g_gl.width;
-    r.bottom = (LONG)g_gl.height;
+    r.right = (LONG)g_currentWindow->width;
+    r.bottom = (LONG)g_currentWindow->height;
     return r;
 }
 
@@ -3356,28 +3398,28 @@ extern "C" void APIENTRY glClear(GLbitfield mask)
 
     QD3D12_FlushQueuedBatches();
 
-    if (g_gl.backBufferState[g_gl.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    if (g_gl.backBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_gl.backBuffers[g_gl.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.backBufferState[g_gl.frameIndex];
+        b.Transition.pResource = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
+        b.Transition.StateBefore = g_gl.backBufferState[g_currentWindow->frameIndex];
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.backBufferState[g_gl.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        g_gl.backBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
-    if (g_gl.normalBufferState[g_gl.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    if (g_currentWindow->normalBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_gl.normalBuffers[g_gl.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.normalBufferState[g_gl.frameIndex];
+        b.Transition.pResource = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
+        b.Transition.StateBefore = g_currentWindow->normalBufferState[g_currentWindow->frameIndex];
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.normalBufferState[g_gl.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        g_currentWindow->normalBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
@@ -3386,10 +3428,10 @@ extern "C" void APIENTRY glClear(GLbitfield mask)
         CurrentNormalRTV(),
         CurrentPositionRTV()
     };
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_gl.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
     g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
-    g_gl.cmdList->RSSetViewports(1, &g_gl.viewport);
+    g_gl.cmdList->RSSetViewports(1, &g_currentWindow->viewport);
 
     const D3D12_RECT clearRect = QD3D12_GetActiveClearRect();
     g_gl.cmdList->RSSetScissorRects(1, &clearRect);
@@ -3559,7 +3601,7 @@ extern "C" void APIENTRY glFinish(void)
     //
     // Reopen the same allocator/list now that the GPU is done with it.
     //
-    FrameResources& fr = g_gl.frames[g_gl.frameIndex];
+    FrameResources& fr = g_gl.frames[g_currentWindow->frameIndex];
     fr.fenceValue = signalValue;
 
     QD3D12_CHECK(fr.cmdAlloc->Reset());
@@ -3568,40 +3610,40 @@ extern "C" void APIENTRY glFinish(void)
     //
     // Rebind render targets and raster state because Reset() clears command-list state.
     //
-    if (g_gl.backBufferState[g_gl.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    if (g_gl.backBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_gl.backBuffers[g_gl.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.backBufferState[g_gl.frameIndex];
+        b.Transition.pResource = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
+        b.Transition.StateBefore = g_currentWindow->backBufferState[g_currentWindow->frameIndex];
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.backBufferState[g_gl.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        g_gl.backBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
-    if (g_gl.normalBufferState[g_gl.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    if (g_currentWindow->normalBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_gl.normalBuffers[g_gl.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.normalBufferState[g_gl.frameIndex];
+        b.Transition.pResource = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
+        b.Transition.StateBefore = g_currentWindow->normalBufferState[g_currentWindow->frameIndex];
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.normalBufferState[g_gl.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        g_currentWindow->normalBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
-    if (g_gl.positionBufferState[g_gl.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    if (g_currentWindow->positionBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_gl.positionBuffers[g_gl.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.positionBufferState[g_gl.frameIndex];
+        b.Transition.pResource = g_currentWindow->positionBuffers[g_currentWindow->frameIndex].Get();
+        b.Transition.StateBefore = g_currentWindow->positionBufferState[g_currentWindow->frameIndex];
         b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.positionBufferState[g_gl.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        g_currentWindow->positionBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
@@ -3611,10 +3653,10 @@ extern "C" void APIENTRY glFinish(void)
         CurrentPositionRTV()
     };
 
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_gl.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
     g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
-    g_gl.cmdList->RSSetViewports(1, &g_gl.viewport);
-    g_gl.cmdList->RSSetScissorRects(1, &g_gl.scissor);
+    g_gl.cmdList->RSSetViewports(1, &g_currentWindow->viewport);
+    g_gl.cmdList->RSSetScissorRects(1, &g_currentWindow->scissor);
 }
 
 extern "C" void APIENTRY glMatrixMode(GLenum mode)
@@ -4132,22 +4174,22 @@ void QD3D12_Resize(UINT width, UINT height)
 
     for (UINT i = 0; i < QD3D12_FrameCount; ++i)
     {
-        g_gl.backBuffers[i].Reset();
-        g_gl.normalBuffers[i].Reset();
+        g_currentWindow->backBuffers[i].Reset();
+        g_currentWindow->normalBuffers[i].Reset();
     }
 
-    g_gl.depthBuffer.Reset();
+    g_currentWindow->depthBuffer.Reset();
 
-    QD3D12_CHECK(g_gl.swapChain->ResizeBuffers(QD3D12_FrameCount, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0));
+    QD3D12_CHECK(g_currentWindow->swapChain->ResizeBuffers(QD3D12_FrameCount, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0));
 
-    g_gl.width = width;
-    g_gl.height = height;
+    g_currentWindow->width = width;
+    g_currentWindow->height = height;
     g_gl.viewportW = width;
     g_gl.viewportH = height;
-    g_gl.frameIndex = g_gl.swapChain->GetCurrentBackBufferIndex();
+    g_currentWindow->frameIndex = g_currentWindow->swapChain->GetCurrentBackBufferIndex();
 
-    QD3D12_CreateRTVs();
-    QD3D12_CreateDSV();
+    QD3D12_CreateRTVsForWindow(*g_currentWindow);
+    QD3D12_CreateDSVForWindow(*g_currentWindow);
     g_psoCache.clear();
     QD3D12_UpdateViewportState();
 }
@@ -4506,12 +4548,12 @@ extern "C" ID3D12GraphicsCommandList* QD3D12_GetCommandList(void)
 
 extern "C" ID3D12CommandAllocator* QD3D12_GetFrameCommandAllocator(void)
 {
-    return g_gl.frames[g_gl.frameIndex].cmdAlloc.Get();
+    return g_gl.frames[g_currentWindow->frameIndex].cmdAlloc.Get();
 }
 
 extern "C" UINT QD3D12_GetFrameIndex(void)
 {
-    return g_gl.frameIndex;
+    return g_currentWindow->frameIndex;
 }
 
 extern "C" void QD3D12_WaitForGPU_External(void)
@@ -4543,8 +4585,8 @@ static void QD3D12_TransitionResource(
 
 extern "C" void glLightScene(void)
 {
-    int width = (int)g_gl.width;
-    int height = (int)g_gl.height;
+    int width = (int)g_currentWindow->width;
+    int height = (int)g_currentWindow->height;
 
     if (width <= 0 || height <= 0)
         return;
@@ -4561,10 +4603,10 @@ extern "C" void glLightScene(void)
     QD3D12_FlushQueuedBatches();
 
     ID3D12GraphicsCommandList* cl = g_gl.cmdList.Get();
-    ID3D12Resource* sceneColor = g_gl.backBuffers[g_gl.frameIndex].Get();
-    ID3D12Resource* sceneNormal = g_gl.normalBuffers[g_gl.frameIndex].Get();
-    ID3D12Resource* scenePosition = g_gl.positionBuffers[g_gl.frameIndex].Get();
-    ID3D12Resource* sceneDepth = g_gl.depthBuffer.Get();
+    ID3D12Resource* sceneColor = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
+    ID3D12Resource* sceneNormal = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
+    ID3D12Resource* scenePosition = g_currentWindow->positionBuffers[g_currentWindow->frameIndex].Get();
+    ID3D12Resource* sceneDepth = g_currentWindow->depthBuffer.Get();
     ID3D12Resource* tlas = glRaytracingGetTopLevelAS();
 
     if (!sceneColor || !sceneNormal || !scenePosition || !sceneDepth || !tlas)
@@ -4576,19 +4618,19 @@ extern "C" void glLightScene(void)
     QD3D12_TransitionResource(
         cl,
         sceneColor,
-        g_gl.backBufferState[g_gl.frameIndex],
+        g_gl.backBufferState[g_currentWindow->frameIndex],
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     QD3D12_TransitionResource(
         cl,
         sceneNormal,
-        g_gl.normalBufferState[g_gl.frameIndex],
+        g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     QD3D12_TransitionResource(
         cl,
         scenePosition,
-        g_gl.positionBufferState[g_gl.frameIndex],
+        g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     D3D12_RESOURCE_STATES depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -4633,19 +4675,19 @@ extern "C" void glLightScene(void)
         QD3D12_TransitionResource(
             cl,
             sceneColor,
-            g_gl.backBufferState[g_gl.frameIndex],
+            g_gl.backBufferState[g_currentWindow->frameIndex],
             D3D12_RESOURCE_STATE_RENDER_TARGET);
 
         QD3D12_TransitionResource(
             cl,
             sceneNormal,
-            g_gl.normalBufferState[g_gl.frameIndex],
+            g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
             D3D12_RESOURCE_STATE_RENDER_TARGET);
 
         QD3D12_TransitionResource(
             cl,
             scenePosition,
-            g_gl.positionBufferState[g_gl.frameIndex],
+            g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
             D3D12_RESOURCE_STATE_RENDER_TARGET);
 
         return;
@@ -4663,25 +4705,25 @@ extern "C" void glLightScene(void)
     QD3D12_TransitionResource(
         cl,
         sceneColor,
-        g_gl.backBufferState[g_gl.frameIndex],
+        g_gl.backBufferState[g_currentWindow->frameIndex],
         D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     QD3D12_TransitionResource(
         cl,
         sceneNormal,
-        g_gl.normalBufferState[g_gl.frameIndex],
+        g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
         D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     QD3D12_TransitionResource(
         cl,
         scenePosition,
-        g_gl.positionBufferState[g_gl.frameIndex],
+        g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
         D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     //
     // 4) Composite lighting back onto scene color.
     //
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_gl.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
     {
@@ -4740,14 +4782,14 @@ extern "C" void glLightScene(void)
 
 ID3D12Resource* QD3D12_GetCurrentBackBuffer()
 {
-    if (!g_gl.swapChain)
+    if (!g_currentWindow->swapChain)
         return nullptr;
 
-    const UINT index = g_gl.frameIndex;
+    const UINT index = g_currentWindow->frameIndex;
     if (index >= QD3D12_FrameCount)
         return nullptr;
 
-    return g_gl.backBuffers[index].Get();
+    return g_currentWindow->backBuffers[index].Get();
 }
 
 extern "C" void APIENTRY glGeometryFlagf(GLfloat flag)
