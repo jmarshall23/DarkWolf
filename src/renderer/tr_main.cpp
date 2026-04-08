@@ -58,7 +58,6 @@ glfog_t glfogsettings[NUM_FOGS];
 glfogType_t glfogNum = FOG_NONE;
 qboolean fogIsOn = qfalse;
 
-
 /*
 =================
 R_Fog (void)

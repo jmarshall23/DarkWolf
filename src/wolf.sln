@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.3.11512.155 d18.3
+VisualStudioVersion = 18.3.11512.155
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Splines", "splines\Splines.vcxproj", "{AA96579B-0F16-4614-8453-0B03C8B39A46}"
 EndProject
@@ -17,9 +17,11 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "renderer", "renderer\render
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ui", "ui\ui.vcxproj", "{9FC6663B-403B-4429-90C3-4CE12E5D0619}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "wolf", "wolf.vcxproj", "{47CCBCAD-2A5C-4A70-8504-371F2EC29CBE}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Wolf", "wolf.vcxproj", "{47CCBCAD-2A5C-4A70-8504-371F2EC29CBE}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "opengl", "opengl\opengl.vcxproj", "{58320C19-5139-47C5-AAFE-4CAD2C8ED14D}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "radiant", "tools\radiant\Radiant.vcxproj", "{81B327F7-E010-CA80-D018-2AE11DBBE83E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -63,6 +65,10 @@ Global
 		{58320C19-5139-47C5-AAFE-4CAD2C8ED14D}.Debug|x64.Build.0 = Debug|x64
 		{58320C19-5139-47C5-AAFE-4CAD2C8ED14D}.Release|x64.ActiveCfg = Release|x64
 		{58320C19-5139-47C5-AAFE-4CAD2C8ED14D}.Release|x64.Build.0 = Release|x64
+		{81B327F7-E010-CA80-D018-2AE11DBBE83E}.Debug|x64.ActiveCfg = Debug|x64
+		{81B327F7-E010-CA80-D018-2AE11DBBE83E}.Debug|x64.Build.0 = Debug|x64
+		{81B327F7-E010-CA80-D018-2AE11DBBE83E}.Release|x64.ActiveCfg = Release|Win32
+		{81B327F7-E010-CA80-D018-2AE11DBBE83E}.Release|x64.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

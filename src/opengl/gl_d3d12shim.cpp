@@ -31,6 +31,8 @@ static D3D12_GPU_DESCRIPTOR_HANDLE QD3D12_SrvGpu(UINT index);
 static D3D12_CPU_DESCRIPTOR_HANDLE QD3D12_SrvCpu(UINT index);
 static Mat4 CurrentModelMatrix();
 
+extern bool D3D12_SwapBufferMultWindows;
+
 static void QD3D12_Log(const char* fmt, ...)
 {
     char buffer[4096];
@@ -105,15 +107,6 @@ enum PipelineMode
 static void QD3D12_FlushQueuedBatches();
 static PipelineMode PickPipeline(bool useTex0, bool useTex1);
 static Mat4 CurrentMVP();
-
-struct GLVertex
-{
-    float px, py, pz;
-    float nx, ny, nz;
-    float u0, v0;
-    float u1, v1;
-    float r, g, b, a;
-};
 
 struct RetiredResource
 {
@@ -498,7 +491,6 @@ struct GLState
     UINT srvStride = 0;
 
     ComPtr<ID3D12GraphicsCommandList> cmdList;
-    FrameResources frames[QD3D12_FrameCount];
 
     ComPtr<ID3D12Fence> fence;
     HANDLE fenceEvent = nullptr;
@@ -620,7 +612,7 @@ static void QD3D12_RetireResource(ComPtr<ID3D12Resource>& res)
 
     if (g_gl.frameOpen)
     {
-        fenceValue = g_gl.frames[g_currentWindow->frameIndex].fenceValue;
+        fenceValue = g_currentWindow->frames[g_currentWindow->frameIndex].fenceValue;
         if (fenceValue == 0)
             fenceValue = g_gl.nextFenceValue;
     }
@@ -640,7 +632,7 @@ static UINT64 QD3D12_CurrentSubmissionFenceValue()
     return g_gl.nextFenceValue;
 }
 
-static void QD3D12_CollectRetiredResources()
+void QD3D12_CollectRetiredResources()
 {
     const UINT64 completed = g_gl.fence ? g_gl.fence->GetCompletedValue() : 0;
 
@@ -1180,7 +1172,7 @@ static D3D12_PRIMITIVE_TOPOLOGY GetDrawTopology(GLenum originalMode)
 
     case GL_LINE_STRIP:
     case GL_LINE_LOOP:
-        return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
+        return D3D_PRIMITIVE_TOPOLOGY_LINELIST; // we manually convert this, so im adjusting to be a linelist. 
 
     case GL_TRIANGLE_STRIP:
         return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
@@ -1459,7 +1451,7 @@ static void QD3D12_WaitForGPU()
 
 static void QD3D12_WaitForFrame(UINT frameIndex)
 {
-    FrameResources& fr = g_gl.frames[frameIndex];
+    FrameResources& fr = g_currentWindow->frames[frameIndex];
     if (fr.fenceValue != 0 && g_gl.fence->GetCompletedValue() < fr.fenceValue)
     {
         QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(fr.fenceValue, g_gl.fenceEvent));
@@ -1535,11 +1527,11 @@ static void QD3D12_CreateOcclusionQueryObjects()
 static void QD3D12_CreateDevice()
 {
 #if defined(_DEBUG)
-   // {
-   //     ComPtr<ID3D12Debug> debug;
-   //     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
-   //         debug->EnableDebugLayer();
-   // }
+   {
+       ComPtr<ID3D12Debug> debug;
+       if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+           debug->EnableDebugLayer();
+   }
 #endif
 
 QD3D12_CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&g_gl.factory)));
@@ -1786,9 +1778,9 @@ static D3D12_GPU_DESCRIPTOR_HANDLE QD3D12_SrvGpu(UINT index)
 static void QD3D12_CreateCommandObjects()
 {
     for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-        QD3D12_CHECK(g_gl.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_gl.frames[i].cmdAlloc)));
+        QD3D12_CHECK(g_gl.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_currentWindow->frames[i].cmdAlloc)));
 
-    QD3D12_CHECK(g_gl.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_gl.frames[0].cmdAlloc.Get(), nullptr, IID_PPV_ARGS(&g_gl.cmdList)));
+    QD3D12_CHECK(g_gl.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_currentWindow->frames[0].cmdAlloc.Get(), nullptr, IID_PPV_ARGS(&g_gl.cmdList)));
     QD3D12_CHECK(g_gl.cmdList->Close());
 
     QD3D12_CHECK(g_gl.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_gl.fence)));
@@ -2124,8 +2116,8 @@ static void QD3D12_CreateWhiteTexture()
     g_gl.device->CreateShaderResourceView(g_gl.whiteTexture.texture.Get(), &sd, g_gl.whiteTexture.srvCpu);
 
     // Upload 1x1 white using a one-time command list.
-    QD3D12_CHECK(g_gl.frames[g_currentWindow->frameIndex].cmdAlloc->Reset());
-    QD3D12_CHECK(g_gl.cmdList->Reset(g_gl.frames[g_currentWindow->frameIndex].cmdAlloc.Get(), nullptr));
+    QD3D12_CHECK(g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc->Reset());
+    QD3D12_CHECK(g_gl.cmdList->Reset(g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc.Get(), nullptr));
 
     const UINT64 uploadPitch = 256;
     const UINT64 uploadSize = uploadPitch;
@@ -2187,6 +2179,19 @@ static void QD3D12_UpdateViewportState()
     w.scissor.bottom = g_currentWindow->height - g_gl.viewportY;
 }
 
+static void QD3D12_CreateSurfaceFrameResources(QD3D12Window& surf)
+{
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		surf.frames[i].fenceValue = 0;
+
+		QD3D12_CHECK(
+			g_gl.device->CreateCommandAllocator(
+				D3D12_COMMAND_LIST_TYPE_DIRECT,
+				IID_PPV_ARGS(&surf.frames[i].cmdAlloc)));
+	}
+}
+
 bool QD3D12_InitForQuakeWindow(struct QD3D12Window *window, HWND hwnd, int width, int height, bool fastPath)
 {
     window->hwnd = hwnd;
@@ -2201,6 +2206,7 @@ bool QD3D12_InitForQuakeWindow(struct QD3D12Window *window, HWND hwnd, int width
     {
         QD3D12_CreateDevice();
     }
+    QD3D12_CreateSurfaceFrameResources(*window);
     QD3D12_CreateSwapChainForWindow(*window);
 
     // SRV heap must exist before any code that allocates SRV indices/handles.
@@ -2265,7 +2271,7 @@ void QD3D12_BeginFrame()
     QD3D12_WaitForFrame(w.frameIndex);
     QD3D12_ResetUploadRing();
 
-    FrameResources& fr = g_gl.frames[w.frameIndex];
+    FrameResources& fr = g_currentWindow->frames[w.frameIndex];
     QD3D12_CHECK(fr.cmdAlloc->Reset());
     QD3D12_CHECK(g_gl.cmdList->Reset(fr.cmdAlloc.Get(), nullptr));
 
@@ -2337,7 +2343,7 @@ void QD3D12_Present()
     QD3D12Window& w = *g_currentWindow;
     QD3D12_CHECK(w.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
 
-    FrameResources& fr = g_gl.frames[w.frameIndex];
+    FrameResources& fr = g_currentWindow->frames[w.frameIndex];
     const UINT64 signalValue = g_gl.nextFenceValue++;
     QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
     fr.fenceValue = signalValue;
@@ -2968,9 +2974,55 @@ static void ExpandImmediate(GLenum mode, const std::vector<GLVertex>& src, std::
 
     switch (mode)
     {
+	case GL_LINES:
+		// Explicit independent line segments: (0,1), (2,3), (4,5)...
+		for (size_t i = 0; i + 1 < src.size(); i += 2)
+		{
+			out.push_back(src[i + 0]);
+			out.push_back(src[i + 1]);
+		}
+		return;
+
+	case GL_QUAD_STRIP:
+		// v0 v1 v2 v3 -> quad 0
+		// v2 v3 v4 v5 -> quad 1
+		// each quad becomes 2 triangles
+		for (size_t i = 0; i + 3 < src.size(); i += 2)
+		{
+			out.push_back(src[i + 0]);
+			out.push_back(src[i + 1]);
+			out.push_back(src[i + 2]);
+
+			out.push_back(src[i + 2]);
+			out.push_back(src[i + 1]);
+			out.push_back(src[i + 3]);
+		}
+		return;
+
+	case GL_LINE_STRIP:
+		// Convert strip into explicit line pairs: (0,1), (1,2), (2,3)...
+		for (size_t i = 1; i < src.size(); ++i)
+		{
+			out.push_back(src[i - 1]);
+			out.push_back(src[i]);
+		}
+		return;
+
+	case GL_LINE_LOOP:
+		// Convert loop into explicit line pairs, including last->first.
+		if (src.size() >= 2)
+		{
+			for (size_t i = 1; i < src.size(); ++i)
+			{
+				out.push_back(src[i - 1]);
+				out.push_back(src[i]);
+			}
+
+			out.push_back(src.back());
+			out.push_back(src.front());
+		}
+		return;
     case GL_TRIANGLES:
-    case GL_LINES:
-    case GL_LINE_STRIP:
         out = src;
         return;
 
@@ -2993,13 +3045,16 @@ static void ExpandImmediate(GLenum mode, const std::vector<GLVertex>& src, std::
         return;
 
     case GL_TRIANGLE_FAN:
-    case GL_POLYGON:
         for (size_t i = 2; i < src.size(); ++i)
         {
             out.push_back(src[0]);
             out.push_back(src[i - 1]);
             out.push_back(src[i]);
         }
+        return;
+
+    case GL_POLYGON:
+        TessellatePolygon(src, out);
         return;
 
     case GL_QUADS:
@@ -3014,16 +3069,13 @@ static void ExpandImmediate(GLenum mode, const std::vector<GLVertex>& src, std::
         }
         return;
 
-    case GL_LINE_LOOP:
-        if (src.size() >= 2)
-        {
-            out = src;
-            out.push_back(src[0]);
-        }
-        return;
+	case GL_POINTS:
+		// One vertex per point
+		out = src;
+		return;
 
     default:
-        out = src;
+        assert(!"Unknown ExpandImmediate type!");
         return;
     }
 }
@@ -3100,6 +3152,9 @@ static void QueueExpandedVertices(GLenum originalMode, const std::vector<GLVerte
         auto it0 = g_gl.textures.find(g_gl.boundTexture[0]);
         if (it0 != g_gl.textures.end())
             tex0 = &it0->second;
+    }
+    else {
+        tex0 = &g_gl.whiteTexture;
     }
 
     if (useTex1)
@@ -3303,6 +3358,11 @@ static void QD3D12_FlushQueuedBatches()
 
         if (!haveLastTex0 || tex0Gpu.ptr != lastTex0.ptr)
         {
+            // Don't know if this should be here or not could burry bugs, but rather then crash set to white.
+            if (batch.key.tex0SrvIndex == UINT_MAX)
+            {
+                tex0Gpu = QD3D12_SrvGpu(g_gl.whiteTexture.srvIndex);
+            }
             g_gl.cmdList->SetGraphicsRootDescriptorTable(1, tex0Gpu);
             lastTex0 = tex0Gpu;
             haveLastTex0 = true;
@@ -3601,7 +3661,7 @@ extern "C" void APIENTRY glFinish(void)
     //
     // Reopen the same allocator/list now that the GPU is done with it.
     //
-    FrameResources& fr = g_gl.frames[g_currentWindow->frameIndex];
+    FrameResources& fr = g_currentWindow->frames[g_currentWindow->frameIndex];
     fr.fenceValue = signalValue;
 
     QD3D12_CHECK(fr.cmdAlloc->Reset());
@@ -4163,35 +4223,63 @@ void QD3D12_DrawArrays(GLenum mode, const GLVertex* verts, size_t count)
     FlushImmediate(mode, tmp);
 }
 
-void QD3D12_Resize(UINT width, UINT height)
+void QD3D12_ReleaseWindowSizeResources(QD3D12Window& w)
 {
-    if (width == 0 || height == 0)
-        return;
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		w.backBuffers[i].Reset();
+		w.normalBuffers[i].Reset();
+		w.positionBuffers[i].Reset();
+	}
 
-    QD3D12_WaitForGPU();
+	w.depthBuffer.Reset();
 
-    g_gl.queuedBatches.clear();
+	w.rtvHeap.Reset();
+	w.dsvHeap.Reset();
+}
+void QD3D12_Resize()
+{
+	if (!g_currentWindow)
+		return;
 
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-    {
-        g_currentWindow->backBuffers[i].Reset();
-        g_currentWindow->normalBuffers[i].Reset();
-    }
+	RECT rc{};
+	if (!GetClientRect(g_currentWindow->hwnd, &rc))
+		return;
 
-    g_currentWindow->depthBuffer.Reset();
+	UINT width = (UINT)(rc.right - rc.left);
+	UINT height = (UINT)(rc.bottom - rc.top);
 
-    QD3D12_CHECK(g_currentWindow->swapChain->ResizeBuffers(QD3D12_FrameCount, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0));
+	if (width == 0 || height == 0)
+		return;
 
-    g_currentWindow->width = width;
-    g_currentWindow->height = height;
-    g_gl.viewportW = width;
-    g_gl.viewportH = height;
-    g_currentWindow->frameIndex = g_currentWindow->swapChain->GetCurrentBackBufferIndex();
+	if (g_currentWindow->width == width && g_currentWindow->height == height)
+		return;
 
-    QD3D12_CreateRTVsForWindow(*g_currentWindow);
-    QD3D12_CreateDSVForWindow(*g_currentWindow);
-    g_psoCache.clear();
-    QD3D12_UpdateViewportState();
+	QD3D12_WaitForGPU();
+
+	g_gl.queuedBatches.clear();
+
+	QD3D12_ReleaseWindowSizeResources(*g_currentWindow);
+
+	QD3D12_CHECK(g_currentWindow->swapChain->ResizeBuffers(
+		QD3D12_FrameCount,
+		width,
+		height,
+		DXGI_FORMAT_R8G8B8A8_UNORM,
+		DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
+	));
+
+	g_currentWindow->width = width;
+	g_currentWindow->height = height;
+	g_currentWindow->frameIndex = g_currentWindow->swapChain->GetCurrentBackBufferIndex();
+
+	g_gl.viewportW = width;
+	g_gl.viewportH = height;
+
+	QD3D12_CreateRTVsForWindow(*g_currentWindow);
+	QD3D12_CreateDSVForWindow(*g_currentWindow);
+	g_psoCache.clear();
+	QD3D12_UpdateViewportState();
 }
 
 extern "C" GLenum APIENTRY glGetError(void) {
@@ -4548,7 +4636,7 @@ extern "C" ID3D12GraphicsCommandList* QD3D12_GetCommandList(void)
 
 extern "C" ID3D12CommandAllocator* QD3D12_GetFrameCommandAllocator(void)
 {
-    return g_gl.frames[g_currentWindow->frameIndex].cmdAlloc.Get();
+    return g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc.Get();
 }
 
 extern "C" UINT QD3D12_GetFrameIndex(void)
@@ -5400,3 +5488,257 @@ extern "C" void APIENTRY glPointParameterfvEXT(GLenum pname, const GLfloat* para
         break;
     }
 }
+
+extern "C" void APIENTRY glColor3fv(const GLfloat* v)
+{
+	if (!v)
+		return;
+
+	glColor3f(v[0], v[1], v[2]);
+}
+
+extern "C" void APIENTRY glRasterPos3fv(const GLfloat* v)
+{
+
+}
+
+extern "C" void APIENTRY glCallLists(GLsizei n, GLenum type, const GLvoid* lists)
+{
+
+}
+
+// opengl.cpp
+
+extern "C" void APIENTRY glTranslated(GLdouble x, GLdouble y, GLdouble z)
+{
+	glTranslatef((GLfloat)x, (GLfloat)y, (GLfloat)z);
+}
+
+extern "C" void APIENTRY glRotated(GLdouble angle, GLdouble x, GLdouble y, GLdouble z)
+{
+	glRotatef((GLfloat)angle, (GLfloat)x, (GLfloat)y, (GLfloat)z);
+}
+
+extern "C" void APIENTRY glTexGenf(GLenum coord, GLenum pname, GLfloat param)
+{
+
+	// pname is usually GL_TEXTURE_GEN_MODE for glTexGenf usage.
+	// Ignore unsupported pname values for now.
+	(void)pname;
+}
+
+extern "C" void APIENTRY glRectf(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2)
+{
+	glBegin(GL_QUADS);
+	glVertex2f(x1, y1);
+	glVertex2f(x2, y1);
+	glVertex2f(x2, y2);
+	glVertex2f(x1, y2);
+	glEnd();
+}
+
+extern "C" void APIENTRY glRasterPos3f(GLfloat x, GLfloat y, GLfloat z)
+{
+
+}
+
+// -----------------------------------------------------------------------------
+// Minimal legacy-GL compatibility state
+// -----------------------------------------------------------------------------
+
+struct QD3D12AttribState
+{
+	GLfloat currentColor[4];
+	GLfloat currentNormal[3];
+	GLfloat rasterPos[4];
+	GLboolean rasterPosValid;
+
+	GLfloat lineWidth;
+	GLint lineStippleFactor;
+	GLushort lineStipplePattern;
+	GLboolean lightingEnabled;
+	GLboolean lineStippleEnabled;
+
+	GLfloat lightModelAmbient[4];
+	GLuint listBase;
+};
+
+static QD3D12AttribState g_glState =
+{
+	{1,1,1,1},
+	{0,0,1},
+	{0,0,0,1},
+	GL_TRUE,
+	1.0f,
+	1,
+	0xFFFF,
+	GL_FALSE,
+	GL_FALSE,
+	{0.2f, 0.2f, 0.2f, 1.0f},
+	0
+};
+
+static std::vector<QD3D12AttribState> g_attribStack;
+
+// -----------------------------------------------------------------------------
+// Raster position
+// -----------------------------------------------------------------------------
+
+extern "C" void APIENTRY glRasterPos2f(GLfloat x, GLfloat y)
+{
+	g_glState.rasterPos[0] = x;
+	g_glState.rasterPos[1] = y;
+	g_glState.rasterPos[2] = 0.0f;
+	g_glState.rasterPos[3] = 1.0f;
+	g_glState.rasterPosValid = GL_TRUE;
+}
+
+// -----------------------------------------------------------------------------
+// Current color / normal
+// -----------------------------------------------------------------------------
+
+extern "C" void APIENTRY glNormal3f(GLfloat x, GLfloat y, GLfloat z)
+{
+	g_glState.currentNormal[0] = x;
+	g_glState.currentNormal[1] = y;
+	g_glState.currentNormal[2] = z;
+}
+
+extern "C" void APIENTRY glNormal3fv(const GLfloat* v)
+{
+	if (!v) return;
+	glNormal3f(v[0], v[1], v[2]);
+}
+
+// -----------------------------------------------------------------------------
+// Attribute stack
+// -----------------------------------------------------------------------------
+
+extern "C" void APIENTRY glPushAttrib(GLbitfield mask)
+{
+	(void)mask;
+	g_attribStack.push_back(g_glState);
+}
+
+extern "C" void APIENTRY glPopAttrib(void)
+{
+	if (g_attribStack.empty())
+		return;
+
+	g_glState = g_attribStack.back();
+	g_attribStack.pop_back();
+}
+
+// -----------------------------------------------------------------------------
+// Misc legacy state
+// -----------------------------------------------------------------------------
+
+extern "C" GLboolean APIENTRY glIsEnabled(GLenum cap)
+{
+	switch (cap)
+	{
+	case GL_LIGHTING:
+		return g_glState.lightingEnabled;
+
+	case GL_LINE_STIPPLE:
+		return g_glState.lineStippleEnabled;
+
+	default:
+		return GL_FALSE;
+	}
+}
+
+extern "C" void APIENTRY glLineWidth(GLfloat width)
+{
+	g_glState.lineWidth = (width > 0.0f) ? width : 1.0f;
+}
+
+extern "C" void APIENTRY glLineStipple(GLint factor, GLushort pattern)
+{
+	g_glState.lineStippleFactor = (factor > 0) ? factor : 1;
+	g_glState.lineStipplePattern = pattern;
+}
+
+extern "C" void APIENTRY glLightModelfv(GLenum pname, const GLfloat* params)
+{
+	if (!params)
+		return;
+
+	if (pname == GL_LIGHT_MODEL_AMBIENT)
+	{
+		g_glState.lightModelAmbient[0] = params[0];
+		g_glState.lightModelAmbient[1] = params[1];
+		g_glState.lightModelAmbient[2] = params[2];
+		g_glState.lightModelAmbient[3] = params[3];
+	}
+}
+
+extern "C" void APIENTRY glPolygonStipple(const GLubyte* mask)
+{
+	(void)mask;
+	// Stub: keep for compatibility. Real implementation only matters
+	// if your renderer actually emulates polygon stipple.
+}
+
+// -----------------------------------------------------------------------------
+// Display list stubs
+// -----------------------------------------------------------------------------
+
+static GLuint g_nextListId = 1;
+static GLuint g_currentList = 0;
+static GLenum g_currentListMode = 0;
+
+extern "C" GLuint APIENTRY glGenLists(GLsizei range)
+{
+	if (range <= 0)
+		return 0;
+
+	GLuint first = g_nextListId;
+	g_nextListId += (GLuint)range;
+	return first;
+}
+
+extern "C" void APIENTRY glNewList(GLuint list, GLenum mode)
+{
+	g_currentList = list;
+	g_currentListMode = mode;
+}
+
+extern "C" void APIENTRY glEndList(void)
+{
+	g_currentList = 0;
+	g_currentListMode = 0;
+}
+
+extern "C" void APIENTRY glCallList(GLuint list)
+{
+	(void)list;
+	// Stub. Needed for link/compile.
+	// Replace with recorded command playback if you add true list support.
+}
+
+extern "C" void APIENTRY glDeleteLists(GLuint list, GLsizei range)
+{
+	(void)list;
+	(void)range;
+}
+
+extern "C" void APIENTRY glListBase(GLuint base)
+{
+	g_glState.listBase = base;
+}
+
+
+extern "C" void APIENTRY glCopyPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum type)
+{
+	(void)x;
+	(void)y;
+	(void)width;
+	(void)height;
+	(void)type;
+	// Stub. Often only needed for old UI or editor paths.
+}
+
+// -----------------------------------------------------------------------------
+// Double-precision wrappers
+// -----------------------------------------------------------------------------

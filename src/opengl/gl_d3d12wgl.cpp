@@ -8,6 +8,11 @@ extern "C" void APIENTRY glSelectTextureSGIS(GLenum texture);
 extern "C" void APIENTRY glMTexCoord2fSGIS(GLenum texture, GLfloat s, GLfloat t);
 extern "C" void APIENTRY glActiveTextureARB(GLenum texture);
 extern "C" void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t);
+void QD3D12_Resize();
+
+void QD3D12_Present();
+void QD3D12_EndFrame();
+void QD3D12_CollectRetiredResources();
 
 // Existing GL wrapper function from your compatibility layer
 extern "C" void APIENTRY glBindTexture(unsigned int target, unsigned int texture);
@@ -58,6 +63,8 @@ extern "C" QD3D12_HGLRC WINAPI qd3d12_wglCreateContext(HDC hdc)
 
 extern "C" BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
 {
+    static bool basicInitDone = false;
+
     if (!hdc || !hglrc)
     {
         g_currentDC = nullptr;
@@ -73,10 +80,14 @@ extern "C" BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
     int w = 640, h = 480;
     QD3D12_GetClientSize(ctx->hwnd, w, h);
 
-    if (!QD3D12_InitForQuakeWindow(ctx->window,ctx->hwnd, w, h, ctx->initialized))
-       return FALSE;
+    if (!ctx->initialized)
+    {
+		if (!QD3D12_InitForQuakeWindow(ctx->window, ctx->hwnd, w, h, basicInitDone))
+			return FALSE;
+    }
+    
 
-	if (!ctx->initialized)
+	if (!basicInitDone)
 	{
         if(!glRaytracingInit())
             return FALSE;
@@ -84,14 +95,28 @@ extern "C" BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
         if (!glRaytracingLightingInit())
             return FALSE;
 
-        ctx->initialized = true;
+        basicInitDone = true;
        
         QD3D12_BeginFrame();
     }
 
+	if (ctx->initialized) {
+		glFinish();
+		QD3D12_EndFrame();
+	}
+
     g_currentDC = hdc;
     g_currentContext = ctx;
+    
     QD3D12_SetCurrentWindow(ctx->window);
+    QD3D12_Resize();
+
+	if (ctx->initialized) {
+		QD3D12_BeginFrame();
+		QD3D12_CollectRetiredResources();
+	}
+
+	ctx->initialized = true;
     return TRUE;
 }
 
@@ -153,3 +178,6 @@ extern "C" BOOL WINAPI qd3d12_wglSetDeviceGammaRamp3DFX(HDC hdc, LPVOID ramp) {
     return FALSE;
 }
 
+extern "C" __declspec(dllexport) BOOL  WINAPI wglShareLists(HGLRC, HGLRC) { return FALSE; }
+extern "C" __declspec(dllexport) BOOL  WINAPI wglUseFontBitmapsA(HDC, DWORD, DWORD, DWORD) { return FALSE; }
+extern "C"  __declspec(dllexport) BOOL  WINAPI wglUseFontBitmapsW(HDC, DWORD, DWORD, DWORD) { return FALSE; }
