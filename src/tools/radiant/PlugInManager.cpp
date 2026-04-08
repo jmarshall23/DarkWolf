@@ -1447,8 +1447,8 @@ int WINAPI QERApp_RequestInterface( REFGUID refGUID, LPVOID pInterface )
 		pQglTable->m_pfn_wglSwapBuffers = SwapBuffers;
 		pQglTable->m_pfn_wglUseFontBitmaps = wglUseFontBitmaps;
 		pQglTable->m_pfnGetQeglobalsHGLRC = &QERApp_GetQeglobalsHGLRC;
-		pQglTable->m_pfn_gluPerspective = gluPerspective;
-		pQglTable->m_pfn_gluLookAt = gluLookAt;
+		//pQglTable->m_pfn_gluPerspective = gluPerspective;
+		//pQglTable->m_pfn_gluLookAt = gluLookAt;
 		pQglTable->m_pfnHookXYGLWindow = QERApp_HookXYGLWindow;
 		pQglTable->m_pfnUnHookGLWindow = QERApp_UnHookGLWindow;
 

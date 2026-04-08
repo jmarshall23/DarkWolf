@@ -625,23 +625,7 @@ qtexture_t *Texture_LoadTGATexture (unsigned char* pPixels, int nWidth, int nHei
       break;
     }
   }
-
-  if (g_PrefsDlg.m_bSGIOpenGL)
-  {
-	  if (nomips)
-    {
-		  glTexImage2D(GL_TEXTURE_2D, 0, 4, nWidth, nHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, pPixels);
-    }
-	  else
-		  gluBuild2DMipmaps(GL_TEXTURE_2D, 4, nWidth, nHeight,GL_RGBA, GL_UNSIGNED_BYTE, pPixels);
-  }
-  else
-  {
-	  if (nomips)
-		  glTexImage2D(GL_TEXTURE_2D, 0, 4, nWidth, nHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, pPixels);
-	  else
-		  gluBuild2DMipmaps(GL_TEXTURE_2D, 4, nWidth, nHeight,GL_RGBA, GL_UNSIGNED_BYTE, pPixels);
-  }
+  glTexImage2D(GL_TEXTURE_2D, 0, 4, nWidth, nHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, pPixels);
 
 	glBindTexture( GL_TEXTURE_2D, 0 );
 
@@ -725,17 +709,7 @@ qtexture_t *Texture_CreateSolid (const char *name)
 	glBindTexture( GL_TEXTURE_2D, q->texture_number );
 	SetTexParameters ();
 
-  if (g_PrefsDlg.m_bSGIOpenGL)
-  {
-		glTexImage2D(GL_TEXTURE_2D, 0, 3, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-  }
-  else
-  {
-	  if (nomips)
-		  glTexImage2D(GL_TEXTURE_2D, 0, 3, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-	  else
-		  gluBuild2DMipmaps(GL_TEXTURE_2D, 3, 1, 1,GL_RGBA, GL_UNSIGNED_BYTE, data);
-  }
+	glTexImage2D(GL_TEXTURE_2D, 0, 3, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
 	glBindTexture( GL_TEXTURE_2D, 0 );
 
 	return q;
