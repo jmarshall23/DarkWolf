@@ -4055,15 +4055,16 @@ void Brush_Draw( brush_t *b )
 		}
 		//}
 		
-		glBegin(GL_POLYGON);
-		//if (nDrawMode == cd_light)
-		
-		for (i=0 ; i<w->numpoints ; i++)
+		glBegin(GL_TRIANGLE_FAN);
+
+		for (i = 0; i < w->numpoints; i++)
 		{
 			if (nDrawMode == cd_texture || nDrawMode == cd_light)
-				glTexCoord2fv( &w->points[i][3] );
+				glTexCoord2fv(&w->points[i][3]);
+
 			glVertex3fv(w->points[i]);
 		}
+
 		glEnd();
 	}
 	
