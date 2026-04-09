@@ -101,7 +101,7 @@ extern "C" BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
     }
 
 	if (ctx->initialized) {
-		glFinish();
+//		glFinish();
 		QD3D12_EndFrame();
 	}
 

@@ -1295,6 +1295,10 @@ static D3D12_PRIMITIVE_TOPOLOGY GetDrawTopology(GLenum originalMode)
     }
 }
 
+
+#ifdef _DEBUG
+#pragma optimize off
+#endif
 static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource* tex0, const TextureResource* tex1)
 {
     const bool useTex0 = g_gl.texture2D[0];
@@ -1323,6 +1327,10 @@ static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource*
     key.geometryFlag = g_gl.currentGeometryFlag;
     return key;
 }
+
+#ifdef _DEBUG
+#pragma optimize on
+#endif
 
 extern "C" void APIENTRY glSelectTextureSGIS(GLenum texture)
 {
@@ -4114,6 +4122,9 @@ extern "C" void APIENTRY glDeleteTextures(GLsizei n, const GLuint* textures)
     }
 }
 
+#ifdef _DEBUG
+#pragma optimize off
+#endif
 extern "C" void APIENTRY glBindTexture(GLenum, GLuint texture)
 {
     g_gl.boundTexture[g_gl.activeTextureUnit] = texture;
@@ -4135,6 +4146,9 @@ extern "C" void APIENTRY glBindTexture(GLenum, GLuint texture)
         textures.emplace(texture, tex);
     }
 }
+#ifdef _DEBUG
+#pragma optimize on
+#endif
 
 extern "C" void APIENTRY glLoadMatrixf(const GLfloat* m)
 {

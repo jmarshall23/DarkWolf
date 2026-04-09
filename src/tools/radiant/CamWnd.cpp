@@ -1098,7 +1098,7 @@ void CCamWnd::Cam_Draw()
 	}
 #endif
 	
-	glFinish();
+	//glFinish();
 	QE_CheckOpenGLForErrors();
 	//	Sys_EndWait();
 	if (m_Camera.timing)
