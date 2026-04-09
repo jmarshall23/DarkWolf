@@ -27,6 +27,8 @@ using Microsoft::WRL::ComPtr;
 
 #include "opengl.h"
 
+static constexpr size_t GL_FRAME_VERTEX_CAPACITY = 2000000; // we make retro games, this comes out to about 100mb or so. 
+
 static D3D12_GPU_DESCRIPTOR_HANDLE QD3D12_SrvGpu(UINT index);
 static D3D12_CPU_DESCRIPTOR_HANDLE QD3D12_SrvCpu(UINT index);
 static Mat4 CurrentModelMatrix();
@@ -56,6 +58,13 @@ static void QD3D12_Fatal(const char* fmt, ...)
     MessageBoxA(nullptr, buffer, "QD3D12 Fatal", MB_OK | MB_ICONERROR);
     DebugBreak();
 }
+
+struct VertexArena
+{
+	GLVertex* buffer;
+	size_t    capacity;
+	size_t    cursor;
+};
 
 #define QD3D12_CHECK(x) do { HRESULT _hr = (x); if (FAILED(_hr)) { QD3D12_Fatal("HRESULT failed 0x%08X at %s:%d", (unsigned)_hr, __FILE__, __LINE__); } } while(0)
 
@@ -302,9 +311,11 @@ static bool BatchKeyEquals(const BatchKey& a, const BatchKey& b)
 struct QueuedBatch
 {
     BatchKey key;
-    std::vector<GLVertex> verts;
     size_t markerBegin = 0;
     size_t markerEnd   = 0;
+
+	size_t firstVertex;
+	size_t vertexCount;
 };
 
 struct QD3D12Window
@@ -399,6 +410,8 @@ struct ImmediateVertexBuffer
 
 struct GLState
 {
+    VertexArena frameVerts;
+
     GLfloat pointSize = 1.0f;
     GLfloat pointSizeMin = 1.0f;
     GLfloat pointSizeMax = 64.0f;
@@ -568,6 +581,62 @@ static std::unordered_map<HWND, QD3D12Window> g_windows;
 static GLuint g_lightingTextureId = 0;
 static TextureResource* g_lightingTexture = nullptr;
 static D3D12_RESOURCE_STATES  g_lightingTextureState = D3D12_RESOURCE_STATE_COMMON;
+
+static inline const GLVertex* QD3D12_GetBatchVertices(const QueuedBatch& batch)
+{
+	return g_gl.frameVerts.buffer + batch.firstVertex;
+}
+
+static void QD3D12_InitFrameVertexArena()
+{
+	g_gl.frameVerts.capacity = GL_FRAME_VERTEX_CAPACITY;
+	g_gl.frameVerts.cursor = 0;
+	g_gl.frameVerts.buffer = (GLVertex*)_aligned_malloc(sizeof(GLVertex) * g_gl.frameVerts.capacity, 64);
+	assert(g_gl.frameVerts.buffer);
+}
+
+static void QD3D12_ShutdownFrameVertexArena()
+{
+	if (g_gl.frameVerts.buffer)
+	{
+		_aligned_free(g_gl.frameVerts.buffer);
+		g_gl.frameVerts.buffer = nullptr;
+	}
+
+	g_gl.frameVerts.capacity = 0;
+	g_gl.frameVerts.cursor = 0;
+}
+
+static inline void QD3D12_ResetFrameVertexArena()
+{
+	g_gl.frameVerts.cursor = 0;
+}
+
+static inline GLVertex* QD3D12_AllocFrameVertices(size_t count, size_t* outFirstVertex)
+{
+	if (count == 0)
+	{
+		if (outFirstVertex)
+			*outFirstVertex = 0;
+		return nullptr;
+	}
+
+	const size_t start = g_gl.frameVerts.cursor;
+	const size_t end = start + count;
+
+	if (end > g_gl.frameVerts.capacity)
+	{
+		assert(!"Frame vertex arena overflow");
+		return nullptr;
+	}
+
+	g_gl.frameVerts.cursor = end;
+
+	if (outFirstVertex)
+		*outFirstVertex = start;
+
+	return g_gl.frameVerts.buffer + start;
+}
 
 static D3D12_CPU_DESCRIPTOR_HANDLE CurrentPositionRTV()
 {
@@ -2247,6 +2316,7 @@ bool QD3D12_InitForQuakeWindow(struct QD3D12Window *window, HWND hwnd, int width
 
     if (!fastPath)
     {
+        QD3D12_InitFrameVertexArena();
         QD3D12_CreateDevice();
     }
     QD3D12_CreateSurfaceFrameResources(*window);
@@ -2279,6 +2349,7 @@ bool QD3D12_InitForQuakeWindow(struct QD3D12Window *window, HWND hwnd, int width
 
 void QD3D12_ShutdownForQuake()
 {
+    QD3D12_ShutdownFrameVertexArena();
     QD3D12_WaitForGPU();
 
     for (UINT i = 0; i < QD3D12_FrameCount; ++i)
@@ -2397,6 +2468,7 @@ void QD3D12_SwapBuffers(HDC hdc) {
     QD3D12_Present();
     QD3D12_BeginFrame();
     QD3D12_CollectRetiredResources();
+    QD3D12_ResetFrameVertexArena();
 }
 
 // ============================================================
@@ -3116,33 +3188,61 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 	BatchKey key = BuildCurrentBatchKey(mode, tex0, tex1);
 	const size_t markerCursor = g_gl.queryMarkers.size();
 
-	std::vector<GLVertex>* dst = nullptr;
+	QueuedBatch* batch = nullptr;
 
 	if (!g_gl.queuedBatches.empty() &&
 		BatchKeyEquals(g_gl.queuedBatches.back().key, key) &&
 		g_gl.queuedBatches.back().markerEnd == markerCursor)
 	{
-		dst = &g_gl.queuedBatches.back().verts;
+		batch = &g_gl.queuedBatches.back();
 	}
 	else
 	{
-		QueuedBatch batch{};
-		batch.key = key;
-		batch.markerBegin = markerCursor;
-		batch.markerEnd = markerCursor;
-		g_gl.queuedBatches.push_back(std::move(batch));
-		dst = &g_gl.queuedBatches.back().verts;
+		QueuedBatch newBatch{};
+		newBatch.key = key;
+		newBatch.markerBegin = markerCursor;
+		newBatch.markerEnd = markerCursor;
+		newBatch.firstVertex = 0;
+		newBatch.vertexCount = 0;
+		g_gl.queuedBatches.push_back(newBatch);
+		batch = &g_gl.queuedBatches.back();
 	}
 
-	const size_t oldSize = dst->size();
+	auto AppendToBatch = [&](size_t outCount) -> GLVertex*
+		{
+			if (outCount == 0)
+				return nullptr;
+
+			size_t first = 0;
+			GLVertex* dst = QD3D12_AllocFrameVertices(outCount, &first);
+			if (!dst)
+				return nullptr;
+
+			if (batch->vertexCount == 0)
+			{
+				batch->firstVertex = first;
+				batch->vertexCount = outCount;
+			}
+			else
+			{
+				// Since arena is linear, merged batches must remain contiguous.
+				assert(batch->firstVertex + batch->vertexCount == first);
+				batch->vertexCount += outCount;
+			}
+
+			return dst;
+		};
 
 	switch (mode)
 	{
 	case GL_TRIANGLES:
 	case GL_POINTS:
 	{
-		dst->resize(oldSize + n);
-		memcpy(dst->data() + oldSize, src, n * sizeof(GLVertex));
+		GLVertex* out = AppendToBatch(n);
+		if (!out)
+			return;
+
+		memcpy(out, src, n * sizeof(GLVertex));
 		return;
 	}
 
@@ -3150,9 +3250,11 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 	{
 		const size_t segCount = n >> 1;
 		const size_t outCount = segCount * 2;
-		dst->resize(oldSize + outCount);
 
-		GLVertex* out = dst->data() + oldSize;
+		GLVertex* out = AppendToBatch(outCount);
+		if (!out)
+			return;
+
 		for (size_t i = 0, d = 0; i + 1 < n; i += 2, d += 2)
 		{
 			out[d + 0] = src[i + 0];
@@ -3166,11 +3268,12 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 		if (n < 2)
 			return;
 
-		const size_t segCount = n - 1;
-		const size_t outCount = segCount * 2;
-		dst->resize(oldSize + outCount);
+		const size_t outCount = (n - 1) * 2;
 
-		GLVertex* out = dst->data() + oldSize;
+		GLVertex* out = AppendToBatch(outCount);
+		if (!out)
+			return;
+
 		for (size_t i = 1, d = 0; i < n; ++i, d += 2)
 		{
 			out[d + 0] = src[i - 1];
@@ -3184,11 +3287,12 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 		if (n < 2)
 			return;
 
-		const size_t segCount = n;
-		const size_t outCount = segCount * 2;
-		dst->resize(oldSize + outCount);
+		const size_t outCount = n * 2;
 
-		GLVertex* out = dst->data() + oldSize;
+		GLVertex* out = AppendToBatch(outCount);
+		if (!out)
+			return;
+
 		size_t d = 0;
 		for (size_t i = 1; i < n; ++i, d += 2)
 		{
@@ -3206,11 +3310,12 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 		if (n < 3)
 			return;
 
-		const size_t triCount = n - 2;
-		const size_t outCount = triCount * 3;
-		dst->resize(oldSize + outCount);
+		const size_t outCount = (n - 2) * 3;
 
-		GLVertex* out = dst->data() + oldSize;
+		GLVertex* out = AppendToBatch(outCount);
+		if (!out)
+			return;
+
 		size_t d = 0;
 		for (size_t i = 2; i < n; ++i, d += 3)
 		{
@@ -3235,14 +3340,15 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 		if (n < 3)
 			return;
 
-		const size_t triCount = n - 2;
-		const size_t outCount = triCount * 3;
-		dst->resize(oldSize + outCount);
+		const size_t outCount = (n - 2) * 3;
 
-		GLVertex* out = dst->data() + oldSize;
+		GLVertex* out = AppendToBatch(outCount);
+		if (!out)
+			return;
+
 		const GLVertex v0 = src[0];
-
 		size_t d = 0;
+
 		for (size_t i = 2; i < n; ++i, d += 3)
 		{
 			out[d + 0] = v0;
@@ -3256,9 +3362,11 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 	{
 		const size_t quadCount = n >> 2;
 		const size_t outCount = quadCount * 6;
-		dst->resize(oldSize + outCount);
 
-		GLVertex* out = dst->data() + oldSize;
+		GLVertex* out = AppendToBatch(outCount);
+		if (!out)
+			return;
+
 		size_t d = 0;
 		for (size_t i = 0; i + 3 < n; i += 4, d += 6)
 		{
@@ -3284,9 +3392,11 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 
 		const size_t quadCount = (n - 2) >> 1;
 		const size_t outCount = quadCount * 6;
-		dst->resize(oldSize + outCount);
 
-		GLVertex* out = dst->data() + oldSize;
+		GLVertex* out = AppendToBatch(outCount);
+		if (!out)
+			return;
+
 		size_t d = 0;
 		for (size_t i = 0; i + 3 < n; i += 2, d += 6)
 		{
@@ -3307,20 +3417,21 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 
 	case GL_POLYGON:
 	{
+		// Keep this path separate for now.
+		// Best next step is tessellating directly into the arena too.
 		std::vector<GLVertex> tess;
 		tess.reserve(n);
 
-		// If TessellatePolygon currently takes std::vector<GLVertex>,
-		// make a small temporary only here.
 		std::vector<GLVertex> temp(src, src + n);
 		TessellatePolygon(temp, tess);
 
 		if (!tess.empty())
 		{
-			const size_t tessOld = dst->size();
-			const size_t tessCount = tess.size();
-			dst->resize(tessOld + tessCount);
-			memcpy(dst->data() + tessOld, tess.data(), tessCount * sizeof(GLVertex));
+			GLVertex* out = AppendToBatch(tess.size());
+			if (!out)
+				return;
+
+			memcpy(out, tess.data(), tess.size() * sizeof(GLVertex));
 		}
 		return;
 	}
@@ -3386,7 +3497,10 @@ static void QD3D12_FlushQueuedBatches()
     for (size_t i = 0; i < g_gl.queuedBatches.size(); ++i)
     {
         const QueuedBatch& batch = g_gl.queuedBatches[i];
-        if (batch.verts.empty())
+		const GLVertex* verts = QD3D12_GetBatchVertices(batch);
+		const size_t count = batch.vertexCount;
+
+        if (count <= 0)
             continue;
 
         QD3D12_EmitQueryMarkers(batch.markerBegin, batch.markerEnd);
@@ -3394,8 +3508,8 @@ static void QD3D12_FlushQueuedBatches()
         g_gl.cmdList->RSSetViewports(1, &batch.key.viewport);
         g_gl.cmdList->RSSetScissorRects(1, &batch.key.scissor);
 
-        UploadAlloc vbAlloc = QD3D12_AllocUpload((UINT)(batch.verts.size() * sizeof(GLVertex)), 256);
-        memcpy(vbAlloc.cpu, batch.verts.data(), batch.verts.size() * sizeof(GLVertex));
+        UploadAlloc vbAlloc = QD3D12_AllocUpload((UINT)(count * sizeof(GLVertex)), 256);
+        memcpy(vbAlloc.cpu, verts, count * sizeof(GLVertex));
 
         UploadAlloc cbAlloc = QD3D12_AllocUpload(sizeof(DrawConstants), 256);
         DrawConstants* dc = reinterpret_cast<DrawConstants*>(cbAlloc.cpu);
@@ -3431,7 +3545,7 @@ static void QD3D12_FlushQueuedBatches()
 
         D3D12_VERTEX_BUFFER_VIEW vbv{};
         vbv.BufferLocation = vbAlloc.gpu;
-        vbv.SizeInBytes = (UINT)(batch.verts.size() * sizeof(GLVertex));
+        vbv.SizeInBytes = (UINT)(count * sizeof(GLVertex));
         vbv.StrideInBytes = sizeof(GLVertex);
 
         ID3D12PipelineState* pso = nullptr;
@@ -3511,7 +3625,7 @@ static void QD3D12_FlushQueuedBatches()
         }
 
         g_gl.cmdList->IASetVertexBuffers(0, 1, &vbv);
-        g_gl.cmdList->DrawInstanced((UINT)batch.verts.size(), 1, 0, 0);
+        g_gl.cmdList->DrawInstanced((UINT)count, 1, 0, 0);
     }
 
     g_gl.queuedBatches.clear();
