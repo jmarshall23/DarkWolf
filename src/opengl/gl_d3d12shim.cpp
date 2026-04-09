@@ -3209,65 +3209,76 @@ static Mat4 CurrentModelMatrix()
     return g_gl.modelMatrix;
 }
 
+static inline void AppendVerticesFast(std::vector<GLVertex>& dst, const std::vector<GLVertex>& src)
+{
+	if (src.empty())
+		return;
+
+	const size_t oldSize = dst.size();
+	const size_t addCount = src.size();
+	dst.resize(oldSize + addCount);
+
+	memcpy(dst.data() + oldSize, src.data(), addCount * sizeof(GLVertex));
+}
+
 static void QueueExpandedVertices(GLenum originalMode, const std::vector<GLVertex>& verts)
 {
-    if (verts.empty())
-        return;
+	if (verts.empty())
+		return;
 
-    const bool useTex0 = g_gl.texture2D[0];
-    const bool useTex1 = g_gl.texture2D[1];
+	const bool useTex0 = g_gl.texture2D[0];
+	const bool useTex1 = g_gl.texture2D[1];
 
-    TextureResource* tex0 = &g_gl.whiteTexture;
-    TextureResource* tex1 = &g_gl.whiteTexture;
+	TextureResource* tex0 = &g_gl.whiteTexture;
+	TextureResource* tex1 = &g_gl.whiteTexture;
 
-    if (useTex0)
-    {
-        auto it0 = g_gl.textures.find(g_gl.boundTexture[0]);
-        if (it0 != g_gl.textures.end())
-            tex0 = &it0->second;
-    }
-    else {
-        tex0 = &g_gl.whiteTexture;
-    }
+	if (useTex0)
+	{
+		auto it0 = g_gl.textures.find(g_gl.boundTexture[0]);
+		if (it0 != g_gl.textures.end())
+			tex0 = &it0->second;
+	}
 
-    if (useTex1)
-    {
-        auto it1 = g_gl.textures.find(g_gl.boundTexture[1]);
-        if (it1 != g_gl.textures.end())
-            tex1 = &it1->second;
-    }
+	if (useTex1)
+	{
+		auto it1 = g_gl.textures.find(g_gl.boundTexture[1]);
+		if (it1 != g_gl.textures.end())
+			tex1 = &it1->second;
+	}
 
-    // Make sure any referenced textures exist on GPU before end-of-frame draw execution.
-    if (!tex0->gpuValid && tex0 != &g_gl.whiteTexture)
-    {
-        EnsureTextureResource(*tex0);
-        UploadTexture(*tex0);
-    }
+	if (!tex0->gpuValid && tex0 != &g_gl.whiteTexture)
+	{
+		EnsureTextureResource(*tex0);
+		UploadTexture(*tex0);
+	}
 
-    if (!tex1->gpuValid && tex1 != &g_gl.whiteTexture)
-    {
-        EnsureTextureResource(*tex1);
-        UploadTexture(*tex1);
-    }
+	if (!tex1->gpuValid && tex1 != &g_gl.whiteTexture)
+	{
+		EnsureTextureResource(*tex1);
+		UploadTexture(*tex1);
+	}
 
-    BatchKey key = BuildCurrentBatchKey(originalMode, tex0, tex1);
+	BatchKey key = BuildCurrentBatchKey(originalMode, tex0, tex1);
 
-    const size_t markerCursor = g_gl.queryMarkers.size();
+	const size_t markerCursor = g_gl.queryMarkers.size();
 
-    if (!g_gl.queuedBatches.empty() && BatchKeyEquals(g_gl.queuedBatches.back().key, key) && g_gl.queuedBatches.back().markerEnd == markerCursor)
-    {
-        auto &dst = g_gl.queuedBatches.back().verts;
-        dst.insert(dst.end(), verts.begin(), verts.end());
-    }
-    else
-    {
-        QueuedBatch batch {};
-        batch.key         = key;
-        batch.verts       = verts;
-        batch.markerBegin = markerCursor;
-        batch.markerEnd   = markerCursor;
-        g_gl.queuedBatches.push_back(std::move(batch));
-    }
+	if (!g_gl.queuedBatches.empty() &&
+		BatchKeyEquals(g_gl.queuedBatches.back().key, key) &&
+		g_gl.queuedBatches.back().markerEnd == markerCursor)
+	{
+		auto& dst = g_gl.queuedBatches.back().verts;
+		AppendVerticesFast(dst, verts);
+	}
+	else
+	{
+		QueuedBatch batch{};
+		batch.key = key;
+		batch.markerBegin = markerCursor;
+		batch.markerEnd = markerCursor;
+		batch.verts.reserve(verts.size());
+		AppendVerticesFast(batch.verts, verts);
+		g_gl.queuedBatches.push_back(std::move(batch));
+	}
 }
 
 static void FlushImmediate(GLenum mode, const std::vector<GLVertex>& src)
