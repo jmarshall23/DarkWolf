@@ -2964,194 +2964,6 @@ static void UploadTexture(TextureResource& tex)
     tex.gpuValid = true;
 }
 
-// ============================================================
-// SECTION 10: immediate mode conversion
-// ============================================================
-static void ExpandImmediate(GLenum mode, const std::vector<GLVertex>& src, std::vector<GLVertex>& out)
-{
-	const size_t n = src.size();
-
-	switch (mode)
-	{
-	case GL_TRIANGLES:
-	case GL_POINTS:
-	{
-		out = src;
-		return;
-	}
-
-	case GL_LINES:
-	{
-		const size_t segCount = n >> 1;
-		out.resize(segCount * 2);
-
-		for (size_t i = 0, d = 0; i + 1 < n; i += 2, d += 2)
-		{
-			out[d + 0] = src[i + 0];
-			out[d + 1] = src[i + 1];
-		}
-		return;
-	}
-
-	case GL_LINE_STRIP:
-	{
-		if (n < 2)
-		{
-			out.clear();
-			return;
-		}
-
-		const size_t segCount = n - 1;
-		out.resize(segCount * 2);
-
-		for (size_t i = 1, d = 0; i < n; ++i, d += 2)
-		{
-			out[d + 0] = src[i - 1];
-			out[d + 1] = src[i];
-		}
-		return;
-	}
-
-	case GL_LINE_LOOP:
-	{
-		if (n < 2)
-		{
-			out.clear();
-			return;
-		}
-
-		const size_t segCount = n;
-		out.resize(segCount * 2);
-
-		size_t d = 0;
-		for (size_t i = 1; i < n; ++i, d += 2)
-		{
-			out[d + 0] = src[i - 1];
-			out[d + 1] = src[i];
-		}
-
-		out[d + 0] = src[n - 1];
-		out[d + 1] = src[0];
-		return;
-	}
-
-	case GL_TRIANGLE_STRIP:
-	{
-		if (n < 3)
-		{
-			out.clear();
-			return;
-		}
-
-		const size_t triCount = n - 2;
-		out.resize(triCount * 3);
-
-		size_t d = 0;
-		for (size_t i = 2; i < n; ++i, d += 3)
-		{
-			if ((i & 1) == 0)
-			{
-				out[d + 0] = src[i - 2];
-				out[d + 1] = src[i - 1];
-				out[d + 2] = src[i];
-			}
-			else
-			{
-				out[d + 0] = src[i - 1];
-				out[d + 1] = src[i - 2];
-				out[d + 2] = src[i];
-			}
-		}
-		return;
-	}
-
-	case GL_TRIANGLE_FAN:
-	{
-		if (n < 3)
-		{
-			out.clear();
-			return;
-		}
-
-		const size_t triCount = n - 2;
-		out.resize(triCount * 3);
-
-		const GLVertex v0 = src[0];
-		size_t d = 0;
-		for (size_t i = 2; i < n; ++i, d += 3)
-		{
-			out[d + 0] = v0;
-			out[d + 1] = src[i - 1];
-			out[d + 2] = src[i];
-		}
-		return;
-	}
-
-	case GL_QUADS:
-	{
-		const size_t quadCount = n >> 2;
-		out.resize(quadCount * 6);
-
-		size_t d = 0;
-		for (size_t i = 0; i + 3 < n; i += 4, d += 6)
-		{
-			const GLVertex& v0 = src[i + 0];
-			const GLVertex& v1 = src[i + 1];
-			const GLVertex& v2 = src[i + 2];
-			const GLVertex& v3 = src[i + 3];
-
-			out[d + 0] = v0;
-			out[d + 1] = v1;
-			out[d + 2] = v2;
-			out[d + 3] = v0;
-			out[d + 4] = v2;
-			out[d + 5] = v3;
-		}
-		return;
-	}
-
-	case GL_QUAD_STRIP:
-	{
-		if (n < 4)
-		{
-			out.clear();
-			return;
-		}
-
-		const size_t quadCount = (n - 2) >> 1;
-		out.resize(quadCount * 6);
-
-		size_t d = 0;
-		for (size_t i = 0; i + 3 < n; i += 2, d += 6)
-		{
-			const GLVertex& v0 = src[i + 0];
-			const GLVertex& v1 = src[i + 1];
-			const GLVertex& v2 = src[i + 2];
-			const GLVertex& v3 = src[i + 3];
-
-			out[d + 0] = v0;
-			out[d + 1] = v1;
-			out[d + 2] = v2;
-			out[d + 3] = v2;
-			out[d + 4] = v1;
-			out[d + 5] = v3;
-		}
-		return;
-	}
-
-	case GL_POLYGON:
-	{
-		// This is still going to be the expensive path.
-		TessellatePolygon(src, out);
-		return;
-	}
-
-	default:
-		assert(!"Unknown ExpandImmediate type!");
-		out.clear();
-		return;
-	}
-}
 
 static PipelineMode PickPipeline(bool useTex0, bool useTex1)
 {
@@ -3221,9 +3033,9 @@ static inline void AppendVerticesFast(std::vector<GLVertex>& dst, const std::vec
 	memcpy(dst.data() + oldSize, src.data(), addCount * sizeof(GLVertex));
 }
 
-static void QueueExpandedVertices(GLenum originalMode, const std::vector<GLVertex>& verts)
+static void FlushImmediate(GLenum mode, const std::vector<GLVertex>& src)
 {
-	if (verts.empty())
+	if (src.empty())
 		return;
 
 	const bool useTex0 = g_gl.texture2D[0];
@@ -3258,16 +3070,16 @@ static void QueueExpandedVertices(GLenum originalMode, const std::vector<GLVerte
 		UploadTexture(*tex1);
 	}
 
-	BatchKey key = BuildCurrentBatchKey(originalMode, tex0, tex1);
-
+	BatchKey key = BuildCurrentBatchKey(mode, tex0, tex1);
 	const size_t markerCursor = g_gl.queryMarkers.size();
+
+	std::vector<GLVertex>* dst = nullptr;
 
 	if (!g_gl.queuedBatches.empty() &&
 		BatchKeyEquals(g_gl.queuedBatches.back().key, key) &&
 		g_gl.queuedBatches.back().markerEnd == markerCursor)
 	{
-		auto& dst = g_gl.queuedBatches.back().verts;
-		AppendVerticesFast(dst, verts);
+		dst = &g_gl.queuedBatches.back().verts;
 	}
 	else
 	{
@@ -3275,17 +3087,201 @@ static void QueueExpandedVertices(GLenum originalMode, const std::vector<GLVerte
 		batch.key = key;
 		batch.markerBegin = markerCursor;
 		batch.markerEnd = markerCursor;
-		batch.verts.reserve(verts.size());
-		AppendVerticesFast(batch.verts, verts);
 		g_gl.queuedBatches.push_back(std::move(batch));
+		dst = &g_gl.queuedBatches.back().verts;
 	}
-}
 
-static void FlushImmediate(GLenum mode, const std::vector<GLVertex>& src)
-{
-    std::vector<GLVertex> expanded;
-    ExpandImmediate(mode, src, expanded);
-    QueueExpandedVertices(mode, expanded);
+	const size_t n = src.size();
+	const size_t oldSize = dst->size();
+
+	switch (mode)
+	{
+	case GL_TRIANGLES:
+	case GL_POINTS:
+	{
+		dst->resize(oldSize + n);
+		memcpy(dst->data() + oldSize, src.data(), n * sizeof(GLVertex));
+		return;
+	}
+
+	case GL_LINES:
+	{
+		const size_t segCount = n >> 1;
+		const size_t outCount = segCount * 2;
+		dst->resize(oldSize + outCount);
+
+		GLVertex* out = dst->data() + oldSize;
+		for (size_t i = 0, d = 0; i + 1 < n; i += 2, d += 2)
+		{
+			out[d + 0] = src[i + 0];
+			out[d + 1] = src[i + 1];
+		}
+		return;
+	}
+
+	case GL_LINE_STRIP:
+	{
+		if (n < 2)
+			return;
+
+		const size_t segCount = n - 1;
+		const size_t outCount = segCount * 2;
+		dst->resize(oldSize + outCount);
+
+		GLVertex* out = dst->data() + oldSize;
+		for (size_t i = 1, d = 0; i < n; ++i, d += 2)
+		{
+			out[d + 0] = src[i - 1];
+			out[d + 1] = src[i];
+		}
+		return;
+	}
+
+	case GL_LINE_LOOP:
+	{
+		if (n < 2)
+			return;
+
+		const size_t segCount = n;
+		const size_t outCount = segCount * 2;
+		dst->resize(oldSize + outCount);
+
+		GLVertex* out = dst->data() + oldSize;
+		size_t d = 0;
+		for (size_t i = 1; i < n; ++i, d += 2)
+		{
+			out[d + 0] = src[i - 1];
+			out[d + 1] = src[i];
+		}
+
+		out[d + 0] = src[n - 1];
+		out[d + 1] = src[0];
+		return;
+	}
+
+	case GL_TRIANGLE_STRIP:
+	{
+		if (n < 3)
+			return;
+
+		const size_t triCount = n - 2;
+		const size_t outCount = triCount * 3;
+		dst->resize(oldSize + outCount);
+
+		GLVertex* out = dst->data() + oldSize;
+		size_t d = 0;
+		for (size_t i = 2; i < n; ++i, d += 3)
+		{
+			if ((i & 1) == 0)
+			{
+				out[d + 0] = src[i - 2];
+				out[d + 1] = src[i - 1];
+				out[d + 2] = src[i];
+			}
+			else
+			{
+				out[d + 0] = src[i - 1];
+				out[d + 1] = src[i - 2];
+				out[d + 2] = src[i];
+			}
+		}
+		return;
+	}
+
+	case GL_TRIANGLE_FAN:
+	{
+		if (n < 3)
+			return;
+
+		const size_t triCount = n - 2;
+		const size_t outCount = triCount * 3;
+		dst->resize(oldSize + outCount);
+
+		GLVertex* out = dst->data() + oldSize;
+		const GLVertex v0 = src[0];
+
+		size_t d = 0;
+		for (size_t i = 2; i < n; ++i, d += 3)
+		{
+			out[d + 0] = v0;
+			out[d + 1] = src[i - 1];
+			out[d + 2] = src[i];
+		}
+		return;
+	}
+
+	case GL_QUADS:
+	{
+		const size_t quadCount = n >> 2;
+		const size_t outCount = quadCount * 6;
+		dst->resize(oldSize + outCount);
+
+		GLVertex* out = dst->data() + oldSize;
+		size_t d = 0;
+		for (size_t i = 0; i + 3 < n; i += 4, d += 6)
+		{
+			const GLVertex& v0 = src[i + 0];
+			const GLVertex& v1 = src[i + 1];
+			const GLVertex& v2 = src[i + 2];
+			const GLVertex& v3 = src[i + 3];
+
+			out[d + 0] = v0;
+			out[d + 1] = v1;
+			out[d + 2] = v2;
+			out[d + 3] = v0;
+			out[d + 4] = v2;
+			out[d + 5] = v3;
+		}
+		return;
+	}
+
+	case GL_QUAD_STRIP:
+	{
+		if (n < 4)
+			return;
+
+		const size_t quadCount = (n - 2) >> 1;
+		const size_t outCount = quadCount * 6;
+		dst->resize(oldSize + outCount);
+
+		GLVertex* out = dst->data() + oldSize;
+		size_t d = 0;
+		for (size_t i = 0; i + 3 < n; i += 2, d += 6)
+		{
+			const GLVertex& v0 = src[i + 0];
+			const GLVertex& v1 = src[i + 1];
+			const GLVertex& v2 = src[i + 2];
+			const GLVertex& v3 = src[i + 3];
+
+			out[d + 0] = v0;
+			out[d + 1] = v1;
+			out[d + 2] = v2;
+			out[d + 3] = v2;
+			out[d + 4] = v1;
+			out[d + 5] = v3;
+		}
+		return;
+	}
+
+	case GL_POLYGON:
+	{
+		std::vector<GLVertex> tess;
+		TessellatePolygon(src, tess);
+
+		if (!tess.empty())
+		{
+			const size_t tessOld = dst->size();
+			const size_t tessCount = tess.size();
+			dst->resize(tessOld + tessCount);
+			memcpy(dst->data() + tessOld, tess.data(), tessCount * sizeof(GLVertex));
+		}
+		return;
+	}
+
+	default:
+		assert(!"Unknown FlushImmediate type!");
+		return;
+	}
 }
 
 static void QD3D12_EmitQueryMarkers(size_t beginIdx, size_t endIdx)
