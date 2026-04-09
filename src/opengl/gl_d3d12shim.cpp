@@ -2967,117 +2967,190 @@ static void UploadTexture(TextureResource& tex)
 // ============================================================
 // SECTION 10: immediate mode conversion
 // ============================================================
-
 static void ExpandImmediate(GLenum mode, const std::vector<GLVertex>& src, std::vector<GLVertex>& out)
 {
-    out.clear();
+	const size_t n = src.size();
 
-    switch (mode)
-    {
-	case GL_LINES:
-		// Explicit independent line segments: (0,1), (2,3), (4,5)...
-		for (size_t i = 0; i + 1 < src.size(); i += 2)
-		{
-			out.push_back(src[i + 0]);
-			out.push_back(src[i + 1]);
-		}
-		return;
-
-	case GL_QUAD_STRIP:
-		// v0 v1 v2 v3 -> quad 0
-		// v2 v3 v4 v5 -> quad 1
-		// each quad becomes 2 triangles
-		for (size_t i = 0; i + 3 < src.size(); i += 2)
-		{
-			out.push_back(src[i + 0]);
-			out.push_back(src[i + 1]);
-			out.push_back(src[i + 2]);
-
-			out.push_back(src[i + 2]);
-			out.push_back(src[i + 1]);
-			out.push_back(src[i + 3]);
-		}
-		return;
-
-	case GL_LINE_STRIP:
-		// Convert strip into explicit line pairs: (0,1), (1,2), (2,3)...
-		for (size_t i = 1; i < src.size(); ++i)
-		{
-			out.push_back(src[i - 1]);
-			out.push_back(src[i]);
-		}
-		return;
-
-	case GL_LINE_LOOP:
-		// Convert loop into explicit line pairs, including last->first.
-		if (src.size() >= 2)
-		{
-			for (size_t i = 1; i < src.size(); ++i)
-			{
-				out.push_back(src[i - 1]);
-				out.push_back(src[i]);
-			}
-
-			out.push_back(src.back());
-			out.push_back(src.front());
-		}
-		return;
-    case GL_TRIANGLES:
-        out = src;
-        return;
-
-    case GL_TRIANGLE_STRIP:
-        for (size_t i = 2; i < src.size(); ++i)
-        {
-            if ((i & 1) == 0)
-            {
-                out.push_back(src[i - 2]);
-                out.push_back(src[i - 1]);
-                out.push_back(src[i]);
-            }
-            else
-            {
-                out.push_back(src[i - 1]);
-                out.push_back(src[i - 2]);
-                out.push_back(src[i]);
-            }
-        }
-        return;
-
-    case GL_TRIANGLE_FAN:
-        for (size_t i = 2; i < src.size(); ++i)
-        {
-            out.push_back(src[0]);
-            out.push_back(src[i - 1]);
-            out.push_back(src[i]);
-        }
-        return;
-
-    case GL_POLYGON:
-        TessellatePolygon(src, out);
-        return;
-
-    case GL_QUADS:
-        for (size_t i = 0; i + 3 < src.size(); i += 4)
-        {
-            out.push_back(src[i + 0]);
-            out.push_back(src[i + 1]);
-            out.push_back(src[i + 2]);
-            out.push_back(src[i + 0]);
-            out.push_back(src[i + 2]);
-            out.push_back(src[i + 3]);
-        }
-        return;
-
+	switch (mode)
+	{
+	case GL_TRIANGLES:
 	case GL_POINTS:
-		// One vertex per point
+	{
 		out = src;
 		return;
+	}
 
-    default:
-        assert(!"Unknown ExpandImmediate type!");
-        return;
-    }
+	case GL_LINES:
+	{
+		const size_t segCount = n >> 1;
+		out.resize(segCount * 2);
+
+		for (size_t i = 0, d = 0; i + 1 < n; i += 2, d += 2)
+		{
+			out[d + 0] = src[i + 0];
+			out[d + 1] = src[i + 1];
+		}
+		return;
+	}
+
+	case GL_LINE_STRIP:
+	{
+		if (n < 2)
+		{
+			out.clear();
+			return;
+		}
+
+		const size_t segCount = n - 1;
+		out.resize(segCount * 2);
+
+		for (size_t i = 1, d = 0; i < n; ++i, d += 2)
+		{
+			out[d + 0] = src[i - 1];
+			out[d + 1] = src[i];
+		}
+		return;
+	}
+
+	case GL_LINE_LOOP:
+	{
+		if (n < 2)
+		{
+			out.clear();
+			return;
+		}
+
+		const size_t segCount = n;
+		out.resize(segCount * 2);
+
+		size_t d = 0;
+		for (size_t i = 1; i < n; ++i, d += 2)
+		{
+			out[d + 0] = src[i - 1];
+			out[d + 1] = src[i];
+		}
+
+		out[d + 0] = src[n - 1];
+		out[d + 1] = src[0];
+		return;
+	}
+
+	case GL_TRIANGLE_STRIP:
+	{
+		if (n < 3)
+		{
+			out.clear();
+			return;
+		}
+
+		const size_t triCount = n - 2;
+		out.resize(triCount * 3);
+
+		size_t d = 0;
+		for (size_t i = 2; i < n; ++i, d += 3)
+		{
+			if ((i & 1) == 0)
+			{
+				out[d + 0] = src[i - 2];
+				out[d + 1] = src[i - 1];
+				out[d + 2] = src[i];
+			}
+			else
+			{
+				out[d + 0] = src[i - 1];
+				out[d + 1] = src[i - 2];
+				out[d + 2] = src[i];
+			}
+		}
+		return;
+	}
+
+	case GL_TRIANGLE_FAN:
+	{
+		if (n < 3)
+		{
+			out.clear();
+			return;
+		}
+
+		const size_t triCount = n - 2;
+		out.resize(triCount * 3);
+
+		const GLVertex v0 = src[0];
+		size_t d = 0;
+		for (size_t i = 2; i < n; ++i, d += 3)
+		{
+			out[d + 0] = v0;
+			out[d + 1] = src[i - 1];
+			out[d + 2] = src[i];
+		}
+		return;
+	}
+
+	case GL_QUADS:
+	{
+		const size_t quadCount = n >> 2;
+		out.resize(quadCount * 6);
+
+		size_t d = 0;
+		for (size_t i = 0; i + 3 < n; i += 4, d += 6)
+		{
+			const GLVertex& v0 = src[i + 0];
+			const GLVertex& v1 = src[i + 1];
+			const GLVertex& v2 = src[i + 2];
+			const GLVertex& v3 = src[i + 3];
+
+			out[d + 0] = v0;
+			out[d + 1] = v1;
+			out[d + 2] = v2;
+			out[d + 3] = v0;
+			out[d + 4] = v2;
+			out[d + 5] = v3;
+		}
+		return;
+	}
+
+	case GL_QUAD_STRIP:
+	{
+		if (n < 4)
+		{
+			out.clear();
+			return;
+		}
+
+		const size_t quadCount = (n - 2) >> 1;
+		out.resize(quadCount * 6);
+
+		size_t d = 0;
+		for (size_t i = 0; i + 3 < n; i += 2, d += 6)
+		{
+			const GLVertex& v0 = src[i + 0];
+			const GLVertex& v1 = src[i + 1];
+			const GLVertex& v2 = src[i + 2];
+			const GLVertex& v3 = src[i + 3];
+
+			out[d + 0] = v0;
+			out[d + 1] = v1;
+			out[d + 2] = v2;
+			out[d + 3] = v2;
+			out[d + 4] = v1;
+			out[d + 5] = v3;
+		}
+		return;
+	}
+
+	case GL_POLYGON:
+	{
+		// This is still going to be the expensive path.
+		TessellatePolygon(src, out);
+		return;
+	}
+
+	default:
+		assert(!"Unknown ExpandImmediate type!");
+		out.clear();
+		return;
+	}
 }
 
 static PipelineMode PickPipeline(bool useTex0, bool useTex1)

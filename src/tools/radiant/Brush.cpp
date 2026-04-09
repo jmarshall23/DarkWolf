@@ -4092,9 +4092,9 @@ void Face_Draw( face_t *f )
 
 	if ( f->face_winding == 0 )
 		return;
-	glBegin( GL_POLYGON );
-	for ( i = 0 ; i < f->face_winding->numpoints; i++)
-		glVertex3fv( f->face_winding->points[i] );
+	glBegin(GL_TRIANGLE_FAN);
+	for (i = 0; i < f->face_winding->numpoints; i++)
+		glVertex3fv(f->face_winding->points[i]);
 	glEnd();
 }
 
