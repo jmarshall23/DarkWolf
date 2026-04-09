@@ -354,6 +354,49 @@ void FreeD3D12Window(struct QD3D12Window* wnd) {
     delete wnd;
 }
 
+struct ImmediateVertexBuffer
+{
+	std::vector<GLVertex> storage;
+	size_t count = 0;
+
+	void Init(size_t initialCapacity = 1024)
+	{
+		storage.resize(initialCapacity);
+		count = 0;
+	}
+
+	void Clear()
+	{
+		count = 0;
+	}
+
+	GLVertex& Push()
+	{
+		if (count >= storage.size())
+		{
+			const size_t newSize = storage.empty() ? 1024 : storage.size() * 2;
+			storage.resize(newSize);
+		}
+
+		return storage[count++];
+	}
+
+	GLVertex* Data()
+	{
+		return storage.data();
+	}
+
+	const GLVertex* Data() const
+	{
+		return storage.data();
+	}
+
+	size_t Size() const
+	{
+		return count;
+	}
+};
+
 struct GLState
 {
     GLfloat pointSize = 1.0f;
@@ -472,7 +515,7 @@ struct GLState
     float curU[QD3D12_MaxTextureUnits] = {};
     float curV[QD3D12_MaxTextureUnits] = {};
     float curColor[4] = { 1, 1, 1, 1 };
-    std::vector<GLVertex> immediateVerts;
+    ImmediateVertexBuffer immediateVerts;
 
     GLenum matrixMode = GL_MODELVIEW;
     std::vector<Mat4> modelStack{ Mat4::Identity() };
@@ -3033,9 +3076,9 @@ static inline void AppendVerticesFast(std::vector<GLVertex>& dst, const std::vec
 	memcpy(dst.data() + oldSize, src.data(), addCount * sizeof(GLVertex));
 }
 
-static void FlushImmediate(GLenum mode, const std::vector<GLVertex>& src)
+static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 {
-	if (src.empty())
+	if (!src || n == 0)
 		return;
 
 	const bool useTex0 = g_gl.texture2D[0];
@@ -3091,7 +3134,6 @@ static void FlushImmediate(GLenum mode, const std::vector<GLVertex>& src)
 		dst = &g_gl.queuedBatches.back().verts;
 	}
 
-	const size_t n = src.size();
 	const size_t oldSize = dst->size();
 
 	switch (mode)
@@ -3100,7 +3142,7 @@ static void FlushImmediate(GLenum mode, const std::vector<GLVertex>& src)
 	case GL_POINTS:
 	{
 		dst->resize(oldSize + n);
-		memcpy(dst->data() + oldSize, src.data(), n * sizeof(GLVertex));
+		memcpy(dst->data() + oldSize, src, n * sizeof(GLVertex));
 		return;
 	}
 
@@ -3266,7 +3308,12 @@ static void FlushImmediate(GLenum mode, const std::vector<GLVertex>& src)
 	case GL_POLYGON:
 	{
 		std::vector<GLVertex> tess;
-		TessellatePolygon(src, tess);
+		tess.reserve(n);
+
+		// If TessellatePolygon currently takes std::vector<GLVertex>,
+		// make a small temporary only here.
+		std::vector<GLVertex> temp(src, src + n);
+		TessellatePolygon(temp, tess);
 
 		if (!tess.empty())
 		{
@@ -3848,18 +3895,18 @@ extern "C" void APIENTRY glOrtho(GLdouble left, GLdouble right, GLdouble bottom,
 
 extern "C" void APIENTRY glBegin(GLenum mode)
 {
-    assert(!g_gl.inBeginEnd);
-    g_gl.inBeginEnd = true;
-    g_gl.currentPrim = mode;
-    g_gl.immediateVerts.clear();
+	assert(!g_gl.inBeginEnd);
+	g_gl.inBeginEnd = true;
+	g_gl.currentPrim = mode;
+	g_gl.immediateVerts.Clear();
 }
 
 extern "C" void APIENTRY glEnd(void)
 {
-    assert(g_gl.inBeginEnd);
-    g_gl.inBeginEnd = false;
-    FlushImmediate(g_gl.currentPrim, g_gl.immediateVerts);
-    g_gl.immediateVerts.clear();
+	assert(g_gl.inBeginEnd);
+	g_gl.inBeginEnd = false;
+	FlushImmediate(g_gl.currentPrim, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
+	g_gl.immediateVerts.Clear();
 }
 
 extern "C" void APIENTRY glVertex2f(GLfloat x, GLfloat y)
@@ -3869,21 +3916,21 @@ extern "C" void APIENTRY glVertex2f(GLfloat x, GLfloat y)
 
 extern "C" void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z)
 {
-    GLVertex v{};
-    v.px = x;
-    v.py = y;
-    v.pz = z;
+	GLVertex& v = g_gl.immediateVerts.Push();
 
-    v.u0 = g_gl.curU[0];
-    v.v0 = g_gl.curV[0];
-    v.u1 = g_gl.curU[1];
-    v.v1 = g_gl.curV[1];
+	v.px = x;
+	v.py = y;
+	v.pz = z;
 
-    v.r = g_gl.curColor[0];
-    v.g = g_gl.curColor[1];
-    v.b = g_gl.curColor[2];
-    v.a = g_gl.curColor[3];
-    g_gl.immediateVerts.push_back(v);
+	v.u0 = g_gl.curU[0];
+	v.v0 = g_gl.curV[0];
+	v.u1 = g_gl.curU[1];
+	v.v1 = g_gl.curV[1];
+
+	v.r = g_gl.curColor[0];
+	v.g = g_gl.curColor[1];
+	v.b = g_gl.curColor[2];
+	v.a = g_gl.curColor[3];
 }
 
 extern "C" void APIENTRY glVertex3fv(const GLfloat* v)
@@ -4299,8 +4346,7 @@ extern "C" void APIENTRY glReadBuffer(GLenum mode)
 
 void QD3D12_DrawArrays(GLenum mode, const GLVertex* verts, size_t count)
 {
-    std::vector<GLVertex> tmp(verts, verts + count);
-    FlushImmediate(mode, tmp);
+    FlushImmediate(mode, verts, count);
 }
 
 void QD3D12_ReleaseWindowSizeResources(QD3D12Window& w)
@@ -4525,64 +4571,67 @@ extern "C" void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stri
     tc.ptr    = QD3D12_ResolveArrayPointer(ptr);
 }
 
-extern "C" void APIENTRY glArrayElement(GLint i) {
-    GLVertex v{};
-    QD3D12_FetchArrayVertex(i, v);
-    g_gl.immediateVerts.push_back(v);
+extern "C" void APIENTRY glArrayElement(GLint i)
+{
+	GLVertex& v = g_gl.immediateVerts.Push();
+	QD3D12_FetchArrayVertex(i, v);
 }
 
-extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
+extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices)
 {
-    if (count <= 0)
-        return;
+	if (count <= 0)
+		return;
 
-    const void *resolvedIndices = QD3D12_ResolveElementPointer(indices, type, count);
-    if (!resolvedIndices)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return;
-    }
+	const void* resolvedIndices = QD3D12_ResolveElementPointer(indices, type, count);
+	if (!resolvedIndices)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
-    std::vector<GLVertex> verts;
-    verts.reserve((size_t)count);
+	g_gl.immediateVerts.Clear();
 
-    if (type == GL_UNSIGNED_INT)
-    {
-        const GLuint *idx = (const GLuint *)resolvedIndices;
-        for (GLsizei i = 0; i < count; ++i)
-        {
-            GLVertex v {};
-            QD3D12_FetchArrayVertex((GLint)idx[i], v);
-            verts.push_back(v);
-        }
-    }
-    else if (type == GL_UNSIGNED_SHORT)
-    {
-        const GLushort *idx = (const GLushort *)resolvedIndices;
-        for (GLsizei i = 0; i < count; ++i)
-        {
-            GLVertex v {};
-            QD3D12_FetchArrayVertex((GLint)idx[i], v);
-            verts.push_back(v);
-        }
-    }
-    else if (type == GL_UNSIGNED_BYTE)
-    {
-        const GLubyte *idx = (const GLubyte *)resolvedIndices;
-        for (GLsizei i = 0; i < count; ++i)
-        {
-            GLVertex v {};
-            QD3D12_FetchArrayVertex((GLint)idx[i], v);
-            verts.push_back(v);
-        }
-    }
-    else
-    {
-        g_gl.lastError = GL_INVALID_ENUM;
-        return;
-    }
+	switch (type)
+	{
+	case GL_UNSIGNED_INT:
+	{
+		const GLuint* idx = static_cast<const GLuint*>(resolvedIndices);
+		for (GLsizei i = 0; i < count; ++i)
+		{
+			GLVertex& v = g_gl.immediateVerts.Push();
+			QD3D12_FetchArrayVertex(static_cast<GLint>(idx[i]), v);
+		}
+		break;
+	}
 
-    FlushImmediate(mode, verts);
+	case GL_UNSIGNED_SHORT:
+	{
+		const GLushort* idx = static_cast<const GLushort*>(resolvedIndices);
+		for (GLsizei i = 0; i < count; ++i)
+		{
+			GLVertex& v = g_gl.immediateVerts.Push();
+			QD3D12_FetchArrayVertex(static_cast<GLint>(idx[i]), v);
+		}
+		break;
+	}
+
+	case GL_UNSIGNED_BYTE:
+	{
+		const GLubyte* idx = static_cast<const GLubyte*>(resolvedIndices);
+		for (GLsizei i = 0; i < count; ++i)
+		{
+			GLVertex& v = g_gl.immediateVerts.Push();
+			QD3D12_FetchArrayVertex(static_cast<GLint>(idx[i]), v);
+		}
+		break;
+	}
+
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	FlushImmediate(mode, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
 }
 
 extern "C" PROC WINAPI qd3d12_wglGetProcAddress(LPCSTR name) {
@@ -5149,26 +5198,24 @@ extern "C" void APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsizei
 
 extern "C" void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
-    if (count <= 0)
-        return;
+	if (count <= 0)
+		return;
 
-    if (first < 0)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (first < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    std::vector<GLVertex> verts;
-    verts.reserve((size_t)count);
+	g_gl.immediateVerts.Clear();
 
-    for (GLsizei i = 0; i < count; ++i)
-    {
-        GLVertex v {};
-        QD3D12_FetchArrayVertex(first + i, v);
-        verts.push_back(v);
-    }
+	for (GLsizei i = 0; i < count; ++i)
+	{
+		GLVertex& v = g_gl.immediateVerts.Push();
+		QD3D12_FetchArrayVertex(first + i, v);
+	}
 
-    FlushImmediate(mode, verts);
+	FlushImmediate(mode, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
 }
 
 extern "C" void *APIENTRY glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
