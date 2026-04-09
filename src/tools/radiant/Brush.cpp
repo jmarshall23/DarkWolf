@@ -3983,14 +3983,18 @@ void Brush_Draw( brush_t *b )
 	
 	// guarantee the texture will be set first
 	prev = NULL;
-	for (face = b->brush_faces,order = 0 ; face ; face=face->next, order++)
+
+	const bool useTex = (nDrawMode == cd_texture || nDrawMode == cd_light);
+	bool batchOpen = false;
+
+	for (face = b->brush_faces, order = 0; face; face = face->next, order++)
 	{
 		w = face->face_winding;
 		if (!w)
 		{
 			continue;		// freed face
 		}
-		
+
 		if (g_qeglobals.d_savedinfo.exclude & EXCLUDE_CAULK)
 		{
 			if (strstr(face->texdef.name, "caulk"))
@@ -3998,73 +4002,86 @@ void Brush_Draw( brush_t *b )
 				continue;
 			}
 		}
-		
+
 #if 0
 		if (b->alphaBrush)
 		{
 			if (!(face->texdef.flags & SURF_ALPHA))
 				continue;
-			//--glPushAttrib(GL_ALL_ATTRIB_BITS);
 			glDisable(GL_CULL_FACE);
-			//--glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-			//--glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-			//--glDisable(GL_DEPTH_TEST);
-			//--glBlendFunc (GL_SRC_ALPHA, GL_DST_ALPHA);
-			//--glEnable (GL_BLEND);
 		}
 #endif
-		
-		if ((nDrawMode == cd_texture || nDrawMode == cd_light) && face->d_texture != prev)
+
+		// If the texture changes, flush the current triangle batch first.
+		if (useTex && face->d_texture != prev)
 		{
-			// set the texture for this face
+			if (batchOpen)
+			{
+				glEnd();
+				batchOpen = false;
+			}
+
 			prev = face->d_texture;
-			glBindTexture( GL_TEXTURE_2D, face->d_texture->texture_number );
+			glBindTexture(GL_TEXTURE_2D, face->d_texture->texture_number);
 		}
-		
-		
-		
+
+		// Open a shared triangle batch.
+		if (!batchOpen)
+		{
+			glBegin(GL_TRIANGLES);
+			batchOpen = true;
+		}
+
+		// Per-face color
 		if (!b->patchBrush)
 		{
-			if (face->texdef.flags & SURF_TRANS33) 
-				glColor4f ( face->d_color[0], face->d_color[1], face->d_color[2], 0.33 );
-			else if ( face->texdef.flags & SURF_TRANS66) 
-				glColor4f ( face->d_color[0], face->d_color[1], face->d_color[2], 0.66 );
+			if (face->texdef.flags & SURF_TRANS33)
+				glColor4f(face->d_color[0], face->d_color[1], face->d_color[2], 0.33f);
+			else if (face->texdef.flags & SURF_TRANS66)
+				glColor4f(face->d_color[0], face->d_color[1], face->d_color[2], 0.66f);
 			else
-				glColor3fv( face->d_color );
+				glColor3fv(face->d_color);
 		}
 		else
 		{
-			glColor4f ( face->d_color[0], face->d_color[1], face->d_color[2], 0.13 );
+			glColor4f(face->d_color[0], face->d_color[1], face->d_color[2], 0.13f);
 		}
-		
-		// shader drawing stuff
+
+		// Shader drawing stuff
 		if (face->d_texture->bFromShader)
 		{
-			// setup shader drawing
-			glColor4f ( face->d_color[0], face->d_color[1], face->d_color[2], face->d_texture->fTrans );
-			
+			glColor4f(face->d_color[0], face->d_color[1], face->d_color[2], face->d_texture->fTrans);
 		}
-		
-		// draw the polygon
-		
-		//if (nDrawMode == cd_light)
-		//{
+
+		// Per-face normal
 		if (g_PrefsDlg.m_bGLLighting)
 		{
 			glNormal3fv(face->plane.normal);
 		}
-		//}
-		
-		glBegin(GL_TRIANGLE_FAN);
 
-		for (i = 0; i < w->numpoints; i++)
+		// Convert polygon to explicit triangles:
+		// (0,1,2), (0,2,3), (0,3,4)...
+		if (w->numpoints >= 3)
 		{
-			if (nDrawMode == cd_texture || nDrawMode == cd_light)
-				glTexCoord2fv(&w->points[i][3]);
+			for (i = 1; i < w->numpoints - 1; ++i)
+			{
+				if (useTex)
+					glTexCoord2fv(&w->points[0][3]);
+				glVertex3fv(w->points[0]);
 
-			glVertex3fv(w->points[i]);
+				if (useTex)
+					glTexCoord2fv(&w->points[i][3]);
+				glVertex3fv(w->points[i]);
+
+				if (useTex)
+					glTexCoord2fv(&w->points[i + 1][3]);
+				glVertex3fv(w->points[i + 1]);
+			}
 		}
+	}
 
+	if (batchOpen)
+	{
 		glEnd();
 	}
 	
