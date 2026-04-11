@@ -29,34 +29,40 @@ using Microsoft::WRL::ComPtr;
 
 static constexpr size_t GL_FRAME_VERTEX_CAPACITY = 2000000; // we make retro games, this comes out to about 100mb or so. 
 
+struct QD3D12Window;
+
 static D3D12_GPU_DESCRIPTOR_HANDLE QD3D12_SrvGpu(UINT index);
 static D3D12_CPU_DESCRIPTOR_HANDLE QD3D12_SrvCpu(UINT index);
 static Mat4 CurrentModelMatrix();
+static void QD3D12_CreateUploadRingForWindow(struct QD3D12Window& w);
+static void QD3D12_DestroyUploadRingForWindow(struct QD3D12Window& w);
+static void QD3D12_SubmitOpenFrameNoPresentAndWait();
+static void QD3D12_EnsureFrameOpen();
 
 extern bool D3D12_SwapBufferMultWindows;
 
 static void QD3D12_Log(const char* fmt, ...)
 {
-    char buffer[4096];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
-    va_end(args);
-    OutputDebugStringA(buffer);
-    OutputDebugStringA("\n");
+	char buffer[4096];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
+	va_end(args);
+	OutputDebugStringA(buffer);
+	OutputDebugStringA("\n");
 }
 
 static void QD3D12_Fatal(const char* fmt, ...)
 {
-    char buffer[4096];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
-    va_end(args);
-    OutputDebugStringA(buffer);
-    OutputDebugStringA("\n");
-    MessageBoxA(nullptr, buffer, "QD3D12 Fatal", MB_OK | MB_ICONERROR);
-    DebugBreak();
+	char buffer[4096];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
+	va_end(args);
+	OutputDebugStringA(buffer);
+	OutputDebugStringA("\n");
+	MessageBoxA(nullptr, buffer, "QD3D12 Fatal", MB_OK | MB_ICONERROR);
+	DebugBreak();
 }
 
 struct VertexArena
@@ -70,26 +76,26 @@ struct VertexArena
 
 struct GLOcclusionQuery
 {
-    GLuint id          = 0;
-    bool   active      = false;
-    bool   pending     = false;
-    bool   resultReady = false;
+	GLuint id = 0;
+	bool   active = false;
+	bool   pending = false;
+	bool   resultReady = false;
 
-    UINT   heapIndex      = UINT_MAX;
-    UINT64 result         = 0;
-    UINT64 submittedFence = 0;
+	UINT   heapIndex = UINT_MAX;
+	UINT64 result = 0;
+	UINT64 submittedFence = 0;
 };
 
 struct QueryMarker
 {
-    enum Type
-    {
-        Begin,
-        End
-    };
+	enum Type
+	{
+		Begin,
+		End
+	};
 
-    Type   type = Begin;
-    GLuint id   = 0;
+	Type   type = Begin;
+	GLuint id = 0;
 };
 
 static const UINT QD3D12_MaxQueries = 2048;
@@ -105,12 +111,12 @@ static const UINT QD3D12_UploadBufferSize = 64 * 1024 * 1024;
 
 enum PipelineMode
 {
-    PIPE_OPAQUE_TEX = 0,
-    PIPE_ALPHA_TEST_TEX,
-    PIPE_BLEND_TEX,
-    PIPE_OPAQUE_UNTEX,
-    PIPE_BLEND_UNTEX,
-    PIPE_COUNT
+	PIPE_OPAQUE_TEX = 0,
+	PIPE_ALPHA_TEST_TEX,
+	PIPE_BLEND_TEX,
+	PIPE_OPAQUE_UNTEX,
+	PIPE_BLEND_UNTEX,
+	PIPE_COUNT
 };
 
 static void QD3D12_FlushQueuedBatches();
@@ -119,90 +125,90 @@ static Mat4 CurrentMVP();
 
 struct RetiredResource
 {
-    UINT64 fenceValue = 0;
-    ComPtr<ID3D12Resource> resource;
+	UINT64 fenceValue = 0;
+	ComPtr<ID3D12Resource> resource;
 };
 
 static std::vector<RetiredResource> g_retiredResources;
 
 struct FrameResources
 {
-    ComPtr<ID3D12CommandAllocator> cmdAlloc;
-    UINT64 fenceValue = 0;
+	ComPtr<ID3D12CommandAllocator> cmdAlloc;
+	UINT64 fenceValue = 0;
 };
 
 struct UploadRing
 {
-    ComPtr<ID3D12Resource> resource[QD3D12_FrameCount];
-    uint8_t* cpuBase[QD3D12_FrameCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS gpuBase[QD3D12_FrameCount] = {};
-    UINT size = 0;
-    UINT offset = 0;
+	ComPtr<ID3D12Resource> resource[QD3D12_FrameCount];
+	uint8_t* cpuBase[QD3D12_FrameCount] = {};
+	D3D12_GPU_VIRTUAL_ADDRESS gpuBase[QD3D12_FrameCount] = {};
+	UINT size = 0;
+	UINT offset = 0;
 };
 
 struct TextureResource
 {
-    GLuint glId = 0;
-    int width = 0;
-    int height = 0;
-    GLenum format = GL_RGBA;
-    GLenum minFilter = GL_LINEAR;
-    GLenum magFilter = GL_LINEAR;
-    GLenum wrapS = GL_REPEAT;
-    GLenum wrapT = GL_REPEAT;
+	GLuint glId = 0;
+	int width = 0;
+	int height = 0;
+	GLenum format = GL_RGBA;
+	GLenum minFilter = GL_LINEAR;
+	GLenum magFilter = GL_LINEAR;
+	GLenum wrapS = GL_REPEAT;
+	GLenum wrapT = GL_REPEAT;
 
-    std::vector<uint8_t> sysmem;
+	std::vector<uint8_t> sysmem;
 
-    DXGI_FORMAT dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+	DXGI_FORMAT dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    ComPtr<ID3D12Resource> texture;
-    D3D12_CPU_DESCRIPTOR_HANDLE srvCpu{};
-    D3D12_GPU_DESCRIPTOR_HANDLE srvGpu{};
-    UINT srvIndex = UINT_MAX;
-    bool gpuValid = false;
-    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+	ComPtr<ID3D12Resource> texture;
+	D3D12_CPU_DESCRIPTOR_HANDLE srvCpu{};
+	D3D12_GPU_DESCRIPTOR_HANDLE srvGpu{};
+	UINT srvIndex = UINT_MAX;
+	bool gpuValid = false;
+	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
 };
 
 struct DrawConstants
 {
-    Mat4 mvp;
-    Mat4 modelMatrix;
+	Mat4 mvp;
+	Mat4 modelMatrix;
 
-    float alphaRef;
+	float alphaRef;
 
-    float useTex0;
-    float useTex1;
-    float tex1IsLightmap;
+	float useTex0;
+	float useTex1;
+	float tex1IsLightmap;
 
-    float texEnvMode0;
-    float texEnvMode1;
-    float geometryFlag;
-    float _pad1;
+	float texEnvMode0;
+	float texEnvMode1;
+	float geometryFlag;
+	float _pad1;
 
-    float fogEnabled;
-    float fogMode;
-    float fogDensity;
-    float fogStart;
+	float fogEnabled;
+	float fogMode;
+	float fogDensity;
+	float fogStart;
 
-    float fogEnd;
-    float PointSize;
-    float _fogPad1;
-    float _fogPad2;
+	float fogEnd;
+	float PointSize;
+	float _fogPad1;
+	float _fogPad2;
 
-    float fogColor[4];
+	float fogColor[4];
 };
 
 struct GLBufferObject
 {
-    GLuint               id           = 0;
-    GLenum               target       = 0;
-    GLbitfield           storageFlags = 0;
-    std::vector<uint8_t> data;
+	GLuint               id = 0;
+	GLenum               target = 0;
+	GLbitfield           storageFlags = 0;
+	std::vector<uint8_t> data;
 
-    bool       mapped       = false;
-    GLintptr   mappedOffset = 0;
-    GLsizeiptr mappedLength = 0;
-    GLbitfield mappedAccess = 0;
+	bool       mapped = false;
+	GLintptr   mappedOffset = 0;
+	GLsizeiptr mappedLength = 0;
+	GLbitfield mappedAccess = 0;
 };
 
 const char* vendor = "Justin Marshall";
@@ -212,107 +218,107 @@ const char* extensions = "GL_SGIS_multitexture GL_ARB_multitexture GL_EXT_textur
 
 enum TexEnvModeShader
 {
-    TEXENV_MODULATE = 0,
-    TEXENV_REPLACE = 1,
-    TEXENV_DECAL = 2,
-    TEXENV_BLEND = 3,
-    TEXENV_ADD = 4
+	TEXENV_MODULATE = 0,
+	TEXENV_REPLACE = 1,
+	TEXENV_DECAL = 2,
+	TEXENV_BLEND = 3,
+	TEXENV_ADD = 4
 };
 
 static float MapTexEnvMode(GLenum mode)
 {
-    switch (mode)
-    {
-    case GL_REPLACE:  return (float)TEXENV_REPLACE;
-    case GL_BLEND:    return (float)TEXENV_BLEND;
+	switch (mode)
+	{
+	case GL_REPLACE:  return (float)TEXENV_REPLACE;
+	case GL_BLEND:    return (float)TEXENV_BLEND;
 #ifdef GL_ADD
-    case GL_ADD:      return (float)TEXENV_ADD;
+	case GL_ADD:      return (float)TEXENV_ADD;
 #endif
-    case GL_MODULATE:
-    default:          return (float)TEXENV_MODULATE;
-    }
+	case GL_MODULATE:
+	default:          return (float)TEXENV_MODULATE;
+	}
 }
 
 
 struct BatchKey
 {
-    D3D12_VIEWPORT viewport;
-    D3D12_RECT scissor;
+	D3D12_VIEWPORT viewport;
+	D3D12_RECT scissor;
 
-    PipelineMode pipeline = PIPE_OPAQUE_UNTEX;
-    D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	PipelineMode pipeline = PIPE_OPAQUE_UNTEX;
+	D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
-    UINT tex0SrvIndex = 0;
-    UINT tex1SrvIndex = 0;
+	UINT tex0SrvIndex = 0;
+	UINT tex1SrvIndex = 0;
 
-    float alphaRef = 0.0f;
-    float useTex0 = 0.0f;
-    float useTex1 = 0.0f;
-    float tex1IsLightmap = 0.0f;
-    float texEnvMode0 = 0.0f;
-    float texEnvMode1 = 0.0f;
+	float alphaRef = 0.0f;
+	float useTex0 = 0.0f;
+	float useTex1 = 0.0f;
+	float tex1IsLightmap = 0.0f;
+	float texEnvMode0 = 0.0f;
+	float texEnvMode1 = 0.0f;
 
-    GLenum blendSrc = GL_ONE;
-    GLenum blendDst = GL_ZERO;
+	GLenum blendSrc = GL_ONE;
+	GLenum blendDst = GL_ZERO;
 
-    bool depthTest = true;
-    bool depthWrite = true;
-    GLenum depthFunc = GL_LEQUAL;
+	bool depthTest = true;
+	bool depthWrite = true;
+	GLenum depthFunc = GL_LEQUAL;
 
-    Mat4 mvp;
-    Mat4 modelMatrix;
+	Mat4 mvp;
+	Mat4 modelMatrix;
 
-    float geometryFlag;
+	float geometryFlag;
 };
 
 static bool ViewportEquals(const D3D12_VIEWPORT& a, const D3D12_VIEWPORT& b)
 {
-    return a.TopLeftX == b.TopLeftX &&
-        a.TopLeftY == b.TopLeftY &&
-        a.Width == b.Width &&
-        a.Height == b.Height &&
-        a.MinDepth == b.MinDepth &&
-        a.MaxDepth == b.MaxDepth;
+	return a.TopLeftX == b.TopLeftX &&
+		a.TopLeftY == b.TopLeftY &&
+		a.Width == b.Width &&
+		a.Height == b.Height &&
+		a.MinDepth == b.MinDepth &&
+		a.MaxDepth == b.MaxDepth;
 }
 
 static bool RectEquals(const D3D12_RECT& a, const D3D12_RECT& b)
 {
-    return a.left == b.left &&
-        a.top == b.top &&
-        a.right == b.right &&
-        a.bottom == b.bottom;
+	return a.left == b.left &&
+		a.top == b.top &&
+		a.right == b.right &&
+		a.bottom == b.bottom;
 }
 
 static bool BatchKeyEquals(const BatchKey& a, const BatchKey& b)
 {
-    return
-        ViewportEquals(a.viewport, b.viewport) &&
-        RectEquals(a.scissor, b.scissor) &&
-        a.pipeline == b.pipeline &&
-        a.topology == b.topology &&
-        a.tex0SrvIndex == b.tex0SrvIndex &&
-        a.tex1SrvIndex == b.tex1SrvIndex &&
-        a.alphaRef == b.alphaRef &&
-        a.useTex0 == b.useTex0 &&
-        a.useTex1 == b.useTex1 &&
-        a.tex1IsLightmap == b.tex1IsLightmap &&
-        a.texEnvMode0 == b.texEnvMode0 &&
-        a.texEnvMode1 == b.texEnvMode1 &&
-        a.blendSrc == b.blendSrc &&
-        a.blendDst == b.blendDst &&
-        a.depthTest == b.depthTest &&
-        a.depthWrite == b.depthWrite &&
-        a.depthFunc == b.depthFunc &&
-        a.geometryFlag == b.geometryFlag &&
-        memcmp(a.mvp.m, b.mvp.m, sizeof(a.mvp.m)) == 0 &&
-        memcmp(a.modelMatrix.m, b.modelMatrix.m, sizeof(a.modelMatrix.m)) == 0;
+	return
+		ViewportEquals(a.viewport, b.viewport) &&
+		RectEquals(a.scissor, b.scissor) &&
+		a.pipeline == b.pipeline &&
+		a.topology == b.topology &&
+		a.tex0SrvIndex == b.tex0SrvIndex &&
+		a.tex1SrvIndex == b.tex1SrvIndex &&
+		a.alphaRef == b.alphaRef &&
+		a.useTex0 == b.useTex0 &&
+		a.useTex1 == b.useTex1 &&
+		a.tex1IsLightmap == b.tex1IsLightmap &&
+		a.texEnvMode0 == b.texEnvMode0 &&
+		a.texEnvMode1 == b.texEnvMode1 &&
+		a.blendSrc == b.blendSrc &&
+		a.blendDst == b.blendDst &&
+		a.depthTest == b.depthTest &&
+		a.depthWrite == b.depthWrite &&
+		a.depthFunc == b.depthFunc &&
+		a.geometryFlag == b.geometryFlag &&
+		memcmp(a.mvp.m, b.mvp.m, sizeof(a.mvp.m)) == 0 &&
+		memcmp(a.modelMatrix.m, b.modelMatrix.m, sizeof(a.modelMatrix.m)) == 0;
 }
 
 struct QueuedBatch
 {
-    BatchKey key;
-    size_t markerBegin = 0;
-    size_t markerEnd   = 0;
+	BatchKey key;
+	size_t markerBegin = 0;
+	size_t markerEnd = 0;
 
 	size_t firstVertex;
 	size_t vertexCount;
@@ -320,49 +326,52 @@ struct QueuedBatch
 
 struct QD3D12Window
 {
-    HWND hwnd = nullptr;
-    HDC  hdc = nullptr;
+	HWND hwnd = nullptr;
+	HDC  hdc = nullptr;
 
-    UINT width = 640;
-    UINT height = 480;
+	UINT width = 640;
+	UINT height = 480;
 
-    ComPtr<IDXGISwapChain3> swapChain;
-    UINT frameIndex = 0;
+	ComPtr<IDXGISwapChain3> swapChain;
+	UINT frameIndex = 0;
 
-    ComPtr<ID3D12DescriptorHeap> rtvHeap;
-    UINT rtvStride = 0;
-    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> backBuffers;
-    D3D12_RESOURCE_STATES backBufferState[QD3D12_FrameCount] = {};
+	ComPtr<ID3D12DescriptorHeap> rtvHeap;
+	UINT rtvStride = 0;
+	std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> backBuffers;
+	D3D12_RESOURCE_STATES backBufferState[QD3D12_FrameCount] = {};
 
-    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> normalBuffers;
-    D3D12_RESOURCE_STATES normalBufferState[QD3D12_FrameCount] = {};
+	std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> normalBuffers;
+	D3D12_RESOURCE_STATES normalBufferState[QD3D12_FrameCount] = {};
 
-    std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> positionBuffers;
-    D3D12_RESOURCE_STATES positionBufferState[QD3D12_FrameCount] = {};
+	std::array<ComPtr<ID3D12Resource>, QD3D12_FrameCount> positionBuffers;
+	D3D12_RESOURCE_STATES positionBufferState[QD3D12_FrameCount] = {};
 
-    ComPtr<ID3D12DescriptorHeap> dsvHeap;
-    ComPtr<ID3D12Resource> depthBuffer;
+	ComPtr<ID3D12DescriptorHeap> dsvHeap;
+	ComPtr<ID3D12Resource> depthBuffer;
 
-    UINT normalSrvIndex[QD3D12_FrameCount] = { UINT_MAX, UINT_MAX };
-    D3D12_CPU_DESCRIPTOR_HANDLE normalSrvCpu[QD3D12_FrameCount]{};
-    D3D12_GPU_DESCRIPTOR_HANDLE normalSrvGpu[QD3D12_FrameCount]{};
+	UINT normalSrvIndex[QD3D12_FrameCount] = { UINT_MAX, UINT_MAX };
+	D3D12_CPU_DESCRIPTOR_HANDLE normalSrvCpu[QD3D12_FrameCount]{};
+	D3D12_GPU_DESCRIPTOR_HANDLE normalSrvGpu[QD3D12_FrameCount]{};
 
-    UINT positionSrvIndex[QD3D12_FrameCount] = { UINT_MAX, UINT_MAX };
-    D3D12_CPU_DESCRIPTOR_HANDLE positionSrvCpu[QD3D12_FrameCount]{};
-    D3D12_GPU_DESCRIPTOR_HANDLE positionSrvGpu[QD3D12_FrameCount]{};
+	UINT positionSrvIndex[QD3D12_FrameCount] = { UINT_MAX, UINT_MAX };
+	D3D12_CPU_DESCRIPTOR_HANDLE positionSrvCpu[QD3D12_FrameCount]{};
+	D3D12_GPU_DESCRIPTOR_HANDLE positionSrvGpu[QD3D12_FrameCount]{};
 
-    D3D12_VIEWPORT viewport{};
-    D3D12_RECT scissor{};
+	D3D12_VIEWPORT viewport{};
+	D3D12_RECT scissor{};
 
-    FrameResources frames[QD3D12_FrameCount];
+	UploadRing upload;
+	FrameResources frames[QD3D12_FrameCount];
 };
 
 struct QD3D12Window* AllocD3D12Window() {
-    return new QD3D12Window();
+	return new QD3D12Window();
 }
 
 void FreeD3D12Window(struct QD3D12Window* wnd) {
-    delete wnd;
+	if (wnd)
+		QD3D12_DestroyUploadRingForWindow(*wnd);
+	delete wnd;
 }
 
 struct ImmediateVertexBuffer
@@ -410,173 +419,178 @@ struct ImmediateVertexBuffer
 
 struct GLState
 {
-    VertexArena frameVerts;
+	VertexArena frameVerts;
 
-    GLfloat pointSize = 1.0f;
-    GLfloat pointSizeMin = 1.0f;
-    GLfloat pointSizeMax = 64.0f;
-    GLfloat pointFadeThresholdSize = 1.0f;
-    GLfloat pointDistanceAttenuation[3] = { 1.0f, 0.0f, 0.0f };
+	GLfloat pointSize = 1.0f;
+	GLfloat pointSizeMin = 1.0f;
+	GLfloat pointSizeMax = 64.0f;
+	GLfloat pointFadeThresholdSize = 1.0f;
+	GLfloat pointDistanceAttenuation[3] = { 1.0f, 0.0f, 0.0f };
 
-    std::unordered_map<GLuint, GLOcclusionQuery> queries;
-    GLuint                                       nextQueryId  = 1;
-    GLuint                                       currentQuery = 0;
+	std::unordered_map<GLuint, GLOcclusionQuery> queries;
+	GLuint                                       nextQueryId = 1;
+	GLuint                                       currentQuery = 0;
 
-    std::vector<QueryMarker> queryMarkers;
+	std::vector<QueryMarker> queryMarkers;
 
-    ComPtr<ID3D12QueryHeap> occlusionQueryHeap;
-    ComPtr<ID3D12Resource>  occlusionReadback;
-    uint64_t               *occlusionReadbackCpu = nullptr;
+	ComPtr<ID3D12QueryHeap> occlusionQueryHeap;
+	ComPtr<ID3D12Resource>  occlusionReadback;
+	uint64_t* occlusionReadbackCpu = nullptr;
 
-    std::unordered_map<GLuint, GLBufferObject> buffers;
-    GLuint                                     nextBufferId            = 1;
-    GLuint                                     boundArrayBuffer        = 0;
-    GLuint                                     boundElementArrayBuffer = 0;
+	std::unordered_map<GLuint, GLBufferObject> buffers;
+	GLuint                                     nextBufferId = 1;
+	GLuint                                     boundArrayBuffer = 0;
+	GLuint                                     boundElementArrayBuffer = 0;
 
-    Mat4 modelMatrix = Mat4::Identity();
+	Mat4 modelMatrix = Mat4::Identity();
 
-    float currentGeometryFlag = 0.0f;
+	float currentGeometryFlag = 0.0f;
 
-    bool fog = false;
-    GLenum fogMode = GL_EXP;
-    GLfloat fogDensity = 1.0f;
-    GLfloat fogStart = 0.0f;
-    GLfloat fogEnd = 1.0f;
-    GLfloat fogColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    GLenum fogHint = GL_DONT_CARE;
+	bool fog = false;
+	GLenum fogMode = GL_EXP;
+	GLfloat fogDensity = 1.0f;
+	GLfloat fogStart = 0.0f;
+	GLfloat fogEnd = 1.0f;
+	GLfloat fogColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	GLenum fogHint = GL_DONT_CARE;
 
-    GLclampd depthRangeNear = 0.0;
-    GLclampd depthRangeFar = 1.0;
+	GLclampd depthRangeNear = 0.0;
+	GLclampd depthRangeFar = 1.0;
 
-    std::vector<QueuedBatch> queuedBatches;
-    bool frameOpen = false;
+	std::vector<QueuedBatch> queuedBatches;
+	bool frameOpen = false;
+	QD3D12Window* frameOwner = nullptr;
 
-    GLenum depthFunc = GL_LEQUAL;
-    UINT64 nextFenceValue = 1;
+	GLenum depthFunc = GL_LEQUAL;
+	UINT64 nextFenceValue = 1;
 
-    struct ClientArrayState {
-        GLint size = 4;
-        GLenum type = GL_FLOAT;
-        GLsizei stride = 0;
-        const uint8_t* ptr = nullptr;
-        bool enabled = false;
-    };
+	struct ClientArrayState {
+		GLint size = 4;
+		GLenum type = GL_FLOAT;
+		GLsizei stride = 0;
+		const uint8_t* ptr = nullptr;
+		bool enabled = false;
+	};
 
-    ClientArrayState vertexArray;
-    ClientArrayState normalArray;   // <-- add this
-    ClientArrayState colorArray;
-    ClientArrayState texCoordArray[QD3D12_MaxTextureUnits];
-    GLuint clientActiveTextureUnit = 0;
+	ClientArrayState vertexArray;
+	ClientArrayState normalArray;   // <-- add this
+	ClientArrayState colorArray;
+	ClientArrayState texCoordArray[QD3D12_MaxTextureUnits];
+	GLuint clientActiveTextureUnit = 0;
 
-    bool scissorTest = false;
-    GLint scissorX = 0;
-    GLint scissorY = 0;
-    GLsizei scissorW = 640;
-    GLsizei scissorH = 480;
+	bool scissorTest = false;
+	GLint scissorX = 0;
+	GLint scissorY = 0;
+	GLsizei scissorW = 640;
+	GLsizei scissorH = 480;
 
-    GLenum lastError = GL_NO_ERROR;
+	GLenum lastError = GL_NO_ERROR;
 
-    GLuint stencilMask = ~0u;
-    GLint clearStencilValue = 0;
-    GLenum stencilFunc = GL_ALWAYS;
-    GLint stencilRef = 0;
-    GLuint stencilFuncMask = ~0u;
-    GLenum stencilSFail = GL_KEEP;
-    GLenum stencilDPFail = GL_KEEP;
-    GLenum stencilDPPass = GL_KEEP;
+	GLuint stencilMask = ~0u;
+	GLint clearStencilValue = 0;
+	GLenum stencilFunc = GL_ALWAYS;
+	GLint stencilRef = 0;
+	GLuint stencilFuncMask = ~0u;
+	GLenum stencilSFail = GL_KEEP;
+	GLenum stencilDPFail = GL_KEEP;
+	GLenum stencilDPPass = GL_KEEP;
 
-    GLdouble clipPlane0[4] = { 0.0, 0.0, 0.0, 0.0 };
-    bool clipPlane0Enabled = false;
+	GLdouble clipPlane0[4] = { 0.0, 0.0, 0.0, 0.0 };
+	bool clipPlane0Enabled = false;
 
-    GLfloat polygonOffsetFactor = 0.0f;
-    GLfloat polygonOffsetUnits = 0.0f;
+	GLfloat polygonOffsetFactor = 0.0f;
+	GLfloat polygonOffsetUnits = 0.0f;
 
-    GLclampd clearDepthValue = 1.0;
-    GLboolean colorMaskR = GL_TRUE;
-    GLboolean colorMaskG = GL_TRUE;
-    GLboolean colorMaskB = GL_TRUE;
-    GLboolean colorMaskA = GL_TRUE;
+	GLclampd clearDepthValue = 1.0;
+	GLboolean colorMaskR = GL_TRUE;
+	GLboolean colorMaskG = GL_TRUE;
+	GLboolean colorMaskB = GL_TRUE;
+	GLboolean colorMaskA = GL_TRUE;
 
-    float clearColor[4] = { 0, 0, 0, 1 };
-    bool blend = false;
-    bool alphaTest = false;
-    bool depthTest = true;
-    bool cullFace = false;
-    bool texture2D[QD3D12_MaxTextureUnits] = { true, false };
-    bool depthWrite = true;
-    GLenum blendSrc = GL_SRC_ALPHA;
-    GLenum blendDst = GL_ONE_MINUS_SRC_ALPHA;
-    GLenum alphaFunc = GL_GREATER;
-    float alphaRef = 0.666f;
-    GLenum cullMode = GL_FRONT;
-    GLenum shadeModel = GL_FLAT;
-    GLenum drawBuffer = GL_BACK;
-    GLenum readBuffer = GL_BACK;
+	float clearColor[4] = { 0, 0, 0, 1 };
+	bool blend = false;
+	bool alphaTest = false;
+	bool depthTest = true;
+	bool cullFace = false;
+	bool texture2D[QD3D12_MaxTextureUnits] = { true, false };
+	bool depthWrite = true;
+	GLenum blendSrc = GL_SRC_ALPHA;
+	GLenum blendDst = GL_ONE_MINUS_SRC_ALPHA;
+	GLenum alphaFunc = GL_GREATER;
+	float alphaRef = 0.666f;
+	GLenum cullMode = GL_FRONT;
+	GLenum shadeModel = GL_FLAT;
+	GLenum drawBuffer = GL_BACK;
+	GLenum readBuffer = GL_BACK;
 
-    GLenum texEnvMode[QD3D12_MaxTextureUnits] = { GL_MODULATE, GL_MODULATE };
+	GLenum texEnvMode[QD3D12_MaxTextureUnits] = { GL_MODULATE, GL_MODULATE };
 
-    GLint viewportX = 0;
-    GLint viewportY = 0;
-    GLsizei viewportW = 640;
-    GLsizei viewportH = 480;
+	GLint viewportX = 0;
+	GLint viewportY = 0;
+	GLsizei viewportW = 640;
+	GLsizei viewportH = 480;
 
-    GLuint boundTexture[QD3D12_MaxTextureUnits] = {};
-    GLuint activeTextureUnit = 0;
+	GLuint boundTexture[QD3D12_MaxTextureUnits] = {};
+	GLuint activeTextureUnit = 0;
 
-    GLenum currentPrim = 0;
-    bool inBeginEnd = false;
-    float curU[QD3D12_MaxTextureUnits] = {};
-    float curV[QD3D12_MaxTextureUnits] = {};
-    float curColor[4] = { 1, 1, 1, 1 };
-    ImmediateVertexBuffer immediateVerts;
+	GLenum currentPrim = 0;
+	bool inBeginEnd = false;
+	float curU[QD3D12_MaxTextureUnits] = {};
+	float curV[QD3D12_MaxTextureUnits] = {};
+	float curColor[4] = { 1, 1, 1, 1 };
+	ImmediateVertexBuffer immediateVerts;
 
-    GLenum matrixMode = GL_MODELVIEW;
-    std::vector<Mat4> modelStack{ Mat4::Identity() };
-    std::vector<Mat4> projStack{ Mat4::Identity() };
-    std::vector<Mat4> texStack[QD3D12_MaxTextureUnits] = { { Mat4::Identity() }, { Mat4::Identity() } };
+	GLenum matrixMode = GL_MODELVIEW;
+	std::vector<Mat4> modelStack{ Mat4::Identity() };
+	std::vector<Mat4> projStack{ Mat4::Identity() };
+	std::vector<Mat4> texStack[QD3D12_MaxTextureUnits] = { { Mat4::Identity() }, { Mat4::Identity() } };
 
-    std::unordered_map<GLuint, TextureResource> textures;
-    GLuint nextTextureId = 1;
-    UINT nextSrvIndex = 1;
+	std::unordered_map<GLuint, TextureResource> textures;
+	GLuint nextTextureId = 1;
+	UINT nextSrvIndex = 1;
 
-    ComPtr<IDXGIFactory4> factory;
-    ComPtr<ID3D12Device> device;
-    ComPtr<ID3D12CommandQueue> queue;
+	ComPtr<IDXGIFactory4> factory;
+	ComPtr<ID3D12Device> device;
+	ComPtr<ID3D12CommandQueue> queue;
 
-    ComPtr<ID3D12DescriptorHeap> srvHeap;
-    UINT srvStride = 0;
+	ComPtr<ID3D12DescriptorHeap> srvHeap;
+	UINT srvStride = 0;
 
-    ComPtr<ID3D12GraphicsCommandList> cmdList;
+	ComPtr<ID3D12GraphicsCommandList> cmdList;
 
-    ComPtr<ID3D12Fence> fence;
-    HANDLE fenceEvent = nullptr;
+	ComPtr<ID3D12Fence> fence;
+	HANDLE fenceEvent = nullptr;
 
-    UploadRing upload;
+	ComPtr<ID3D12RootSignature> rootSig;
 
-    ComPtr<ID3D12RootSignature> rootSig;
+	ComPtr<ID3DBlob> vsMainBlob;
+	ComPtr<ID3DBlob> psMainBlob;
+	ComPtr<ID3DBlob> psAlphaBlob;
+	ComPtr<ID3DBlob> psUntexturedBlob;
 
-    ComPtr<ID3DBlob> vsMainBlob;
-    ComPtr<ID3DBlob> psMainBlob;
-    ComPtr<ID3DBlob> psAlphaBlob;
-    ComPtr<ID3DBlob> psUntexturedBlob;
+	TextureResource whiteTexture;
 
-    D3D12_RESOURCE_STATES backBufferState[QD3D12_FrameCount] = {};
-
-    TextureResource whiteTexture;
-
-    GLenum defaultMinFilter = GL_LINEAR;
-    GLenum defaultMagFilter = GL_LINEAR;
-    GLenum defaultWrapS = GL_REPEAT;
-    GLenum defaultWrapT = GL_REPEAT;
+	GLenum defaultMinFilter = GL_LINEAR;
+	GLenum defaultMagFilter = GL_LINEAR;
+	GLenum defaultWrapS = GL_REPEAT;
+	GLenum defaultWrapT = GL_REPEAT;
 };
 
 static GLState g_gl;
 static std::unordered_map<HWND, QD3D12Window> g_windows;
- QD3D12Window* g_currentWindow = nullptr;
+QD3D12Window* g_currentWindow = nullptr;
 
- void QD3D12_SetCurrentWindow(struct QD3D12Window* window) {
-     g_currentWindow = window;
- }
+void QD3D12_SetCurrentWindow(struct QD3D12Window* window) {
+	if (window != g_currentWindow &&
+		g_gl.frameOpen &&
+		g_gl.frameOwner &&
+		g_gl.frameOwner != window)
+	{
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+	}
+
+	g_currentWindow = window;
+}
 
 static GLuint g_lightingTextureId = 0;
 static TextureResource* g_lightingTexture = nullptr;
@@ -640,129 +654,129 @@ static inline GLVertex* QD3D12_AllocFrameVertices(size_t count, size_t* outFirst
 
 static D3D12_CPU_DESCRIPTOR_HANDLE CurrentPositionRTV()
 {
-    QD3D12Window& w = *g_currentWindow;
-    D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += SIZE_T((QD3D12_FrameCount * 2) + w.frameIndex) * SIZE_T(w.rtvStride);
-    return h;
+	QD3D12Window& w = *g_currentWindow;
+	D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	h.ptr += SIZE_T((QD3D12_FrameCount * 2) + w.frameIndex) * SIZE_T(w.rtvStride);
+	return h;
 }
 
-static GLBufferObject *QD3D12_GetBuffer(GLuint id)
+static GLBufferObject* QD3D12_GetBuffer(GLuint id)
 {
-    if (id == 0)
-        return nullptr;
+	if (id == 0)
+		return nullptr;
 
-    auto it = g_gl.buffers.find(id);
-    if (it == g_gl.buffers.end())
-        return nullptr;
+	auto it = g_gl.buffers.find(id);
+	if (it == g_gl.buffers.end())
+		return nullptr;
 
-    return &it->second;
+	return &it->second;
 }
 
-static const uint8_t *QD3D12_ResolveArrayPointer(const void *ptr)
+static const uint8_t* QD3D12_ResolveArrayPointer(const void* ptr)
 {
-    if (g_gl.boundArrayBuffer != 0)
-    {
-        GLBufferObject *bo = QD3D12_GetBuffer(g_gl.boundArrayBuffer);
-        if (!bo)
-            return nullptr;
+	if (g_gl.boundArrayBuffer != 0)
+	{
+		GLBufferObject* bo = QD3D12_GetBuffer(g_gl.boundArrayBuffer);
+		if (!bo)
+			return nullptr;
 
-        const size_t offset = (size_t)ptr;
-        if (offset > bo->data.size())
-            return nullptr;
+		const size_t offset = (size_t)ptr;
+		if (offset > bo->data.size())
+			return nullptr;
 
-        return bo->data.data() + offset;
-    }
+		return bo->data.data() + offset;
+	}
 
-    return reinterpret_cast<const uint8_t *>(ptr);
+	return reinterpret_cast<const uint8_t*>(ptr);
 }
 
-static const void *QD3D12_ResolveElementPointer(const void *ptr, GLenum indexType, GLsizei count)
+static const void* QD3D12_ResolveElementPointer(const void* ptr, GLenum indexType, GLsizei count)
 {
-    if (g_gl.boundElementArrayBuffer != 0)
-    {
-        GLBufferObject *bo = QD3D12_GetBuffer(g_gl.boundElementArrayBuffer);
-        if (!bo)
-            return nullptr;
+	if (g_gl.boundElementArrayBuffer != 0)
+	{
+		GLBufferObject* bo = QD3D12_GetBuffer(g_gl.boundElementArrayBuffer);
+		if (!bo)
+			return nullptr;
 
-        size_t indexSize = 0;
-        switch (indexType)
-        {
-            case GL_UNSIGNED_INT:
-                indexSize = sizeof(GLuint);
-                break;
-            case GL_UNSIGNED_SHORT:
-                indexSize = sizeof(GLushort);
-                break;
-            case GL_UNSIGNED_BYTE:
-                indexSize = sizeof(GLubyte);
-                break;
-            default:
-                return nullptr;
-        }
+		size_t indexSize = 0;
+		switch (indexType)
+		{
+		case GL_UNSIGNED_INT:
+			indexSize = sizeof(GLuint);
+			break;
+		case GL_UNSIGNED_SHORT:
+			indexSize = sizeof(GLushort);
+			break;
+		case GL_UNSIGNED_BYTE:
+			indexSize = sizeof(GLubyte);
+			break;
+		default:
+			return nullptr;
+		}
 
-        const size_t offset      = (size_t)ptr;
-        const size_t bytesNeeded = (size_t)count * indexSize;
-        if (offset > bo->data.size() || bytesNeeded > (bo->data.size() - offset))
-            return nullptr;
+		const size_t offset = (size_t)ptr;
+		const size_t bytesNeeded = (size_t)count * indexSize;
+		if (offset > bo->data.size() || bytesNeeded > (bo->data.size() - offset))
+			return nullptr;
 
-        return bo->data.data() + offset;
-    }
+		return bo->data.data() + offset;
+	}
 
-    return ptr;
+	return ptr;
 }
 
 static void QD3D12_RetireResource(ComPtr<ID3D12Resource>& res)
 {
-    if (!res)
-        return;
+	if (!res)
+		return;
 
-    RetiredResource rr{};
-    rr.resource = res;
+	RetiredResource rr{};
+	rr.resource = res;
 
-    // If no frame has been submitted yet, force it to live until next GPU idle.
-    UINT64 fenceValue = 0;
+	// If no frame has been submitted yet, force it to live until next GPU idle.
+	UINT64 fenceValue = 0;
 
-    if (g_gl.frameOpen)
-    {
-        fenceValue = g_currentWindow->frames[g_currentWindow->frameIndex].fenceValue;
-        if (fenceValue == 0)
-            fenceValue = g_gl.nextFenceValue;
-    }
-    else
-    {
-        fenceValue = g_gl.nextFenceValue;
-    }
+	if (g_gl.frameOpen && g_gl.frameOwner)
+	{
+		fenceValue = g_gl.frameOwner->frames[g_gl.frameOwner->frameIndex].fenceValue;
+		if (fenceValue == 0)
+			fenceValue = g_gl.nextFenceValue;
+	}
+	else
+	{
+		fenceValue = g_gl.nextFenceValue;
+	}
 
-    rr.fenceValue = fenceValue;
-    g_retiredResources.push_back(std::move(rr));
+	rr.fenceValue = fenceValue;
+	g_retiredResources.push_back(std::move(rr));
 
-    res.Reset();
+	res.Reset();
 }
 
 static UINT64 QD3D12_CurrentSubmissionFenceValue()
 {
-    return g_gl.nextFenceValue;
+	return g_gl.nextFenceValue;
 }
 
 void QD3D12_CollectRetiredResources()
 {
-    const UINT64 completed = g_gl.fence ? g_gl.fence->GetCompletedValue() : 0;
+	const UINT64 completed = g_gl.fence ? g_gl.fence->GetCompletedValue() : 0;
 
-    size_t write = 0;
-    for (size_t read = 0; read < g_retiredResources.size(); ++read)
-    {
-        if (g_retiredResources[read].fenceValue <= completed)
-        {
-            // let ComPtr drop here
-        }
-        else
-        {
-            if (write != read)
-                g_retiredResources[write] = std::move(g_retiredResources[read]);
-            ++write;
-        }
-    }
-    g_retiredResources.resize(write);
+	size_t write = 0;
+	for (size_t read = 0; read < g_retiredResources.size(); ++read)
+	{
+		if (g_retiredResources[read].fenceValue <= completed)
+		{
+			// let ComPtr drop here
+		}
+		else
+		{
+			if (write != read)
+				g_retiredResources[write] = std::move(g_retiredResources[read]);
+			++write;
+		}
+	}
+	g_retiredResources.resize(write);
 }
 
 // ============================================================
@@ -1044,17 +1058,17 @@ static HDC g_qd3d12CurrentDC = nullptr;
 static QD3D12_HGLRC g_qd3d12CurrentRC = nullptr;
 
 static size_t QD3D12_TypeSize(GLenum type) {
-    switch (type) {
-    case GL_BYTE: return sizeof(GLbyte);
-    case GL_UNSIGNED_BYTE: return sizeof(GLubyte);
-    case GL_SHORT: return sizeof(GLshort);
-    case GL_UNSIGNED_SHORT: return sizeof(GLushort);
-    case GL_INT: return sizeof(GLint);
-    case GL_UNSIGNED_INT: return sizeof(GLuint);
-    case GL_FLOAT: return sizeof(GLfloat);
-    case GL_DOUBLE: return sizeof(GLdouble);
-    default: return 0;
-    }
+	switch (type) {
+	case GL_BYTE: return sizeof(GLbyte);
+	case GL_UNSIGNED_BYTE: return sizeof(GLubyte);
+	case GL_SHORT: return sizeof(GLshort);
+	case GL_UNSIGNED_SHORT: return sizeof(GLushort);
+	case GL_INT: return sizeof(GLint);
+	case GL_UNSIGNED_INT: return sizeof(GLuint);
+	case GL_FLOAT: return sizeof(GLfloat);
+	case GL_DOUBLE: return sizeof(GLdouble);
+	default: return 0;
+	}
 }
 
 static inline float QD3D12_ReadScalarFast(const uint8_t* p, GLenum type)
@@ -1274,25 +1288,25 @@ static void QD3D12_FetchArrayVertex(GLint idx, GLVertex& out)
 
 static D3D12_PRIMITIVE_TOPOLOGY GetDrawTopology(GLenum originalMode)
 {
-    switch (originalMode)
-    {
-    case GL_POINTS:
-        return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+	switch (originalMode)
+	{
+	case GL_POINTS:
+		return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
 
-    case GL_LINES:
-        return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+	case GL_LINES:
+		return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
 
-    case GL_LINE_STRIP:
-    case GL_LINE_LOOP:
-        return D3D_PRIMITIVE_TOPOLOGY_LINELIST; // we manually convert this, so im adjusting to be a linelist. 
+	case GL_LINE_STRIP:
+	case GL_LINE_LOOP:
+		return D3D_PRIMITIVE_TOPOLOGY_LINELIST; // we manually convert this, so im adjusting to be a linelist. 
 
-    case GL_TRIANGLE_STRIP:
-        return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+	case GL_TRIANGLE_STRIP:
+		return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
 
-    case GL_TRIANGLES:
-    default:
-        return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    }
+	case GL_TRIANGLES:
+	default:
+		return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	}
 }
 
 
@@ -1301,31 +1315,31 @@ static D3D12_PRIMITIVE_TOPOLOGY GetDrawTopology(GLenum originalMode)
 #endif
 static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource* tex0, const TextureResource* tex1)
 {
-    const bool useTex0 = g_gl.texture2D[0];
-    const bool useTex1 = g_gl.texture2D[1];
+	const bool useTex0 = g_gl.texture2D[0];
+	const bool useTex1 = g_gl.texture2D[1];
 
-    BatchKey key{};
-    key.pipeline = PickPipeline(useTex0, useTex1);
-    key.topology = GetDrawTopology(originalMode);
-    key.tex0SrvIndex = tex0 ? tex0->srvIndex : 0;
-    key.tex1SrvIndex = tex1 ? tex1->srvIndex : 0;
-    key.alphaRef = g_gl.alphaRef;
-    key.useTex0 = useTex0 ? 1.0f : 0.0f;
-    key.useTex1 = useTex1 ? 1.0f : 0.0f;
-    key.viewport = g_currentWindow->viewport;
-    key.scissor = g_currentWindow->scissor;
-    key.tex1IsLightmap = useTex1 ? 1.0f : 0.0f;
-    key.texEnvMode0 = MapTexEnvMode(g_gl.texEnvMode[0]);
-    key.texEnvMode1 = MapTexEnvMode(g_gl.texEnvMode[1]);
-    key.blendSrc = g_gl.blendSrc;
-    key.blendDst = g_gl.blendDst;
-    key.depthTest = g_gl.depthTest;
-    key.depthWrite = g_gl.depthWrite;
-    key.depthFunc = g_gl.depthFunc;
-    key.mvp = CurrentMVP();
-    key.modelMatrix = CurrentModelMatrix();
-    key.geometryFlag = g_gl.currentGeometryFlag;
-    return key;
+	BatchKey key{};
+	key.pipeline = PickPipeline(useTex0, useTex1);
+	key.topology = GetDrawTopology(originalMode);
+	key.tex0SrvIndex = tex0 ? tex0->srvIndex : 0;
+	key.tex1SrvIndex = tex1 ? tex1->srvIndex : 0;
+	key.alphaRef = g_gl.alphaRef;
+	key.useTex0 = useTex0 ? 1.0f : 0.0f;
+	key.useTex1 = useTex1 ? 1.0f : 0.0f;
+	key.viewport = g_currentWindow->viewport;
+	key.scissor = g_currentWindow->scissor;
+	key.tex1IsLightmap = useTex1 ? 1.0f : 0.0f;
+	key.texEnvMode0 = MapTexEnvMode(g_gl.texEnvMode[0]);
+	key.texEnvMode1 = MapTexEnvMode(g_gl.texEnvMode[1]);
+	key.blendSrc = g_gl.blendSrc;
+	key.blendDst = g_gl.blendDst;
+	key.depthTest = g_gl.depthTest;
+	key.depthWrite = g_gl.depthWrite;
+	key.depthFunc = g_gl.depthFunc;
+	key.mvp = CurrentMVP();
+	key.modelMatrix = CurrentModelMatrix();
+	key.geometryFlag = g_gl.currentGeometryFlag;
+	return key;
 }
 
 #ifdef _DEBUG
@@ -1334,47 +1348,47 @@ static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource*
 
 extern "C" void APIENTRY glSelectTextureSGIS(GLenum texture)
 {
-    switch (texture)
-    {
-    case GL_TEXTURE0_SGIS: g_gl.activeTextureUnit = 0; break;
-    case GL_TEXTURE1_SGIS: g_gl.activeTextureUnit = 1; break;
-    default: g_gl.activeTextureUnit = 0; break;
-    }
+	switch (texture)
+	{
+	case GL_TEXTURE0_SGIS: g_gl.activeTextureUnit = 0; break;
+	case GL_TEXTURE1_SGIS: g_gl.activeTextureUnit = 1; break;
+	default: g_gl.activeTextureUnit = 0; break;
+	}
 }
 
 extern "C" void APIENTRY glMTexCoord2fSGIS(GLenum texture, GLfloat s, GLfloat t)
 {
-    GLuint oldUnit = g_gl.activeTextureUnit;
+	GLuint oldUnit = g_gl.activeTextureUnit;
 
-    switch (texture)
-    {
-    case GL_TEXTURE0_SGIS: g_gl.activeTextureUnit = 0; break;
-    case GL_TEXTURE1_SGIS: g_gl.activeTextureUnit = 1; break;
-    default: g_gl.activeTextureUnit = 0; break;
-    }
+	switch (texture)
+	{
+	case GL_TEXTURE0_SGIS: g_gl.activeTextureUnit = 0; break;
+	case GL_TEXTURE1_SGIS: g_gl.activeTextureUnit = 1; break;
+	default: g_gl.activeTextureUnit = 0; break;
+	}
 
-    g_gl.curU[g_gl.activeTextureUnit] = s;
-    g_gl.curV[g_gl.activeTextureUnit] = t;
+	g_gl.curU[g_gl.activeTextureUnit] = s;
+	g_gl.curV[g_gl.activeTextureUnit] = t;
 
-    g_gl.activeTextureUnit = oldUnit;
+	g_gl.activeTextureUnit = oldUnit;
 }
 
 extern "C" void APIENTRY glActiveTextureARB(GLenum texture)
 {
-    if (texture >= GL_TEXTURE0_ARB)
-        g_gl.activeTextureUnit = ClampValue<GLuint>((GLuint)(texture - GL_TEXTURE0_ARB), 0, QD3D12_MaxTextureUnits - 1);
-    else
-        g_gl.activeTextureUnit = 0;
+	if (texture >= GL_TEXTURE0_ARB)
+		g_gl.activeTextureUnit = ClampValue<GLuint>((GLuint)(texture - GL_TEXTURE0_ARB), 0, QD3D12_MaxTextureUnits - 1);
+	else
+		g_gl.activeTextureUnit = 0;
 }
 
 extern "C" void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t)
 {
-    GLuint unit = 0;
-    if (texture >= GL_TEXTURE0_ARB)
-        unit = ClampValue<GLuint>((GLuint)(texture - GL_TEXTURE0_ARB), 0, QD3D12_MaxTextureUnits - 1);
+	GLuint unit = 0;
+	if (texture >= GL_TEXTURE0_ARB)
+		unit = ClampValue<GLuint>((GLuint)(texture - GL_TEXTURE0_ARB), 0, QD3D12_MaxTextureUnits - 1);
 
-    g_gl.curU[unit] = s;
-    g_gl.curV[unit] = t;
+	g_gl.curU[unit] = s;
+	g_gl.curV[unit] = t;
 }
 
 
@@ -1384,173 +1398,173 @@ extern "C" void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat
 
 static std::vector<Mat4>& QD3D12_CurrentMatrixStack()
 {
-    switch (g_gl.matrixMode)
-    {
-    case GL_PROJECTION:
-        return g_gl.projStack;
+	switch (g_gl.matrixMode)
+	{
+	case GL_PROJECTION:
+		return g_gl.projStack;
 
-    case GL_TEXTURE:
-        return g_gl.texStack[g_gl.activeTextureUnit];
+	case GL_TEXTURE:
+		return g_gl.texStack[g_gl.activeTextureUnit];
 
-    case GL_MODELVIEW:
-    default:
-        return g_gl.modelStack;
-    }
+	case GL_MODELVIEW:
+	default:
+		return g_gl.modelStack;
+	}
 }
 
 static int BytesPerPixel(GLenum format, GLenum type)
 {
-    if (type != GL_UNSIGNED_BYTE)
-        return 4;
+	if (type != GL_UNSIGNED_BYTE)
+		return 4;
 
-    switch (format)
-    {
-    case GL_ALPHA:
-    case GL_LUMINANCE:
-        return 1;
-    case GL_RGB:
-        return 3;
-    case GL_RGBA:
-    default:
-        return 4;
-    }
+	switch (format)
+	{
+	case GL_ALPHA:
+	case GL_LUMINANCE:
+		return 1;
+	case GL_RGB:
+		return 3;
+	case GL_RGBA:
+	default:
+		return 4;
+	}
 }
 
 static DXGI_FORMAT MapTextureFormat(GLenum format)
 {
-    switch (format)
-    {
-    case GL_ALPHA:
-    case GL_LUMINANCE:
-        return DXGI_FORMAT_R8_UNORM;
-    case GL_RGB:
-    case GL_RGBA:
-    default:
-        return DXGI_FORMAT_R8G8B8A8_UNORM;
-    }
+	switch (format)
+	{
+	case GL_ALPHA:
+	case GL_LUMINANCE:
+		return DXGI_FORMAT_R8_UNORM;
+	case GL_RGB:
+	case GL_RGBA:
+	default:
+		return DXGI_FORMAT_R8G8B8A8_UNORM;
+	}
 }
 
 static D3D12_BLEND MapBlendAlpha(GLenum v) {
-    switch (v) {
-    case GL_ZERO:                  return D3D12_BLEND_ZERO;
-    case GL_ONE:                   return D3D12_BLEND_ONE;
+	switch (v) {
+	case GL_ZERO:                  return D3D12_BLEND_ZERO;
+	case GL_ONE:                   return D3D12_BLEND_ONE;
 
-    case GL_SRC_ALPHA:             return D3D12_BLEND_SRC_ALPHA;
-    case GL_ONE_MINUS_SRC_ALPHA:   return D3D12_BLEND_INV_SRC_ALPHA;
-    case GL_DST_ALPHA:             return D3D12_BLEND_DEST_ALPHA;
-    case GL_ONE_MINUS_DST_ALPHA:   return D3D12_BLEND_INV_DEST_ALPHA;
+	case GL_SRC_ALPHA:             return D3D12_BLEND_SRC_ALPHA;
+	case GL_ONE_MINUS_SRC_ALPHA:   return D3D12_BLEND_INV_SRC_ALPHA;
+	case GL_DST_ALPHA:             return D3D12_BLEND_DEST_ALPHA;
+	case GL_ONE_MINUS_DST_ALPHA:   return D3D12_BLEND_INV_DEST_ALPHA;
 
-        // Color factors are illegal in alpha slots.
-        // Fold them to something reasonable.
-    case GL_SRC_COLOR:             return D3D12_BLEND_SRC_ALPHA;
-    case GL_ONE_MINUS_SRC_COLOR:   return D3D12_BLEND_INV_SRC_ALPHA;
-    case GL_DST_COLOR:             return D3D12_BLEND_DEST_ALPHA;
-    case GL_ONE_MINUS_DST_COLOR:   return D3D12_BLEND_INV_DEST_ALPHA;
+		// Color factors are illegal in alpha slots.
+		// Fold them to something reasonable.
+	case GL_SRC_COLOR:             return D3D12_BLEND_SRC_ALPHA;
+	case GL_ONE_MINUS_SRC_COLOR:   return D3D12_BLEND_INV_SRC_ALPHA;
+	case GL_DST_COLOR:             return D3D12_BLEND_DEST_ALPHA;
+	case GL_ONE_MINUS_DST_COLOR:   return D3D12_BLEND_INV_DEST_ALPHA;
 
-    case GL_SRC_ALPHA_SATURATE:    return D3D12_BLEND_ONE;
+	case GL_SRC_ALPHA_SATURATE:    return D3D12_BLEND_ONE;
 
-    default:                       return D3D12_BLEND_ONE;
-    }
+	default:                       return D3D12_BLEND_ONE;
+	}
 }
 
 static D3D12_BLEND MapBlend(GLenum v)
 {
-    switch (v)
-    {
-    case GL_ZERO:                  return D3D12_BLEND_ZERO;
-    case GL_ONE:                   return D3D12_BLEND_ONE;
-    case GL_SRC_COLOR:             return D3D12_BLEND_SRC_COLOR;
-    case GL_ONE_MINUS_SRC_COLOR:   return D3D12_BLEND_INV_SRC_COLOR;
-    case GL_DST_COLOR:             return D3D12_BLEND_DEST_COLOR;
-    case GL_ONE_MINUS_DST_COLOR:   return D3D12_BLEND_INV_DEST_COLOR;
-    case GL_SRC_ALPHA:             return D3D12_BLEND_SRC_ALPHA;
-    case GL_ONE_MINUS_SRC_ALPHA:   return D3D12_BLEND_INV_SRC_ALPHA;
-    case GL_DST_ALPHA:             return D3D12_BLEND_DEST_ALPHA;
-    case GL_ONE_MINUS_DST_ALPHA:   return D3D12_BLEND_INV_DEST_ALPHA;
-    case GL_SRC_ALPHA_SATURATE:    return D3D12_BLEND_SRC_ALPHA_SAT;
-    default:                       return D3D12_BLEND_ONE;
-    }
+	switch (v)
+	{
+	case GL_ZERO:                  return D3D12_BLEND_ZERO;
+	case GL_ONE:                   return D3D12_BLEND_ONE;
+	case GL_SRC_COLOR:             return D3D12_BLEND_SRC_COLOR;
+	case GL_ONE_MINUS_SRC_COLOR:   return D3D12_BLEND_INV_SRC_COLOR;
+	case GL_DST_COLOR:             return D3D12_BLEND_DEST_COLOR;
+	case GL_ONE_MINUS_DST_COLOR:   return D3D12_BLEND_INV_DEST_COLOR;
+	case GL_SRC_ALPHA:             return D3D12_BLEND_SRC_ALPHA;
+	case GL_ONE_MINUS_SRC_ALPHA:   return D3D12_BLEND_INV_SRC_ALPHA;
+	case GL_DST_ALPHA:             return D3D12_BLEND_DEST_ALPHA;
+	case GL_ONE_MINUS_DST_ALPHA:   return D3D12_BLEND_INV_DEST_ALPHA;
+	case GL_SRC_ALPHA_SATURATE:    return D3D12_BLEND_SRC_ALPHA_SAT;
+	default:                       return D3D12_BLEND_ONE;
+	}
 }
 
 static D3D12_COMPARISON_FUNC MapCompare(GLenum f)
 {
-    switch (f)
-    {
-    case GL_NEVER: return D3D12_COMPARISON_FUNC_NEVER;
-    case GL_LESS: return D3D12_COMPARISON_FUNC_LESS;
-    case GL_EQUAL: return D3D12_COMPARISON_FUNC_EQUAL;
-    case GL_LEQUAL: return D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    case GL_GREATER: return D3D12_COMPARISON_FUNC_GREATER;
-    case GL_NOTEQUAL: return D3D12_COMPARISON_FUNC_NOT_EQUAL;
-    case GL_GEQUAL: return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    case GL_ALWAYS: return D3D12_COMPARISON_FUNC_ALWAYS;
-    default: return D3D12_COMPARISON_FUNC_ALWAYS;
-    }
+	switch (f)
+	{
+	case GL_NEVER: return D3D12_COMPARISON_FUNC_NEVER;
+	case GL_LESS: return D3D12_COMPARISON_FUNC_LESS;
+	case GL_EQUAL: return D3D12_COMPARISON_FUNC_EQUAL;
+	case GL_LEQUAL: return D3D12_COMPARISON_FUNC_LESS_EQUAL;
+	case GL_GREATER: return D3D12_COMPARISON_FUNC_GREATER;
+	case GL_NOTEQUAL: return D3D12_COMPARISON_FUNC_NOT_EQUAL;
+	case GL_GEQUAL: return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+	case GL_ALWAYS: return D3D12_COMPARISON_FUNC_ALWAYS;
+	default: return D3D12_COMPARISON_FUNC_ALWAYS;
+	}
 }
 
 static D3D12_CULL_MODE MapCull(GLenum m)
 {
-    switch (m)
-    {
-    case GL_FRONT: return D3D12_CULL_MODE_FRONT;
-    case GL_BACK: return D3D12_CULL_MODE_BACK;
-    default: return D3D12_CULL_MODE_NONE;
-    }
+	switch (m)
+	{
+	case GL_FRONT: return D3D12_CULL_MODE_FRONT;
+	case GL_BACK: return D3D12_CULL_MODE_BACK;
+	default: return D3D12_CULL_MODE_NONE;
+	}
 }
 
 static D3D12_FILTER MapFilter(GLenum minFilter, GLenum magFilter)
 {
-    const bool linearMin = (minFilter == GL_LINEAR || minFilter == GL_LINEAR_MIPMAP_NEAREST || minFilter == GL_LINEAR_MIPMAP_LINEAR);
-    const bool linearMag = (magFilter == GL_LINEAR);
+	const bool linearMin = (minFilter == GL_LINEAR || minFilter == GL_LINEAR_MIPMAP_NEAREST || minFilter == GL_LINEAR_MIPMAP_LINEAR);
+	const bool linearMag = (magFilter == GL_LINEAR);
 
-    if (linearMin && linearMag)
-        return D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    if (!linearMin && !linearMag)
-        return D3D12_FILTER_MIN_MAG_MIP_POINT;
-    if (linearMin && !linearMag)
-        return D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT;
-    return D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT;
+	if (linearMin && linearMag)
+		return D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	if (!linearMin && !linearMag)
+		return D3D12_FILTER_MIN_MAG_MIP_POINT;
+	if (linearMin && !linearMag)
+		return D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT;
+	return D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT;
 }
 
 static D3D12_TEXTURE_ADDRESS_MODE MapAddress(GLenum wrap)
 {
-    switch (wrap)
-    {
-    case GL_CLAMP: return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    case GL_REPEAT:
-    default: return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    }
+	switch (wrap)
+	{
+	case GL_CLAMP: return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	case GL_REPEAT:
+	default: return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	}
 }
 
 static D3D12_PRIMITIVE_TOPOLOGY MapPrimitive(GLenum mode)
 {
-    switch (mode)
-    {
-    case GL_POINTS:         return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
-    case GL_LINES:          return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
-    case GL_LINE_STRIP:     return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
-    case GL_TRIANGLES:      return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    case GL_TRIANGLE_STRIP: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
-    default:                return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    }
+	switch (mode)
+	{
+	case GL_POINTS:         return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+	case GL_LINES:          return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+	case GL_LINE_STRIP:     return D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
+	case GL_TRIANGLES:      return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	case GL_TRIANGLE_STRIP: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+	default:                return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	}
 }
 
 static D3D12_PRIMITIVE_TOPOLOGY_TYPE GetTopologyTypeFromTopology(D3D12_PRIMITIVE_TOPOLOGY topo)
 {
-    switch (topo)
-    {
-    case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
-        return D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+	switch (topo)
+	{
+	case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
+		return D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
 
-    case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
-    case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
-        return D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+	case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
+	case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
+		return D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
 
-    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
-    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
-    default:
-        return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    }
+	case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
+	case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
+	default:
+		return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	}
 }
 
 // ============================================================
@@ -1559,59 +1573,63 @@ static D3D12_PRIMITIVE_TOPOLOGY_TYPE GetTopologyTypeFromTopology(D3D12_PRIMITIVE
 
 static void QD3D12_WaitForGPU()
 {
-    const UINT64 signalValue = g_gl.nextFenceValue++;
-    QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
+	const UINT64 signalValue = g_gl.nextFenceValue++;
+	QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
 
-    if (g_gl.fence->GetCompletedValue() < signalValue)
-    {
-        QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(signalValue, g_gl.fenceEvent));
-        WaitForSingleObject(g_gl.fenceEvent, INFINITE);
-    }
+	if (g_gl.fence->GetCompletedValue() < signalValue)
+	{
+		QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(signalValue, g_gl.fenceEvent));
+		WaitForSingleObject(g_gl.fenceEvent, INFINITE);
+	}
 }
 
 static void QD3D12_WaitForFrame(UINT frameIndex)
 {
-    FrameResources& fr = g_currentWindow->frames[frameIndex];
-    if (fr.fenceValue != 0 && g_gl.fence->GetCompletedValue() < fr.fenceValue)
-    {
-        QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(fr.fenceValue, g_gl.fenceEvent));
-        WaitForSingleObject(g_gl.fenceEvent, INFINITE);
-    }
+	FrameResources& fr = g_currentWindow->frames[frameIndex];
+	if (fr.fenceValue != 0 && g_gl.fence->GetCompletedValue() < fr.fenceValue)
+	{
+		QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(fr.fenceValue, g_gl.fenceEvent));
+		WaitForSingleObject(g_gl.fenceEvent, INFINITE);
+	}
 }
 
 static void QD3D12_ResetUploadRing()
 {
-    g_gl.upload.offset = 0;
+	if (!g_currentWindow)
+		return;
+
+	g_currentWindow->upload.offset = 0;
 }
 
 struct UploadAlloc
 {
-    void* cpu = nullptr;
-    D3D12_GPU_VIRTUAL_ADDRESS gpu = 0;
-    UINT offset = 0;
+	void* cpu = nullptr;
+	D3D12_GPU_VIRTUAL_ADDRESS gpu = 0;
+	UINT offset = 0;
 };
 
 static UploadAlloc QD3D12_AllocUpload(UINT bytes, UINT alignment)
 {
-    if (alignment == 0)
-        alignment = 1;
+	if (alignment == 0)
+		alignment = 1;
 
-    UINT alignedOffset = (g_gl.upload.offset + (alignment - 1)) & ~(alignment - 1);
+	UploadRing& upload = g_currentWindow->upload;
+	UINT alignedOffset = (upload.offset + (alignment - 1)) & ~(alignment - 1);
 
-    if (alignedOffset + bytes > g_gl.upload.size)
-    {
-        QD3D12_Fatal(
-            "Per-frame upload buffer overflow: need %u bytes, aligned offset %u, size %u",
-            bytes, alignedOffset, g_gl.upload.size);
-    }
+	if (alignedOffset + bytes > upload.size)
+	{
+		QD3D12_Fatal(
+			"Per-frame upload buffer overflow: need %u bytes, aligned offset %u, size %u",
+			bytes, alignedOffset, upload.size);
+	}
 
-    UploadAlloc out;
-    out.offset = alignedOffset;
-    out.cpu = g_gl.upload.cpuBase[g_currentWindow->frameIndex] + alignedOffset;
-    out.gpu = g_gl.upload.gpuBase[g_currentWindow->frameIndex] + alignedOffset;
+	UploadAlloc out;
+	out.offset = alignedOffset;
+	out.cpu = upload.cpuBase[g_currentWindow->frameIndex] + alignedOffset;
+	out.gpu = upload.gpuBase[g_currentWindow->frameIndex] + alignedOffset;
 
-    g_gl.upload.offset = alignedOffset + bytes;
-    return out;
+	upload.offset = alignedOffset + bytes;
+	return out;
 }
 
 // ============================================================
@@ -1620,38 +1638,38 @@ static UploadAlloc QD3D12_AllocUpload(UINT bytes, UINT alignment)
 
 static void QD3D12_CreateOcclusionQueryObjects()
 {
-    D3D12_QUERY_HEAP_DESC qh {};
-    qh.Count    = QD3D12_MaxQueries;
-    qh.NodeMask = 0;
-    qh.Type     = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
-    QD3D12_CHECK(g_gl.device->CreateQueryHeap(&qh, IID_PPV_ARGS(&g_gl.occlusionQueryHeap)));
+	D3D12_QUERY_HEAP_DESC qh{};
+	qh.Count = QD3D12_MaxQueries;
+	qh.NodeMask = 0;
+	qh.Type = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
+	QD3D12_CHECK(g_gl.device->CreateQueryHeap(&qh, IID_PPV_ARGS(&g_gl.occlusionQueryHeap)));
 
-    D3D12_HEAP_PROPERTIES hp {};
-    hp.Type = D3D12_HEAP_TYPE_READBACK;
+	D3D12_HEAP_PROPERTIES hp{};
+	hp.Type = D3D12_HEAP_TYPE_READBACK;
 
-    D3D12_RESOURCE_DESC rd {};
-    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-    rd.Width            = sizeof(UINT64) * QD3D12_MaxQueries;
-    rd.Height           = 1;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels        = 1;
-    rd.SampleDesc.Count = 1;
-    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	D3D12_RESOURCE_DESC rd{};
+	rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	rd.Width = sizeof(UINT64) * QD3D12_MaxQueries;
+	rd.Height = 1;
+	rd.DepthOrArraySize = 1;
+	rd.MipLevels = 1;
+	rd.SampleDesc.Count = 1;
+	rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    QD3D12_CHECK(
-    g_gl.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_gl.occlusionReadback)));
+	QD3D12_CHECK(
+		g_gl.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_gl.occlusionReadback)));
 
-    QD3D12_CHECK(g_gl.occlusionReadback->Map(0, nullptr, (void **)&g_gl.occlusionReadbackCpu));
+	QD3D12_CHECK(g_gl.occlusionReadback->Map(0, nullptr, (void**)&g_gl.occlusionReadbackCpu));
 }
 
 static void QD3D12_CreateDevice()
 {
 #if defined(_DEBUG)
-   {
-       ComPtr<ID3D12Debug> debug;
-       if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
-           debug->EnableDebugLayer();
-   }
+	{
+		ComPtr<ID3D12Debug> debug;
+		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+			debug->EnableDebugLayer();
+	}
 #endif
 
 QD3D12_CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&g_gl.factory)));
@@ -1689,614 +1707,631 @@ static void QD3D12_CreateSwapChainForWindow(QD3D12Window& w)
 
 static void QD3D12_CreateRTVsForWindow(QD3D12Window& w)
 {
-    D3D12_DESCRIPTOR_HEAP_DESC hd{};
-    hd.NumDescriptors = QD3D12_FrameCount * 3; // backbuffer + normal MRT + position MRT per frame
-    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&w.rtvHeap)));
+	D3D12_DESCRIPTOR_HEAP_DESC hd{};
+	hd.NumDescriptors = QD3D12_FrameCount * 3; // backbuffer + normal MRT + position MRT per frame
+	hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+	QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&w.rtvHeap)));
 
-    w.rtvStride = g_gl.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	w.rtvStride = g_gl.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+	D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
 
-    //
-    // 0 .. FrameCount-1 : swap chain backbuffers
-    //
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-    {
-        QD3D12_CHECK(w.swapChain->GetBuffer(i, IID_PPV_ARGS(&w.backBuffers[i])));
-        g_gl.device->CreateRenderTargetView(w.backBuffers[i].Get(), nullptr, h);
-        g_gl.backBufferState[i] = D3D12_RESOURCE_STATE_PRESENT;
-        h.ptr += w.rtvStride;
-    }
+	//
+	// 0 .. FrameCount-1 : swap chain backbuffers
+	//
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		QD3D12_CHECK(w.swapChain->GetBuffer(i, IID_PPV_ARGS(&w.backBuffers[i])));
+		g_gl.device->CreateRenderTargetView(w.backBuffers[i].Get(), nullptr, h);
+		w.backBufferState[i] = D3D12_RESOURCE_STATE_PRESENT;
+		h.ptr += w.rtvStride;
+	}
 
-    //
-    // FrameCount .. 2*FrameCount-1 : normal MRTs
-    //
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-    {
-        D3D12_RESOURCE_DESC rd{};
-        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width = w.width;
-        rd.Height = w.height;
-        rd.DepthOrArraySize = 1;
-        rd.MipLevels = 1;
-        rd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        rd.SampleDesc.Count = 1;
-        rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	//
+	// FrameCount .. 2*FrameCount-1 : normal MRTs
+	//
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		D3D12_RESOURCE_DESC rd{};
+		rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		rd.Width = w.width;
+		rd.Height = w.height;
+		rd.DepthOrArraySize = 1;
+		rd.MipLevels = 1;
+		rd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		rd.SampleDesc.Count = 1;
+		rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
-        D3D12_HEAP_PROPERTIES hp{};
-        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+		D3D12_HEAP_PROPERTIES hp{};
+		hp.Type = D3D12_HEAP_TYPE_DEFAULT;
 
-        D3D12_CLEAR_VALUE clear{};
-        clear.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        clear.Color[0] = 0.5f;
-        clear.Color[1] = 0.5f;
-        clear.Color[2] = 1.0f;
-        clear.Color[3] = 1.0f;
+		D3D12_CLEAR_VALUE clear{};
+		clear.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		clear.Color[0] = 0.5f;
+		clear.Color[1] = 0.5f;
+		clear.Color[2] = 1.0f;
+		clear.Color[3] = 1.0f;
 
-        QD3D12_CHECK(g_gl.device->CreateCommittedResource(
-            &hp,
-            D3D12_HEAP_FLAG_NONE,
-            &rd,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            &clear,
-            IID_PPV_ARGS(&w.normalBuffers[i])));
+		QD3D12_CHECK(g_gl.device->CreateCommittedResource(
+			&hp,
+			D3D12_HEAP_FLAG_NONE,
+			&rd,
+			D3D12_RESOURCE_STATE_RENDER_TARGET,
+			&clear,
+			IID_PPV_ARGS(&w.normalBuffers[i])));
 
-        g_gl.device->CreateRenderTargetView(w.normalBuffers[i].Get(), nullptr, h);
-        w.normalBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        h.ptr += w.rtvStride;
-    }
+		g_gl.device->CreateRenderTargetView(w.normalBuffers[i].Get(), nullptr, h);
+		w.normalBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		h.ptr += w.rtvStride;
+	}
 
-    //
-    // 2*FrameCount .. 3*FrameCount-1 : world position MRTs
-    //
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-    {
-        D3D12_RESOURCE_DESC rd{};
-        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width = w.width;
-        rd.Height = w.height;
-        rd.DepthOrArraySize = 1;
-        rd.MipLevels = 1;
-        rd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        rd.SampleDesc.Count = 1;
-        rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	//
+	// 2*FrameCount .. 3*FrameCount-1 : world position MRTs
+	//
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		D3D12_RESOURCE_DESC rd{};
+		rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		rd.Width = w.width;
+		rd.Height = w.height;
+		rd.DepthOrArraySize = 1;
+		rd.MipLevels = 1;
+		rd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		rd.SampleDesc.Count = 1;
+		rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
-        D3D12_HEAP_PROPERTIES hp{};
-        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+		D3D12_HEAP_PROPERTIES hp{};
+		hp.Type = D3D12_HEAP_TYPE_DEFAULT;
 
-        D3D12_CLEAR_VALUE clear{};
-        clear.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        clear.Color[0] = 0.0f;
-        clear.Color[1] = 0.0f;
-        clear.Color[2] = 0.0f;
-        clear.Color[3] = 0.0f;
+		D3D12_CLEAR_VALUE clear{};
+		clear.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		clear.Color[0] = 0.0f;
+		clear.Color[1] = 0.0f;
+		clear.Color[2] = 0.0f;
+		clear.Color[3] = 0.0f;
 
-        QD3D12_CHECK(g_gl.device->CreateCommittedResource(
-            &hp,
-            D3D12_HEAP_FLAG_NONE,
-            &rd,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            &clear,
-            IID_PPV_ARGS(&w.positionBuffers[i])));
+		QD3D12_CHECK(g_gl.device->CreateCommittedResource(
+			&hp,
+			D3D12_HEAP_FLAG_NONE,
+			&rd,
+			D3D12_RESOURCE_STATE_RENDER_TARGET,
+			&clear,
+			IID_PPV_ARGS(&w.positionBuffers[i])));
 
-        g_gl.device->CreateRenderTargetView(w.positionBuffers[i].Get(), nullptr, h);
-        w.positionBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        h.ptr += w.rtvStride;
-    }
+		g_gl.device->CreateRenderTargetView(w.positionBuffers[i].Get(), nullptr, h);
+		w.positionBufferState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		h.ptr += w.rtvStride;
+	}
 
-    //
-    // Normal SRVs
-    //
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-    {
-        if (w.normalSrvIndex[i] == UINT_MAX)
-        {
-            w.normalSrvIndex[i] = g_gl.nextSrvIndex++;
-            w.normalSrvCpu[i] = QD3D12_SrvCpu(w.normalSrvIndex[i]);
-            w.normalSrvGpu[i] = QD3D12_SrvGpu(w.normalSrvIndex[i]);
-        }
+	//
+	// Normal SRVs
+	//
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		if (w.normalSrvIndex[i] == UINT_MAX)
+		{
+			w.normalSrvIndex[i] = g_gl.nextSrvIndex++;
+			w.normalSrvCpu[i] = QD3D12_SrvCpu(w.normalSrvIndex[i]);
+			w.normalSrvGpu[i] = QD3D12_SrvGpu(w.normalSrvIndex[i]);
+		}
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-        sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        sd.Texture2D.MipLevels = 1;
+		D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+		sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		sd.Texture2D.MipLevels = 1;
 
-        g_gl.device->CreateShaderResourceView(
-            w.normalBuffers[i].Get(),
-            &sd,
-            w.normalSrvCpu[i]);
-    }
+		g_gl.device->CreateShaderResourceView(
+			w.normalBuffers[i].Get(),
+			&sd,
+			w.normalSrvCpu[i]);
+	}
 
-    //
-    // Position SRVs
-    //
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-    {
-        if (w.positionSrvIndex[i] == UINT_MAX)
-        {
-            w.positionSrvIndex[i] = g_gl.nextSrvIndex++;
-            w.positionSrvCpu[i] = QD3D12_SrvCpu(w.positionSrvIndex[i]);
-            w.positionSrvGpu[i] = QD3D12_SrvGpu(w.positionSrvIndex[i]);
-        }
+	//
+	// Position SRVs
+	//
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		if (w.positionSrvIndex[i] == UINT_MAX)
+		{
+			w.positionSrvIndex[i] = g_gl.nextSrvIndex++;
+			w.positionSrvCpu[i] = QD3D12_SrvCpu(w.positionSrvIndex[i]);
+			w.positionSrvGpu[i] = QD3D12_SrvGpu(w.positionSrvIndex[i]);
+		}
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-        sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        sd.Texture2D.MipLevels = 1;
+		D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+		sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		sd.Texture2D.MipLevels = 1;
 
-        g_gl.device->CreateShaderResourceView(
-            g_currentWindow->positionBuffers[i].Get(),
-            &sd,
-            g_currentWindow->positionSrvCpu[i]);
-    }
+		g_gl.device->CreateShaderResourceView(
+			w.positionBuffers[i].Get(),
+			&sd,
+			w.positionSrvCpu[i]);
+	}
 }
 
-void QD3D12_CreateDSVForWindow(QD3D12Window &w)
+void QD3D12_CreateDSVForWindow(QD3D12Window& w)
 {
-    D3D12_DESCRIPTOR_HEAP_DESC hd{};
-    hd.NumDescriptors = 1;
-    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&w.dsvHeap)));
+	D3D12_DESCRIPTOR_HEAP_DESC hd{};
+	hd.NumDescriptors = 1;
+	hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+	QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&w.dsvHeap)));
 
-    D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    rd.Width = w.width;
-    rd.Height = w.height;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.Format = DXGI_FORMAT_D32_FLOAT;
-    rd.SampleDesc.Count = 1;
-    rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+	D3D12_RESOURCE_DESC rd{};
+	rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	rd.Width = w.width;
+	rd.Height = w.height;
+	rd.DepthOrArraySize = 1;
+	rd.MipLevels = 1;
+	rd.Format = DXGI_FORMAT_D32_FLOAT;
+	rd.SampleDesc.Count = 1;
+	rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
-    D3D12_CLEAR_VALUE clear{};
-    clear.Format = DXGI_FORMAT_D32_FLOAT;
-    clear.DepthStencil.Depth = 1.0f;
+	D3D12_CLEAR_VALUE clear{};
+	clear.Format = DXGI_FORMAT_D32_FLOAT;
+	clear.DepthStencil.Depth = 1.0f;
 
-    D3D12_HEAP_PROPERTIES hp{};
-    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_HEAP_PROPERTIES hp{};
+	hp.Type = D3D12_HEAP_TYPE_DEFAULT;
 
-    QD3D12_CHECK(g_gl.device->CreateCommittedResource(
-        &hp,
-        D3D12_HEAP_FLAG_NONE,
-        &rd,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        &clear,
-        IID_PPV_ARGS(&g_currentWindow->depthBuffer)));
+	QD3D12_CHECK(g_gl.device->CreateCommittedResource(
+		&hp,
+		D3D12_HEAP_FLAG_NONE,
+		&rd,
+		D3D12_RESOURCE_STATE_DEPTH_WRITE,
+		&clear,
+		IID_PPV_ARGS(&w.depthBuffer)));
 
-    g_gl.device->CreateDepthStencilView(g_currentWindow->depthBuffer.Get(), nullptr, g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart());
+	g_gl.device->CreateDepthStencilView(w.depthBuffer.Get(), nullptr, w.dsvHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
 static void QD3D12_CreateSrvHeap()
 {
-    D3D12_DESCRIPTOR_HEAP_DESC hd{};
-    hd.NumDescriptors = QD3D12_MaxTextures;
-    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_gl.srvHeap)));
-    g_gl.srvStride = g_gl.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	D3D12_DESCRIPTOR_HEAP_DESC hd{};
+	hd.NumDescriptors = QD3D12_MaxTextures;
+	hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	QD3D12_CHECK(g_gl.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g_gl.srvHeap)));
+	g_gl.srvStride = g_gl.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 }
 
 static D3D12_CPU_DESCRIPTOR_HANDLE QD3D12_SrvCpu(UINT index)
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE h = g_gl.srvHeap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += SIZE_T(index) * SIZE_T(g_gl.srvStride);
-    return h;
+	D3D12_CPU_DESCRIPTOR_HANDLE h = g_gl.srvHeap->GetCPUDescriptorHandleForHeapStart();
+	h.ptr += SIZE_T(index) * SIZE_T(g_gl.srvStride);
+	return h;
 }
 
 static D3D12_GPU_DESCRIPTOR_HANDLE QD3D12_SrvGpu(UINT index)
 {
-    D3D12_GPU_DESCRIPTOR_HANDLE h = g_gl.srvHeap->GetGPUDescriptorHandleForHeapStart();
-    h.ptr += UINT64(index) * UINT64(g_gl.srvStride);
-    return h;
+	D3D12_GPU_DESCRIPTOR_HANDLE h = g_gl.srvHeap->GetGPUDescriptorHandleForHeapStart();
+	h.ptr += UINT64(index) * UINT64(g_gl.srvStride);
+	return h;
 }
 
 static void QD3D12_CreateCommandObjects()
 {
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-        QD3D12_CHECK(g_gl.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_currentWindow->frames[i].cmdAlloc)));
+	QD3D12_CHECK(g_gl.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_currentWindow->frames[0].cmdAlloc.Get(), nullptr, IID_PPV_ARGS(&g_gl.cmdList)));
+	QD3D12_CHECK(g_gl.cmdList->Close());
 
-    QD3D12_CHECK(g_gl.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_currentWindow->frames[0].cmdAlloc.Get(), nullptr, IID_PPV_ARGS(&g_gl.cmdList)));
-    QD3D12_CHECK(g_gl.cmdList->Close());
-
-    QD3D12_CHECK(g_gl.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_gl.fence)));
-    g_gl.fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+	QD3D12_CHECK(g_gl.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_gl.fence)));
+	g_gl.fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 }
-static void QD3D12_CreateUploadRing()
+
+static void QD3D12_CreateUploadRingForWindow(QD3D12Window& w)
 {
-    D3D12_HEAP_PROPERTIES hp{};
-    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+	D3D12_HEAP_PROPERTIES hp{};
+	hp.Type = D3D12_HEAP_TYPE_UPLOAD;
 
-    D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    rd.Width = QD3D12_UploadBufferSize;
-    rd.Height = 1;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.SampleDesc.Count = 1;
-    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	D3D12_RESOURCE_DESC rd{};
+	rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	rd.Width = QD3D12_UploadBufferSize;
+	rd.Height = 1;
+	rd.DepthOrArraySize = 1;
+	rd.MipLevels = 1;
+	rd.SampleDesc.Count = 1;
+	rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    g_gl.upload.size = QD3D12_UploadBufferSize;
-    g_gl.upload.offset = 0;
+	w.upload.size = QD3D12_UploadBufferSize;
+	w.upload.offset = 0;
 
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-    {
-        QD3D12_CHECK(g_gl.device->CreateCommittedResource(
-            &hp,
-            D3D12_HEAP_FLAG_NONE,
-            &rd,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(&g_gl.upload.resource[i])));
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		if (w.upload.resource[i])
+			continue;
 
-        g_gl.upload.gpuBase[i] = g_gl.upload.resource[i]->GetGPUVirtualAddress();
+		QD3D12_CHECK(g_gl.device->CreateCommittedResource(
+			&hp,
+			D3D12_HEAP_FLAG_NONE,
+			&rd,
+			D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr,
+			IID_PPV_ARGS(&w.upload.resource[i])));
 
-        QD3D12_CHECK(g_gl.upload.resource[i]->Map(
-            0,
-            nullptr,
-            reinterpret_cast<void**>(&g_gl.upload.cpuBase[i])));
-    }
+		w.upload.gpuBase[i] = w.upload.resource[i]->GetGPUVirtualAddress();
+
+		QD3D12_CHECK(w.upload.resource[i]->Map(
+			0,
+			nullptr,
+			reinterpret_cast<void**>(&w.upload.cpuBase[i])));
+	}
+}
+
+static void QD3D12_DestroyUploadRingForWindow(QD3D12Window& w)
+{
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+	{
+		if (w.upload.resource[i] && w.upload.cpuBase[i])
+			w.upload.resource[i]->Unmap(0, nullptr);
+
+		w.upload.cpuBase[i] = nullptr;
+		w.upload.gpuBase[i] = 0;
+		w.upload.resource[i].Reset();
+	}
+
+	w.upload.size = 0;
+	w.upload.offset = 0;
 }
 
 static ComPtr<ID3DBlob> CompileShaderVariant(const char* entry, const char* target)
 {
-    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+	UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
-    flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+	flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
-    ComPtr<ID3DBlob> blob;
-    ComPtr<ID3DBlob> err;
-    HRESULT hr = D3DCompile(kQuakeWrapperHLSL, strlen(kQuakeWrapperHLSL), nullptr, nullptr, nullptr,
-        entry, target, flags, 0, &blob, &err);
-    if (FAILED(hr))
-        QD3D12_Fatal("Shader compile failed for %s: %s", entry, err ? (const char*)err->GetBufferPointer() : "unknown");
-    return blob;
+	ComPtr<ID3DBlob> blob;
+	ComPtr<ID3DBlob> err;
+	HRESULT hr = D3DCompile(kQuakeWrapperHLSL, strlen(kQuakeWrapperHLSL), nullptr, nullptr, nullptr,
+		entry, target, flags, 0, &blob, &err);
+	if (FAILED(hr))
+		QD3D12_Fatal("Shader compile failed for %s: %s", entry, err ? (const char*)err->GetBufferPointer() : "unknown");
+	return blob;
 }
 static void QD3D12_CreateRootSignature()
 {
-    D3D12_DESCRIPTOR_RANGE range0{};
-    range0.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range0.NumDescriptors = 1;
-    range0.BaseShaderRegister = 0;
-    range0.RegisterSpace = 0;
-    range0.OffsetInDescriptorsFromTableStart = 0;
+	D3D12_DESCRIPTOR_RANGE range0{};
+	range0.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	range0.NumDescriptors = 1;
+	range0.BaseShaderRegister = 0;
+	range0.RegisterSpace = 0;
+	range0.OffsetInDescriptorsFromTableStart = 0;
 
-    D3D12_DESCRIPTOR_RANGE range1{};
-    range1.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range1.NumDescriptors = 1;
-    range1.BaseShaderRegister = 1;
-    range1.RegisterSpace = 0;
-    range1.OffsetInDescriptorsFromTableStart = 0;
+	D3D12_DESCRIPTOR_RANGE range1{};
+	range1.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	range1.NumDescriptors = 1;
+	range1.BaseShaderRegister = 1;
+	range1.RegisterSpace = 0;
+	range1.OffsetInDescriptorsFromTableStart = 0;
 
-    D3D12_ROOT_PARAMETER params[3] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[0].Descriptor.ShaderRegister = 0;
-    params[0].Descriptor.RegisterSpace = 0;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+	D3D12_ROOT_PARAMETER params[3] = {};
+	params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	params[0].Descriptor.ShaderRegister = 0;
+	params[0].Descriptor.RegisterSpace = 0;
+	params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &range0;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[1].DescriptorTable.NumDescriptorRanges = 1;
+	params[1].DescriptorTable.pDescriptorRanges = &range0;
+	params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[2].DescriptorTable.NumDescriptorRanges = 1;
-    params[2].DescriptorTable.pDescriptorRanges = &range1;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	params[2].DescriptorTable.NumDescriptorRanges = 1;
+	params[2].DescriptorTable.pDescriptorRanges = &range1;
+	params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC samps[2] = {};
+	D3D12_STATIC_SAMPLER_DESC samps[2] = {};
 
-    samps[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    samps[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samps[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samps[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samps[0].ShaderRegister = 0;
-    samps[0].RegisterSpace = 0;
-    samps[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    samps[0].MaxLOD = D3D12_FLOAT32_MAX;
+	samps[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	samps[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	samps[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	samps[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	samps[0].ShaderRegister = 0;
+	samps[0].RegisterSpace = 0;
+	samps[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	samps[0].MaxLOD = D3D12_FLOAT32_MAX;
 
-    samps[1] = samps[0];
-    samps[1].ShaderRegister = 1;
-    samps[1].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	samps[1] = samps[0];
+	samps[1].ShaderRegister = 1;
+	samps[1].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
 
-    D3D12_ROOT_SIGNATURE_DESC rsd{};
-    rsd.NumParameters = 3;
-    rsd.pParameters = params;
-    rsd.NumStaticSamplers = 2;
-    rsd.pStaticSamplers = samps;
-    rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+	D3D12_ROOT_SIGNATURE_DESC rsd{};
+	rsd.NumParameters = 3;
+	rsd.pParameters = params;
+	rsd.NumStaticSamplers = 2;
+	rsd.pStaticSamplers = samps;
+	rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-    ComPtr<ID3DBlob> sig;
-    ComPtr<ID3DBlob> err;
-    QD3D12_CHECK(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err));
-    QD3D12_CHECK(g_gl.device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&g_gl.rootSig)));
+	ComPtr<ID3DBlob> sig;
+	ComPtr<ID3DBlob> err;
+	QD3D12_CHECK(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err));
+	QD3D12_CHECK(g_gl.device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&g_gl.rootSig)));
 }
 
 
 static void QD3D12_CompileShaders()
 {
-    g_gl.vsMainBlob = CompileShaderVariant("VSMain", "vs_5_0");
-    g_gl.psMainBlob = CompileShaderVariant("PSMain", "ps_5_0");
-    g_gl.psAlphaBlob = CompileShaderVariant("PSMainAlphaTest", "ps_5_0");
-    g_gl.psUntexturedBlob = CompileShaderVariant("PSMainUntextured", "ps_5_0");
+	g_gl.vsMainBlob = CompileShaderVariant("VSMain", "vs_5_0");
+	g_gl.psMainBlob = CompileShaderVariant("PSMain", "ps_5_0");
+	g_gl.psAlphaBlob = CompileShaderVariant("PSMainAlphaTest", "ps_5_0");
+	g_gl.psUntexturedBlob = CompileShaderVariant("PSMainUntextured", "ps_5_0");
 }
 
 static const D3D12_INPUT_ELEMENT_DESC kGLVertexInputLayout[] =
 {
-    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, (UINT)offsetof(GLVertex, px), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, (UINT)offsetof(GLVertex, nx), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, (UINT)offsetof(GLVertex, u0), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, (UINT)offsetof(GLVertex, u1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)offsetof(GLVertex, r),  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, (UINT)offsetof(GLVertex, px), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, (UINT)offsetof(GLVertex, nx), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, (UINT)offsetof(GLVertex, u0), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, (UINT)offsetof(GLVertex, u1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)offsetof(GLVertex, r),  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 };
 
 static UINT8 BuildColorWriteMask()
 {
-    UINT8 mask = 0;
-    if (g_gl.colorMaskR) mask |= D3D12_COLOR_WRITE_ENABLE_RED;
-    if (g_gl.colorMaskG) mask |= D3D12_COLOR_WRITE_ENABLE_GREEN;
-    if (g_gl.colorMaskB) mask |= D3D12_COLOR_WRITE_ENABLE_BLUE;
-    if (g_gl.colorMaskA) mask |= D3D12_COLOR_WRITE_ENABLE_ALPHA;
-    return mask;
+	UINT8 mask = 0;
+	if (g_gl.colorMaskR) mask |= D3D12_COLOR_WRITE_ENABLE_RED;
+	if (g_gl.colorMaskG) mask |= D3D12_COLOR_WRITE_ENABLE_GREEN;
+	if (g_gl.colorMaskB) mask |= D3D12_COLOR_WRITE_ENABLE_BLUE;
+	if (g_gl.colorMaskA) mask |= D3D12_COLOR_WRITE_ENABLE_ALPHA;
+	return mask;
 }
 
 static D3D12_CPU_DESCRIPTOR_HANDLE CurrentNormalRTV()
 {
-    QD3D12Window& w = *g_currentWindow;
-    D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += SIZE_T(QD3D12_FrameCount + w.frameIndex) * SIZE_T(w.rtvStride);
-    return h;
+	QD3D12Window& w = *g_currentWindow;
+	D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	h.ptr += SIZE_T(QD3D12_FrameCount + w.frameIndex) * SIZE_T(w.rtvStride);
+	return h;
 }
 
 static D3D12_GRAPHICS_PIPELINE_STATE_DESC BuildPSODesc(
-    PipelineMode mode,
-    ID3DBlob* vs,
-    ID3DBlob* ps,
-    GLenum srcBlendGL,
-    GLenum dstBlendGL,
-    bool depthTest,
-    bool depthWrite,
-    GLenum depthFuncGL,
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType)
+	PipelineMode mode,
+	ID3DBlob* vs,
+	ID3DBlob* ps,
+	GLenum srcBlendGL,
+	GLenum dstBlendGL,
+	bool depthTest,
+	bool depthWrite,
+	GLenum depthFuncGL,
+	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType)
 {
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
-    d.pRootSignature = g_gl.rootSig.Get();
-    d.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
-    d.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+	d.pRootSignature = g_gl.rootSig.Get();
+	d.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+	d.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
 
-    d.InputLayout.pInputElementDescs = kGLVertexInputLayout;
-    d.InputLayout.NumElements = _countof(kGLVertexInputLayout);
+	d.InputLayout.pInputElementDescs = kGLVertexInputLayout;
+	d.InputLayout.NumElements = _countof(kGLVertexInputLayout);
 
-    d.PrimitiveTopologyType = topoType;
+	d.PrimitiveTopologyType = topoType;
 
-    d.NumRenderTargets = 3;
-    d.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    d.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    d.RTVFormats[2] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	d.NumRenderTargets = 3;
+	d.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	d.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	d.RTVFormats[2] = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-    d.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    d.SampleDesc.Count = 1;
-    d.SampleMask = UINT_MAX;
+	d.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+	d.SampleDesc.Count = 1;
+	d.SampleMask = UINT_MAX;
 
-    d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    d.RasterizerState.FrontCounterClockwise = FALSE;
-    d.RasterizerState.DepthClipEnable = TRUE;
+	d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+	d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+	d.RasterizerState.FrontCounterClockwise = FALSE;
+	d.RasterizerState.DepthClipEnable = TRUE;
 
-    d.BlendState.RenderTarget[0].RenderTargetWriteMask = BuildColorWriteMask();
-    d.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    d.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+	d.BlendState.RenderTarget[0].RenderTargetWriteMask = BuildColorWriteMask();
+	d.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+	d.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-    d.BlendState.AlphaToCoverageEnable = FALSE;
-    d.BlendState.IndependentBlendEnable = TRUE;
+	d.BlendState.AlphaToCoverageEnable = FALSE;
+	d.BlendState.IndependentBlendEnable = TRUE;
 
-    for (int i = 0; i < 3; ++i)
-    {
-        auto& rt = d.BlendState.RenderTarget[i];
-        rt.BlendEnable = FALSE;
-        rt.LogicOpEnable = FALSE;
-        rt.SrcBlend = D3D12_BLEND_ONE;
-        rt.DestBlend = D3D12_BLEND_ZERO;
-        rt.BlendOp = D3D12_BLEND_OP_ADD;
-        rt.SrcBlendAlpha = D3D12_BLEND_ONE;
-        rt.DestBlendAlpha = D3D12_BLEND_ZERO;
-        rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        rt.LogicOp = D3D12_LOGIC_OP_NOOP;
-    }
+	for (int i = 0; i < 3; ++i)
+	{
+		auto& rt = d.BlendState.RenderTarget[i];
+		rt.BlendEnable = FALSE;
+		rt.LogicOpEnable = FALSE;
+		rt.SrcBlend = D3D12_BLEND_ONE;
+		rt.DestBlend = D3D12_BLEND_ZERO;
+		rt.BlendOp = D3D12_BLEND_OP_ADD;
+		rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+		rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+		rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+		rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+	}
 
-    if (mode == PIPE_BLEND_TEX || mode == PIPE_BLEND_UNTEX)
-    {
-        auto& rt = d.BlendState.RenderTarget[0];
-        rt.BlendEnable = TRUE;
-        rt.SrcBlend = MapBlend(srcBlendGL);
-        rt.DestBlend = MapBlend(dstBlendGL);
-        rt.BlendOp = D3D12_BLEND_OP_ADD;
-        rt.SrcBlendAlpha = MapBlendAlpha(srcBlendGL);
-        rt.DestBlendAlpha = MapBlendAlpha(dstBlendGL);
-        rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    }
+	if (mode == PIPE_BLEND_TEX || mode == PIPE_BLEND_UNTEX)
+	{
+		auto& rt = d.BlendState.RenderTarget[0];
+		rt.BlendEnable = TRUE;
+		rt.SrcBlend = MapBlend(srcBlendGL);
+		rt.DestBlend = MapBlend(dstBlendGL);
+		rt.BlendOp = D3D12_BLEND_OP_ADD;
+		rt.SrcBlendAlpha = MapBlendAlpha(srcBlendGL);
+		rt.DestBlendAlpha = MapBlendAlpha(dstBlendGL);
+		rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+	}
 
-    d.DepthStencilState.DepthEnable = depthTest ? TRUE : FALSE;
-    d.DepthStencilState.DepthWriteMask = depthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-    d.DepthStencilState.DepthFunc = MapCompare(depthFuncGL);
-    d.DepthStencilState.StencilEnable = FALSE;
+	d.DepthStencilState.DepthEnable = depthTest ? TRUE : FALSE;
+	d.DepthStencilState.DepthWriteMask = depthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+	d.DepthStencilState.DepthFunc = MapCompare(depthFuncGL);
+	d.DepthStencilState.StencilEnable = FALSE;
 
-    return d;
+	return d;
 }
 
 static void QD3D12_CreatePSOs()
 {
-   
+
 }
 
 static uint64_t MakePSOKey(
-    PipelineMode mode,
-    GLenum src,
-    GLenum dst,
-    bool depthTest,
-    bool depthWrite,
-    GLenum depthFunc,
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType)
+	PipelineMode mode,
+	GLenum src,
+	GLenum dst,
+	bool depthTest,
+	bool depthWrite,
+	GLenum depthFunc,
+	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType)
 {
-    return
-        (uint64_t(uint32_t(mode)) << 56ull) |
-        (uint64_t(uint32_t(src) & 0xFF) << 48ull) |
-        (uint64_t(uint32_t(dst) & 0xFF) << 40ull) |
-        (uint64_t(depthTest ? 1 : 0) << 39ull) |
-        (uint64_t(depthWrite ? 1 : 0) << 38ull) |
-        (uint64_t(uint32_t(topoType) & 0x3) << 36ull) |
-        (uint64_t(uint32_t(depthFunc) & 0xFFFF) << 16ull);
+	return
+		(uint64_t(uint32_t(mode)) << 56ull) |
+		(uint64_t(uint32_t(src) & 0xFF) << 48ull) |
+		(uint64_t(uint32_t(dst) & 0xFF) << 40ull) |
+		(uint64_t(depthTest ? 1 : 0) << 39ull) |
+		(uint64_t(depthWrite ? 1 : 0) << 38ull) |
+		(uint64_t(uint32_t(topoType) & 0x3) << 36ull) |
+		(uint64_t(uint32_t(depthFunc) & 0xFFFF) << 16ull);
 }
 
 static std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> g_psoCache;
 
 static ID3D12PipelineState* QD3D12_GetPSO(
-    PipelineMode mode,
-    GLenum srcBlendGL,
-    GLenum dstBlendGL,
-    bool depthTest,
-    bool depthWrite,
-    GLenum depthFuncGL,
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType)
+	PipelineMode mode,
+	GLenum srcBlendGL,
+	GLenum dstBlendGL,
+	bool depthTest,
+	bool depthWrite,
+	GLenum depthFuncGL,
+	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType)
 {
-    const uint64_t key = MakePSOKey(
-        mode, srcBlendGL, dstBlendGL, depthTest, depthWrite, depthFuncGL, topoType);
+	const uint64_t key = MakePSOKey(
+		mode, srcBlendGL, dstBlendGL, depthTest, depthWrite, depthFuncGL, topoType);
 
-    auto it = g_psoCache.find(key);
-    if (it != g_psoCache.end())
-        return it->second.Get();
+	auto it = g_psoCache.find(key);
+	if (it != g_psoCache.end())
+		return it->second.Get();
 
-    ID3DBlob* psBlob = nullptr;
-    switch (mode)
-    {
-    case PIPE_ALPHA_TEST_TEX: psBlob = g_gl.psAlphaBlob.Get(); break;
-    case PIPE_OPAQUE_UNTEX:
-    case PIPE_BLEND_UNTEX:    psBlob = g_gl.psUntexturedBlob.Get(); break;
-    case PIPE_OPAQUE_TEX:
-    case PIPE_BLEND_TEX:
-    default:                  psBlob = g_gl.psMainBlob.Get(); break;
-    }
+	ID3DBlob* psBlob = nullptr;
+	switch (mode)
+	{
+	case PIPE_ALPHA_TEST_TEX: psBlob = g_gl.psAlphaBlob.Get(); break;
+	case PIPE_OPAQUE_UNTEX:
+	case PIPE_BLEND_UNTEX:    psBlob = g_gl.psUntexturedBlob.Get(); break;
+	case PIPE_OPAQUE_TEX:
+	case PIPE_BLEND_TEX:
+	default:                  psBlob = g_gl.psMainBlob.Get(); break;
+	}
 
-    auto desc = BuildPSODesc(
-        mode,
-        g_gl.vsMainBlob.Get(),
-        psBlob,
-        srcBlendGL,
-        dstBlendGL,
-        depthTest,
-        depthWrite,
-        depthFuncGL,
-        topoType);
+	auto desc = BuildPSODesc(
+		mode,
+		g_gl.vsMainBlob.Get(),
+		psBlob,
+		srcBlendGL,
+		dstBlendGL,
+		depthTest,
+		depthWrite,
+		depthFuncGL,
+		topoType);
 
-    ComPtr<ID3D12PipelineState> newPSO;
-    QD3D12_CHECK(g_gl.device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&newPSO)));
+	ComPtr<ID3D12PipelineState> newPSO;
+	QD3D12_CHECK(g_gl.device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&newPSO)));
 
-    ID3D12PipelineState* out = newPSO.Get();
-    g_psoCache.emplace(key, std::move(newPSO));
-    return out;
+	ID3D12PipelineState* out = newPSO.Get();
+	g_psoCache.emplace(key, std::move(newPSO));
+	return out;
 }
 
 static void QD3D12_CreateWhiteTexture()
 {
-    g_gl.whiteTexture.glId = 0;
-    g_gl.whiteTexture.width = 1;
-    g_gl.whiteTexture.height = 1;
-    g_gl.whiteTexture.format = GL_RGBA;
-    g_gl.whiteTexture.sysmem = { 255, 255, 255, 255 };
-    g_gl.whiteTexture.srvIndex = 0;
-    g_gl.whiteTexture.srvCpu = QD3D12_SrvCpu(0);
-    g_gl.whiteTexture.srvGpu = QD3D12_SrvGpu(0);
+	g_gl.whiteTexture.glId = 0;
+	g_gl.whiteTexture.width = 1;
+	g_gl.whiteTexture.height = 1;
+	g_gl.whiteTexture.format = GL_RGBA;
+	g_gl.whiteTexture.sysmem = { 255, 255, 255, 255 };
+	g_gl.whiteTexture.srvIndex = 0;
+	g_gl.whiteTexture.srvCpu = QD3D12_SrvCpu(0);
+	g_gl.whiteTexture.srvGpu = QD3D12_SrvGpu(0);
 
-    D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    rd.Width = 1;
-    rd.Height = 1;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    rd.SampleDesc.Count = 1;
-    rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	D3D12_RESOURCE_DESC rd{};
+	rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	rd.Width = 1;
+	rd.Height = 1;
+	rd.DepthOrArraySize = 1;
+	rd.MipLevels = 1;
+	rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	rd.SampleDesc.Count = 1;
+	rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
-    D3D12_HEAP_PROPERTIES hpDef{};
-    hpDef.Type = D3D12_HEAP_TYPE_DEFAULT;
-    QD3D12_CHECK(g_gl.device->CreateCommittedResource(&hpDef, D3D12_HEAP_FLAG_NONE, &rd,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_gl.whiteTexture.texture)));
+	D3D12_HEAP_PROPERTIES hpDef{};
+	hpDef.Type = D3D12_HEAP_TYPE_DEFAULT;
+	QD3D12_CHECK(g_gl.device->CreateCommittedResource(&hpDef, D3D12_HEAP_FLAG_NONE, &rd,
+		D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_gl.whiteTexture.texture)));
 
-    g_gl.whiteTexture.state = D3D12_RESOURCE_STATE_COPY_DEST;
+	g_gl.whiteTexture.state = D3D12_RESOURCE_STATE_COPY_DEST;
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    sd.Texture2D.MipLevels = 1;
-    g_gl.device->CreateShaderResourceView(g_gl.whiteTexture.texture.Get(), &sd, g_gl.whiteTexture.srvCpu);
+	D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+	sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	sd.Texture2D.MipLevels = 1;
+	g_gl.device->CreateShaderResourceView(g_gl.whiteTexture.texture.Get(), &sd, g_gl.whiteTexture.srvCpu);
 
-    // Upload 1x1 white using a one-time command list.
-    QD3D12_CHECK(g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc->Reset());
-    QD3D12_CHECK(g_gl.cmdList->Reset(g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc.Get(), nullptr));
+	// Upload 1x1 white using a one-time command list.
+	QD3D12_CHECK(g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc->Reset());
+	QD3D12_CHECK(g_gl.cmdList->Reset(g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc.Get(), nullptr));
 
-    const UINT64 uploadPitch = 256;
-    const UINT64 uploadSize = uploadPitch;
-    UploadAlloc alloc = QD3D12_AllocUpload((UINT)uploadSize, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
-    memset(alloc.cpu, 0, uploadSize);
-    ((uint8_t*)alloc.cpu)[0] = 255;
-    ((uint8_t*)alloc.cpu)[1] = 255;
-    ((uint8_t*)alloc.cpu)[2] = 255;
-    ((uint8_t*)alloc.cpu)[3] = 255;
+	const UINT64 uploadPitch = 256;
+	const UINT64 uploadSize = uploadPitch;
+	UploadAlloc alloc = QD3D12_AllocUpload((UINT)uploadSize, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+	memset(alloc.cpu, 0, uploadSize);
+	((uint8_t*)alloc.cpu)[0] = 255;
+	((uint8_t*)alloc.cpu)[1] = 255;
+	((uint8_t*)alloc.cpu)[2] = 255;
+	((uint8_t*)alloc.cpu)[3] = 255;
 
-    D3D12_TEXTURE_COPY_LOCATION dst{};
-    dst.pResource = g_gl.whiteTexture.texture.Get();
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.SubresourceIndex = 0;
+	D3D12_TEXTURE_COPY_LOCATION dst{};
+	dst.pResource = g_gl.whiteTexture.texture.Get();
+	dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	dst.SubresourceIndex = 0;
 
-    D3D12_TEXTURE_COPY_LOCATION src{};
-    src.pResource = g_gl.upload.resource[g_currentWindow->frameIndex].Get();
-    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    src.PlacedFootprint.Offset = alloc.offset;
-    src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    src.PlacedFootprint.Footprint.Width = 1;
-    src.PlacedFootprint.Footprint.Height = 1;
-    src.PlacedFootprint.Footprint.Depth = 1;
-    src.PlacedFootprint.Footprint.RowPitch = (UINT)uploadPitch;
+	D3D12_TEXTURE_COPY_LOCATION src{};
+	src.pResource = g_currentWindow->upload.resource[g_currentWindow->frameIndex].Get();
+	src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	src.PlacedFootprint.Offset = alloc.offset;
+	src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	src.PlacedFootprint.Footprint.Width = 1;
+	src.PlacedFootprint.Footprint.Height = 1;
+	src.PlacedFootprint.Footprint.Depth = 1;
+	src.PlacedFootprint.Footprint.RowPitch = (UINT)uploadPitch;
 
-    g_gl.cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+	g_gl.cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = g_gl.whiteTexture.texture.Get();
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    g_gl.cmdList->ResourceBarrier(1, &b);
-    g_gl.whiteTexture.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	D3D12_RESOURCE_BARRIER b{};
+	b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	b.Transition.pResource = g_gl.whiteTexture.texture.Get();
+	b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	g_gl.cmdList->ResourceBarrier(1, &b);
+	g_gl.whiteTexture.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-    QD3D12_CHECK(g_gl.cmdList->Close());
-    ID3D12CommandList* lists[] = { g_gl.cmdList.Get() };
-    g_gl.queue->ExecuteCommandLists(1, lists);
-    QD3D12_WaitForGPU();
+	QD3D12_CHECK(g_gl.cmdList->Close());
+	ID3D12CommandList* lists[] = { g_gl.cmdList.Get() };
+	g_gl.queue->ExecuteCommandLists(1, lists);
+	QD3D12_WaitForGPU();
 
-    g_gl.whiteTexture.gpuValid = true;
-    QD3D12_ResetUploadRing();
+	g_gl.whiteTexture.gpuValid = true;
+	QD3D12_ResetUploadRing();
 }
 
 static void QD3D12_UpdateViewportState()
 {
-    QD3D12Window& w = *g_currentWindow;
-    w.viewport.TopLeftX = (float)g_gl.viewportX;
-    w.viewport.TopLeftY = (float)(g_currentWindow->height - (g_gl.viewportY + g_gl.viewportH));
-    w.viewport.Width = (float)g_gl.viewportW;
-    w.viewport.Height = (float)g_gl.viewportH;
-    w.viewport.MinDepth = (float)ClampValue<GLclampd>(g_gl.depthRangeNear, 0.0, 1.0);
-    w.viewport.MaxDepth = (float)ClampValue<GLclampd>(g_gl.depthRangeFar, 0.0, 1.0);
+	QD3D12Window& w = *g_currentWindow;
+	w.viewport.TopLeftX = (float)g_gl.viewportX;
+	w.viewport.TopLeftY = (float)(g_currentWindow->height - (g_gl.viewportY + g_gl.viewportH));
+	w.viewport.Width = (float)g_gl.viewportW;
+	w.viewport.Height = (float)g_gl.viewportH;
+	w.viewport.MinDepth = (float)ClampValue<GLclampd>(g_gl.depthRangeNear, 0.0, 1.0);
+	w.viewport.MaxDepth = (float)ClampValue<GLclampd>(g_gl.depthRangeFar, 0.0, 1.0);
 
-    w.scissor.left = g_gl.viewportX;
-    w.scissor.top = g_currentWindow->height - (g_gl.viewportY + g_gl.viewportH);
-    w.scissor.right = g_gl.viewportX + g_gl.viewportW;
-    w.scissor.bottom = g_currentWindow->height - g_gl.viewportY;
+	w.scissor.left = g_gl.viewportX;
+	w.scissor.top = g_currentWindow->height - (g_gl.viewportY + g_gl.viewportH);
+	w.scissor.right = g_gl.viewportX + g_gl.viewportW;
+	w.scissor.bottom = g_currentWindow->height - g_gl.viewportY;
 }
 
 static void QD3D12_CreateSurfaceFrameResources(QD3D12Window& surf)
@@ -2312,64 +2347,66 @@ static void QD3D12_CreateSurfaceFrameResources(QD3D12Window& surf)
 	}
 }
 
-bool QD3D12_InitForQuakeWindow(struct QD3D12Window *window, HWND hwnd, int width, int height, bool fastPath)
+bool QD3D12_InitForQuakeWindow(struct QD3D12Window* window, HWND hwnd, int width, int height, bool fastPath)
 {
-    window->hwnd = hwnd;
-    window->width = (UINT)width;
-    window->height = (UINT)height;
-    g_gl.viewportW = width;
-    g_gl.viewportH = height;
+	window->hwnd = hwnd;
+	window->width = (UINT)width;
+	window->height = (UINT)height;
+	g_gl.viewportW = width;
+	g_gl.viewportH = height;
 
-    g_currentWindow = window;
+	g_currentWindow = window;
 
-    if (!fastPath)
-    {
-        QD3D12_InitFrameVertexArena();
-        QD3D12_CreateDevice();
-    }
-    QD3D12_CreateSurfaceFrameResources(*window);
-    QD3D12_CreateSwapChainForWindow(*window);
+	if (!fastPath)
+	{
+		QD3D12_InitFrameVertexArena();
+		QD3D12_CreateDevice();
+	}
+	QD3D12_CreateSurfaceFrameResources(*window);
+	QD3D12_CreateSwapChainForWindow(*window);
 
-    // SRV heap must exist before any code that allocates SRV indices/handles.
-    if (!fastPath)
-    {
-        QD3D12_CreateSrvHeap();
-    }
+	// SRV heap must exist before any code that allocates SRV indices/handles.
+	if (!fastPath)
+	{
+		QD3D12_CreateSrvHeap();
+	}
 
-    QD3D12_CreateRTVsForWindow(*window);
-    QD3D12_CreateDSVForWindow(*window);
+	QD3D12_CreateRTVsForWindow(*window);
+	QD3D12_CreateDSVForWindow(*window);
 
-    if (!fastPath)
-    {
-        QD3D12_CreateCommandObjects();
-        QD3D12_CreateUploadRing();
-        QD3D12_CompileShaders();
-        QD3D12_CreateRootSignature();
-        QD3D12_CreatePSOs();
-        QD3D12_UpdateViewportState();
-        QD3D12_CreateWhiteTexture();
-        QD3D12_CreateOcclusionQueryObjects();
-    }
+	if (!fastPath)
+	{
+		QD3D12_CreateCommandObjects();
+	}
 
-    QD3D12_Log("QD3D12 initialized: %ux%u", window->width, window->height);
-    return true;
+	QD3D12_CreateUploadRingForWindow(*window);
+
+	if (!fastPath)
+	{
+		QD3D12_CompileShaders();
+		QD3D12_CreateRootSignature();
+		QD3D12_CreatePSOs();
+		QD3D12_UpdateViewportState();
+		QD3D12_CreateWhiteTexture();
+		QD3D12_CreateOcclusionQueryObjects();
+	}
+
+	QD3D12_Log("QD3D12 initialized: %ux%u", window->width, window->height);
+	return true;
 }
 
 void QD3D12_ShutdownForQuake()
 {
-    QD3D12_ShutdownFrameVertexArena();
-    QD3D12_WaitForGPU();
+	if (g_gl.frameOpen || !g_gl.queuedBatches.empty())
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
 
-    for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-    {
-        if (g_gl.upload.resource[i])
-            g_gl.upload.resource[i]->Unmap(0, nullptr);
-    }
+	QD3D12_ShutdownFrameVertexArena();
+	QD3D12_WaitForGPU();
 
-    if (g_gl.fenceEvent)
-        CloseHandle(g_gl.fenceEvent);
+	if (g_gl.fenceEvent)
+		CloseHandle(g_gl.fenceEvent);
 
-    g_gl = GLState{};
+	g_gl = GLState{};
 }
 
 // ============================================================
@@ -2378,105 +2415,167 @@ void QD3D12_ShutdownForQuake()
 
 static D3D12_CPU_DESCRIPTOR_HANDLE CurrentRTV()
 {
-    QD3D12Window& w = *g_currentWindow;
-    D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += SIZE_T(w.frameIndex) * SIZE_T(w.rtvStride);
-    return h;
+	QD3D12Window& w = *g_currentWindow;
+	D3D12_CPU_DESCRIPTOR_HANDLE h = w.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	h.ptr += SIZE_T(w.frameIndex) * SIZE_T(w.rtvStride);
+	return h;
 }
 
 void QD3D12_BeginFrame()
 {
-    QD3D12Window& w = *g_currentWindow;
+	QD3D12Window& w = *g_currentWindow;
 
-    g_gl.queuedBatches.clear();
-    w.frameIndex = w.swapChain->GetCurrentBackBufferIndex();
-    QD3D12_WaitForFrame(w.frameIndex);
-    QD3D12_ResetUploadRing();
+	if (g_gl.frameOpen)
+	{
+		if (g_gl.frameOwner == &w)
+			return;
 
-    FrameResources& fr = g_currentWindow->frames[w.frameIndex];
-    QD3D12_CHECK(fr.cmdAlloc->Reset());
-    QD3D12_CHECK(g_gl.cmdList->Reset(fr.cmdAlloc.Get(), nullptr));
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+	}
 
-    if (g_gl.backBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
-    {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = w.backBuffers[w.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.backBufferState[w.frameIndex];
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.backBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
+	w.frameIndex = w.swapChain->GetCurrentBackBufferIndex();
+	QD3D12_WaitForFrame(w.frameIndex);
+	QD3D12_ResetUploadRing();
 
-    if (w.normalBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
-    {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = w.normalBuffers[w.frameIndex].Get();
-        b.Transition.StateBefore = w.normalBufferState[w.frameIndex];
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &b);
-        w.normalBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
+	FrameResources& fr = w.frames[w.frameIndex];
+	QD3D12_CHECK(fr.cmdAlloc->Reset());
+	QD3D12_CHECK(g_gl.cmdList->Reset(fr.cmdAlloc.Get(), nullptr));
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
-    {
-        CurrentRTV(),
-        CurrentNormalRTV(),
-        CurrentPositionRTV()
-    };
+	if (w.backBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+	{
+		D3D12_RESOURCE_BARRIER b{};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Transition.pResource = w.backBuffers[w.frameIndex].Get();
+		b.Transition.StateBefore = w.backBufferState[w.frameIndex];
+		b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &b);
+		w.backBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	}
 
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = w.dsvHeap->GetCPUDescriptorHandleForHeapStart();
-    g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
-    g_gl.cmdList->RSSetViewports(1, &w.viewport);
-    g_gl.cmdList->RSSetScissorRects(1, &w.scissor);
+	if (w.normalBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+	{
+		D3D12_RESOURCE_BARRIER b{};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Transition.pResource = w.normalBuffers[w.frameIndex].Get();
+		b.Transition.StateBefore = w.normalBufferState[w.frameIndex];
+		b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &b);
+		w.normalBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	}
 
-    const float normalClear[4] = { 0.5f, 0.5f, 1.0f, 1.0f };
-    g_gl.cmdList->ClearRenderTargetView(CurrentNormalRTV(), normalClear, 0, nullptr);
+	D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
+	{
+		CurrentRTV(),
+		CurrentNormalRTV(),
+		CurrentPositionRTV()
+	};
+
+	D3D12_CPU_DESCRIPTOR_HANDLE dsv = w.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+	g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
+	g_gl.cmdList->RSSetViewports(1, &w.viewport);
+	g_gl.cmdList->RSSetScissorRects(1, &w.scissor);
+
+	const float normalClear[4] = { 0.5f, 0.5f, 1.0f, 1.0f };
+	g_gl.cmdList->ClearRenderTargetView(CurrentNormalRTV(), normalClear, 0, nullptr);
+
+	g_gl.frameOpen = true;
+	g_gl.frameOwner = &w;
 }
 
 void QD3D12_EndFrame()
 {
-    QD3D12Window& w = *g_currentWindow;
+	QD3D12Window& w = *g_currentWindow;
 
-    QD3D12_FlushQueuedBatches();
+	if (g_gl.frameOpen && g_gl.frameOwner != &w)
+	{
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+	}
 
-    if (g_gl.backBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_PRESENT)
-    {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = w.backBuffers[w.frameIndex].Get();
-        b.Transition.StateBefore = g_gl.backBufferState[w.frameIndex];
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.backBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_PRESENT;
-    }
+	if (!g_gl.frameOpen)
+	{
+		if (g_gl.queuedBatches.empty())
+			return;
 
-    QD3D12_CHECK(g_gl.cmdList->Close());
-    ID3D12CommandList* lists[] = { g_gl.cmdList.Get() };
-    g_gl.queue->ExecuteCommandLists(1, lists);
+		QD3D12_BeginFrame();
+	}
+
+	QD3D12_FlushQueuedBatches();
+
+	if (w.backBufferState[w.frameIndex] != D3D12_RESOURCE_STATE_PRESENT)
+	{
+		D3D12_RESOURCE_BARRIER b{};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Transition.pResource = w.backBuffers[w.frameIndex].Get();
+		b.Transition.StateBefore = w.backBufferState[w.frameIndex];
+		b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &b);
+		w.backBufferState[w.frameIndex] = D3D12_RESOURCE_STATE_PRESENT;
+	}
+
+	QD3D12_CHECK(g_gl.cmdList->Close());
+	ID3D12CommandList* lists[] = { g_gl.cmdList.Get() };
+	g_gl.queue->ExecuteCommandLists(1, lists);
+
+	g_gl.frameOpen = false;
+	g_gl.frameOwner = nullptr;
 }
 
 void QD3D12_Present()
 {
-    QD3D12Window& w = *g_currentWindow;
-    QD3D12_CHECK(w.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
+	QD3D12Window& w = *g_currentWindow;
+	QD3D12_CHECK(w.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
 
-    FrameResources& fr = g_currentWindow->frames[w.frameIndex];
-    const UINT64 signalValue = g_gl.nextFenceValue++;
-    QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
-    fr.fenceValue = signalValue;
+	FrameResources& fr = w.frames[w.frameIndex];
+	const UINT64 signalValue = g_gl.nextFenceValue++;
+	QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
+	fr.fenceValue = signalValue;
+}
+
+static void QD3D12_SubmitOpenFrameNoPresentAndWait()
+{
+	if (!g_gl.device || !g_gl.queue || !g_gl.cmdList)
+		return;
+
+	QD3D12Window* owner = g_gl.frameOwner ? g_gl.frameOwner : g_currentWindow;
+	if (!owner)
+		return;
+
+	QD3D12Window* savedWindow = g_currentWindow;
+	g_currentWindow = owner;
+
+	if (g_gl.frameOpen || !g_gl.queuedBatches.empty())
+	{
+		QD3D12_EndFrame();
+
+		FrameResources& fr = owner->frames[owner->frameIndex];
+		const UINT64 signalValue = g_gl.nextFenceValue++;
+		QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
+		fr.fenceValue = signalValue;
+
+		if (g_gl.fence->GetCompletedValue() < signalValue)
+		{
+			QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(signalValue, g_gl.fenceEvent));
+			WaitForSingleObject(g_gl.fenceEvent, INFINITE);
+		}
+
+		QD3D12_CollectRetiredResources();
+		QD3D12_ResetFrameVertexArena();
+	}
+
+	g_currentWindow = savedWindow;
 }
 
 void QD3D12_SwapBuffers(HDC hdc) {
-    QD3D12_EndFrame();
-    QD3D12_Present();
-    QD3D12_BeginFrame();
-    QD3D12_CollectRetiredResources();
-    QD3D12_ResetFrameVertexArena();
+	if (g_gl.frameOpen && g_gl.frameOwner && g_gl.frameOwner != g_currentWindow)
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+
+	QD3D12_EndFrame();
+	QD3D12_Present();
+	QD3D12_CollectRetiredResources();
+	QD3D12_ResetFrameVertexArena();
 }
 
 // ============================================================
@@ -2485,663 +2584,663 @@ void QD3D12_SwapBuffers(HDC hdc) {
 
 static void EnsureTextureResource(TextureResource& tex)
 {
-    const DXGI_FORMAT dxgiFormat = tex.dxgiFormat;
+	const DXGI_FORMAT dxgiFormat = tex.dxgiFormat;
 
-    bool needsRecreate = false;
+	bool needsRecreate = false;
 
-    if (!tex.texture)
-    {
-        needsRecreate = true;
-    }
-    else
-    {
-        D3D12_RESOURCE_DESC desc = tex.texture->GetDesc();
-        if ((int)desc.Width != tex.width ||
-            (int)desc.Height != tex.height ||
-            desc.Format != dxgiFormat)
-        {
-            QD3D12_RetireResource(tex.texture);
-            tex.gpuValid = false;
-            tex.state = D3D12_RESOURCE_STATE_COPY_DEST;
-            needsRecreate = true;
-        }
-    }
+	if (!tex.texture)
+	{
+		needsRecreate = true;
+	}
+	else
+	{
+		D3D12_RESOURCE_DESC desc = tex.texture->GetDesc();
+		if ((int)desc.Width != tex.width ||
+			(int)desc.Height != tex.height ||
+			desc.Format != dxgiFormat)
+		{
+			QD3D12_RetireResource(tex.texture);
+			tex.gpuValid = false;
+			tex.state = D3D12_RESOURCE_STATE_COPY_DEST;
+			needsRecreate = true;
+		}
+	}
 
-    if (tex.width <= 0 || tex.height <= 0)
-        return;
+	if (tex.width <= 0 || tex.height <= 0)
+		return;
 
-    if (!needsRecreate)
-        return;
+	if (!needsRecreate)
+		return;
 
-    D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    rd.Width = (UINT)tex.width;
-    rd.Height = (UINT)tex.height;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.Format = dxgiFormat;
-    rd.SampleDesc.Count = 1;
-    rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	D3D12_RESOURCE_DESC rd{};
+	rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	rd.Width = (UINT)tex.width;
+	rd.Height = (UINT)tex.height;
+	rd.DepthOrArraySize = 1;
+	rd.MipLevels = 1;
+	rd.Format = dxgiFormat;
+	rd.SampleDesc.Count = 1;
+	rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
-    D3D12_HEAP_PROPERTIES hp{};
-    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_HEAP_PROPERTIES hp{};
+	hp.Type = D3D12_HEAP_TYPE_DEFAULT;
 
-    QD3D12_CHECK(g_gl.device->CreateCommittedResource(
-        &hp,
-        D3D12_HEAP_FLAG_NONE,
-        &rd,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(&tex.texture)));
+	QD3D12_CHECK(g_gl.device->CreateCommittedResource(
+		&hp,
+		D3D12_HEAP_FLAG_NONE,
+		&rd,
+		D3D12_RESOURCE_STATE_COPY_DEST,
+		nullptr,
+		IID_PPV_ARGS(&tex.texture)));
 
-    tex.state = D3D12_RESOURCE_STATE_COPY_DEST;
+	tex.state = D3D12_RESOURCE_STATE_COPY_DEST;
 
-    if (tex.srvIndex == UINT_MAX)
-    {
-        tex.srvIndex = g_gl.nextSrvIndex++;
-        tex.srvCpu = QD3D12_SrvCpu(tex.srvIndex);
-        tex.srvGpu = QD3D12_SrvGpu(tex.srvIndex);
-    }
+	if (tex.srvIndex == UINT_MAX)
+	{
+		tex.srvIndex = g_gl.nextSrvIndex++;
+		tex.srvCpu = QD3D12_SrvCpu(tex.srvIndex);
+		tex.srvGpu = QD3D12_SrvGpu(tex.srvIndex);
+	}
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    sd.Format = dxgiFormat;
-    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    sd.Texture2D.MipLevels = 1;
-    g_gl.device->CreateShaderResourceView(tex.texture.Get(), &sd, tex.srvCpu);
+	D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+	sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	sd.Format = dxgiFormat;
+	sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	sd.Texture2D.MipLevels = 1;
+	g_gl.device->CreateShaderResourceView(tex.texture.Get(), &sd, tex.srvCpu);
 
-    tex.gpuValid = false;
+	tex.gpuValid = false;
 }
 
 static TextureResource* QD3D12_EnsureLightingTexture(int width, int height)
 {
-    if (g_lightingTextureId == 0)
-    {
-        g_lightingTextureId = g_gl.nextTextureId++;
+	if (g_lightingTextureId == 0)
+	{
+		g_lightingTextureId = g_gl.nextTextureId++;
 
-        TextureResource tex{};
-        tex.glId = g_lightingTextureId;
-        tex.width = (int)width;
-        tex.height = (int)height;
-        tex.format = GL_RGBA;
-        tex.dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-        tex.minFilter = GL_LINEAR;
-        tex.magFilter = GL_LINEAR;
-        tex.wrapS = GL_CLAMP;
-        tex.wrapT = GL_CLAMP;
+		TextureResource tex{};
+		tex.glId = g_lightingTextureId;
+		tex.width = (int)width;
+		tex.height = (int)height;
+		tex.format = GL_RGBA;
+		tex.dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+		tex.minFilter = GL_LINEAR;
+		tex.magFilter = GL_LINEAR;
+		tex.wrapS = GL_CLAMP;
+		tex.wrapT = GL_CLAMP;
 
-        tex.srvIndex = g_gl.nextSrvIndex++;
-        tex.srvCpu = QD3D12_SrvCpu(tex.srvIndex);
-        tex.srvGpu = QD3D12_SrvGpu(tex.srvIndex);
+		tex.srvIndex = g_gl.nextSrvIndex++;
+		tex.srvCpu = QD3D12_SrvCpu(tex.srvIndex);
+		tex.srvGpu = QD3D12_SrvGpu(tex.srvIndex);
 
-        auto it = g_gl.textures.emplace(g_lightingTextureId, std::move(tex)).first;
-        g_lightingTexture = &it->second;
-    }
+		auto it = g_gl.textures.emplace(g_lightingTextureId, std::move(tex)).first;
+		g_lightingTexture = &it->second;
+	}
 
-    if (!g_lightingTexture)
-    {
-        auto it = g_gl.textures.find(g_lightingTextureId);
-        if (it == g_gl.textures.end())
-            return nullptr;
-        g_lightingTexture = &it->second;
-    }
+	if (!g_lightingTexture)
+	{
+		auto it = g_gl.textures.find(g_lightingTextureId);
+		if (it == g_gl.textures.end())
+			return nullptr;
+		g_lightingTexture = &it->second;
+	}
 
-    const bool needsCreate =
-        !g_lightingTexture->texture ||
-        g_lightingTexture->width != (int)width ||
-        g_lightingTexture->height != (int)height ||
-        ((g_lightingTexture->texture->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0);
+	const bool needsCreate =
+		!g_lightingTexture->texture ||
+		g_lightingTexture->width != (int)width ||
+		g_lightingTexture->height != (int)height ||
+		((g_lightingTexture->texture->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0);
 
-    if (!needsCreate)
-        return g_lightingTexture;
+	if (!needsCreate)
+		return g_lightingTexture;
 
-    if (g_lightingTexture->texture)
-    {
-        QD3D12_RetireResource(g_lightingTexture->texture);
-    }
+	if (g_lightingTexture->texture)
+	{
+		QD3D12_RetireResource(g_lightingTexture->texture);
+	}
 
-    g_lightingTexture->width = (int)width;
-    g_lightingTexture->height = (int)height;
-    g_lightingTexture->sysmem.clear();
+	g_lightingTexture->width = (int)width;
+	g_lightingTexture->height = (int)height;
+	g_lightingTexture->sysmem.clear();
 
-    D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    rd.Alignment = 0;
-    rd.Width = width;
-    rd.Height = height;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    rd.SampleDesc.Count = 1;
-    rd.SampleDesc.Quality = 0;
-    rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	D3D12_RESOURCE_DESC rd{};
+	rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	rd.Alignment = 0;
+	rd.Width = width;
+	rd.Height = height;
+	rd.DepthOrArraySize = 1;
+	rd.MipLevels = 1;
+	rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	rd.SampleDesc.Count = 1;
+	rd.SampleDesc.Quality = 0;
+	rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-    D3D12_HEAP_PROPERTIES hp{};
-    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_HEAP_PROPERTIES hp{};
+	hp.Type = D3D12_HEAP_TYPE_DEFAULT;
 
-    QD3D12_CHECK(g_gl.device->CreateCommittedResource(
-        &hp,
-        D3D12_HEAP_FLAG_NONE,
-        &rd,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        nullptr,
-        IID_PPV_ARGS(&g_lightingTexture->texture)));
+	QD3D12_CHECK(g_gl.device->CreateCommittedResource(
+		&hp,
+		D3D12_HEAP_FLAG_NONE,
+		&rd,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		nullptr,
+		IID_PPV_ARGS(&g_lightingTexture->texture)));
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srv.Format = rd.Format;
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Texture2D.MipLevels = 1;
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srv.Format = rd.Format;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Texture2D.MipLevels = 1;
 
-    g_gl.device->CreateShaderResourceView(
-        g_lightingTexture->texture.Get(),
-        &srv,
-        g_lightingTexture->srvCpu);
+	g_gl.device->CreateShaderResourceView(
+		g_lightingTexture->texture.Get(),
+		&srv,
+		g_lightingTexture->srvCpu);
 
-    g_lightingTexture->gpuValid = true;
-    g_lightingTexture->state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    g_lightingTextureState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	g_lightingTexture->gpuValid = true;
+	g_lightingTexture->state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	g_lightingTextureState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
-    return g_lightingTexture;
+	return g_lightingTexture;
 }
 
 static void ConvertToRGBA8(const TextureResource& tex, std::vector<uint8_t>& outRGBA)
 {
-    const int pixelCount = tex.width * tex.height;
-    outRGBA.resize((size_t)pixelCount * 4);
+	const int pixelCount = tex.width * tex.height;
+	outRGBA.resize((size_t)pixelCount * 4);
 
-    if (tex.sysmem.empty())
-    {
-        std::fill(outRGBA.begin(), outRGBA.end(), 255);
-        return;
-    }
+	if (tex.sysmem.empty())
+	{
+		std::fill(outRGBA.begin(), outRGBA.end(), 255);
+		return;
+	}
 
-    const uint8_t* src = tex.sysmem.data();
-    uint8_t* dst = outRGBA.data();
+	const uint8_t* src = tex.sysmem.data();
+	uint8_t* dst = outRGBA.data();
 
-    if (tex.format == GL_RGBA)
-    {
-        memcpy(dst, src, outRGBA.size());
-        return;
-    }
+	if (tex.format == GL_RGBA)
+	{
+		memcpy(dst, src, outRGBA.size());
+		return;
+	}
 
-    if (tex.format == GL_RGB)
-    {
+	if (tex.format == GL_RGB)
+	{
 #if defined(__SSSE3__) || (defined(_M_IX86_FP) || defined(_M_X64))
-        // SSSE3 path: process 4 RGB pixels (12 bytes) -> 16 RGBA bytes at a time.
-        // Output:
-        // [r0 g0 b0 255 r1 g1 b1 255 r2 g2 b2 255 r3 g3 b3 255]
-        //
-        // We load 16 bytes even though we only logically consume 12. That means
-        // the source buffer must have at least 4 readable bytes past the final
-        // 12-byte chunk if you try to run this on the very last block. To keep it
-        // safe, only use SIMD while at least 16 source bytes remain.
-        //
-        // So the SIMD loop runs while (i + 4) <= pixelCount AND enough source bytes
-        // remain for a safe 16-byte load.
-        const __m128i alphaMask = _mm_set1_epi32(0xFF000000);
+		// SSSE3 path: process 4 RGB pixels (12 bytes) -> 16 RGBA bytes at a time.
+		// Output:
+		// [r0 g0 b0 255 r1 g1 b1 255 r2 g2 b2 255 r3 g3 b3 255]
+		//
+		// We load 16 bytes even though we only logically consume 12. That means
+		// the source buffer must have at least 4 readable bytes past the final
+		// 12-byte chunk if you try to run this on the very last block. To keep it
+		// safe, only use SIMD while at least 16 source bytes remain.
+		//
+		// So the SIMD loop runs while (i + 4) <= pixelCount AND enough source bytes
+		// remain for a safe 16-byte load.
+		const __m128i alphaMask = _mm_set1_epi32(0xFF000000);
 
-        int i = 0;
-        int srcByteOffset = 0;
-        const int srcBytes = pixelCount * 3;
+		int i = 0;
+		int srcByteOffset = 0;
+		const int srcBytes = pixelCount * 3;
 
-        // Need 16 readable bytes from src + srcByteOffset
-        while (i + 4 <= pixelCount && srcByteOffset + 16 <= srcBytes)
-        {
-            __m128i in = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + srcByteOffset));
+		// Need 16 readable bytes from src + srcByteOffset
+		while (i + 4 <= pixelCount && srcByteOffset + 16 <= srcBytes)
+		{
+			__m128i in = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + srcByteOffset));
 
-            // Pull RGB triples into 32-bit lanes:
-            // lane0 = [r0 g0 b0 x]
-            // lane1 = [r1 g1 b1 x]
-            // lane2 = [r2 g2 b2 x]
-            // lane3 = [r3 g3 b3 x]
-            const __m128i shuffled = _mm_shuffle_epi8(
-                in,
-                _mm_setr_epi8(
-                    0, 1, 2, char(0x80),
-                    3, 4, 5, char(0x80),
-                    6, 7, 8, char(0x80),
-                    9, 10, 11, char(0x80)
-                )
-            );
+			// Pull RGB triples into 32-bit lanes:
+			// lane0 = [r0 g0 b0 x]
+			// lane1 = [r1 g1 b1 x]
+			// lane2 = [r2 g2 b2 x]
+			// lane3 = [r3 g3 b3 x]
+			const __m128i shuffled = _mm_shuffle_epi8(
+				in,
+				_mm_setr_epi8(
+					0, 1, 2, char(0x80),
+					3, 4, 5, char(0x80),
+					6, 7, 8, char(0x80),
+					9, 10, 11, char(0x80)
+				)
+			);
 
-            const __m128i out = _mm_or_si128(shuffled, alphaMask);
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i * 4), out);
+			const __m128i out = _mm_or_si128(shuffled, alphaMask);
+			_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i * 4), out);
 
-            i += 4;
-            srcByteOffset += 12;
-        }
+			i += 4;
+			srcByteOffset += 12;
+		}
 
-        for (; i < pixelCount; ++i)
-        {
-            dst[i * 4 + 0] = src[i * 3 + 0];
-            dst[i * 4 + 1] = src[i * 3 + 1];
-            dst[i * 4 + 2] = src[i * 3 + 2];
-            dst[i * 4 + 3] = 255;
-        }
+		for (; i < pixelCount; ++i)
+		{
+			dst[i * 4 + 0] = src[i * 3 + 0];
+			dst[i * 4 + 1] = src[i * 3 + 1];
+			dst[i * 4 + 2] = src[i * 3 + 2];
+			dst[i * 4 + 3] = 255;
+		}
 #else
-        for (int i = 0; i < pixelCount; ++i)
-        {
-            dst[i * 4 + 0] = src[i * 3 + 0];
-            dst[i * 4 + 1] = src[i * 3 + 1];
-            dst[i * 4 + 2] = src[i * 3 + 2];
-            dst[i * 4 + 3] = 255;
-        }
+		for (int i = 0; i < pixelCount; ++i)
+		{
+			dst[i * 4 + 0] = src[i * 3 + 0];
+			dst[i * 4 + 1] = src[i * 3 + 1];
+			dst[i * 4 + 2] = src[i * 3 + 2];
+			dst[i * 4 + 3] = 255;
+		}
 #endif
-        return;
-    }
+		return;
+	}
 
-    if (tex.format == GL_ALPHA)
-    {
+	if (tex.format == GL_ALPHA)
+	{
 #if defined(__AVX2__) || defined(_M_X64)
-        int i = 0;
+		int i = 0;
 
-        // 32 pixels at a time
+		// 32 pixels at a time
 #if defined(__AVX2__)
-        const __m256i white = _mm256_set1_epi32(0x00FFFFFF);
+		const __m256i white = _mm256_set1_epi32(0x00FFFFFF);
 
-        for (; i + 32 <= pixelCount; i += 32)
-        {
-            __m256i a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+		for (; i + 32 <= pixelCount; i += 32)
+		{
+			__m256i a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
 
-            __m256i lo16 = _mm256_unpacklo_epi8(_mm256_setzero_si256(), a);
-            __m256i hi16 = _mm256_unpackhi_epi8(_mm256_setzero_si256(), a);
+			__m256i lo16 = _mm256_unpacklo_epi8(_mm256_setzero_si256(), a);
+			__m256i hi16 = _mm256_unpackhi_epi8(_mm256_setzero_si256(), a);
 
-            __m256i p0 = _mm256_unpacklo_epi16(white, lo16);
-            __m256i p1 = _mm256_unpackhi_epi16(white, lo16);
-            __m256i p2 = _mm256_unpacklo_epi16(white, hi16);
-            __m256i p3 = _mm256_unpackhi_epi16(white, hi16);
+			__m256i p0 = _mm256_unpacklo_epi16(white, lo16);
+			__m256i p1 = _mm256_unpackhi_epi16(white, lo16);
+			__m256i p2 = _mm256_unpacklo_epi16(white, hi16);
+			__m256i p3 = _mm256_unpackhi_epi16(white, hi16);
 
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 0) * 4), p0);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 8) * 4), p1);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 16) * 4), p2);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 24) * 4), p3);
-        }
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 0) * 4), p0);
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 8) * 4), p1);
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 16) * 4), p2);
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 24) * 4), p3);
+		}
 #endif
 
-        for (; i < pixelCount; ++i)
-        {
-            dst[i * 4 + 0] = 255;
-            dst[i * 4 + 1] = 255;
-            dst[i * 4 + 2] = 255;
-            dst[i * 4 + 3] = src[i];
-        }
+		for (; i < pixelCount; ++i)
+		{
+			dst[i * 4 + 0] = 255;
+			dst[i * 4 + 1] = 255;
+			dst[i * 4 + 2] = 255;
+			dst[i * 4 + 3] = src[i];
+		}
 #else
-        for (int i = 0; i < pixelCount; ++i)
-        {
-            dst[i * 4 + 0] = 255;
-            dst[i * 4 + 1] = 255;
-            dst[i * 4 + 2] = 255;
-            dst[i * 4 + 3] = src[i];
-        }
+		for (int i = 0; i < pixelCount; ++i)
+		{
+			dst[i * 4 + 0] = 255;
+			dst[i * 4 + 1] = 255;
+			dst[i * 4 + 2] = 255;
+			dst[i * 4 + 3] = src[i];
+		}
 #endif
-        return;
-    }
+		return;
+	}
 
-    if (tex.format == GL_LUMINANCE || tex.format == GL_INTENSITY)
-    {
-        const bool intensity = (tex.format == GL_INTENSITY);
+	if (tex.format == GL_LUMINANCE || tex.format == GL_INTENSITY)
+	{
+		const bool intensity = (tex.format == GL_INTENSITY);
 
 #if defined(__AVX2__) || defined(_M_X64)
-        int i = 0;
+		int i = 0;
 
 #if defined(__AVX2__)
-        for (; i + 32 <= pixelCount; i += 32)
-        {
-            __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+		for (; i + 32 <= pixelCount; i += 32)
+		{
+			__m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
 
-            __m256i lo16 = _mm256_unpacklo_epi8(v, v);
-            __m256i hi16 = _mm256_unpackhi_epi8(v, v);
+			__m256i lo16 = _mm256_unpacklo_epi8(v, v);
+			__m256i hi16 = _mm256_unpackhi_epi8(v, v);
 
-            __m256i p0 = _mm256_unpacklo_epi16(lo16, lo16);
-            __m256i p1 = _mm256_unpackhi_epi16(lo16, lo16);
-            __m256i p2 = _mm256_unpacklo_epi16(hi16, hi16);
-            __m256i p3 = _mm256_unpackhi_epi16(hi16, hi16);
+			__m256i p0 = _mm256_unpacklo_epi16(lo16, lo16);
+			__m256i p1 = _mm256_unpackhi_epi16(lo16, lo16);
+			__m256i p2 = _mm256_unpacklo_epi16(hi16, hi16);
+			__m256i p3 = _mm256_unpackhi_epi16(hi16, hi16);
 
-            if (!intensity)
-            {
-                // Force alpha to 255 for luminance
-                const __m256i alphaMask = _mm256_set1_epi32(0xFF000000);
-                const __m256i rgbMask = _mm256_set1_epi32(0x00FFFFFF);
+			if (!intensity)
+			{
+				// Force alpha to 255 for luminance
+				const __m256i alphaMask = _mm256_set1_epi32(0xFF000000);
+				const __m256i rgbMask = _mm256_set1_epi32(0x00FFFFFF);
 
-                p0 = _mm256_or_si256(_mm256_and_si256(p0, rgbMask), alphaMask);
-                p1 = _mm256_or_si256(_mm256_and_si256(p1, rgbMask), alphaMask);
-                p2 = _mm256_or_si256(_mm256_and_si256(p2, rgbMask), alphaMask);
-                p3 = _mm256_or_si256(_mm256_and_si256(p3, rgbMask), alphaMask);
-            }
+				p0 = _mm256_or_si256(_mm256_and_si256(p0, rgbMask), alphaMask);
+				p1 = _mm256_or_si256(_mm256_and_si256(p1, rgbMask), alphaMask);
+				p2 = _mm256_or_si256(_mm256_and_si256(p2, rgbMask), alphaMask);
+				p3 = _mm256_or_si256(_mm256_and_si256(p3, rgbMask), alphaMask);
+			}
 
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 0) * 4), p0);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 8) * 4), p1);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 16) * 4), p2);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 24) * 4), p3);
-        }
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 0) * 4), p0);
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 8) * 4), p1);
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 16) * 4), p2);
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (i + 24) * 4), p3);
+		}
 #endif
 
-        for (; i < pixelCount; ++i)
-        {
-            const uint8_t v = src[i];
-            dst[i * 4 + 0] = v;
-            dst[i * 4 + 1] = v;
-            dst[i * 4 + 2] = v;
-            dst[i * 4 + 3] = intensity ? v : 255;
-        }
+		for (; i < pixelCount; ++i)
+		{
+			const uint8_t v = src[i];
+			dst[i * 4 + 0] = v;
+			dst[i * 4 + 1] = v;
+			dst[i * 4 + 2] = v;
+			dst[i * 4 + 3] = intensity ? v : 255;
+		}
 #else
-        for (int i = 0; i < pixelCount; ++i)
-        {
-            const uint8_t v = src[i];
-            dst[i * 4 + 0] = v;
-            dst[i * 4 + 1] = v;
-            dst[i * 4 + 2] = v;
-            dst[i * 4 + 3] = intensity ? v : 255;
-        }
+		for (int i = 0; i < pixelCount; ++i)
+		{
+			const uint8_t v = src[i];
+			dst[i * 4 + 0] = v;
+			dst[i * 4 + 1] = v;
+			dst[i * 4 + 2] = v;
+			dst[i * 4 + 3] = intensity ? v : 255;
+		}
 #endif
-        return;
-    }
+		return;
+	}
 
-    std::fill(outRGBA.begin(), outRGBA.end(), 255);
+	std::fill(outRGBA.begin(), outRGBA.end(), 255);
 }
 static void UploadTexture(TextureResource& tex)
 {
-    if (!tex.texture)
-        return;
+	if (!tex.texture)
+		return;
 
-    const UINT srcRowBytes = (UINT)(tex.width * 4);
-    const UINT rowPitch = (srcRowBytes + 255u) & ~255u;
-    const UINT uploadSize = rowPitch * (UINT)tex.height;
-    UploadAlloc alloc = QD3D12_AllocUpload(uploadSize, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+	const UINT srcRowBytes = (UINT)(tex.width * 4);
+	const UINT rowPitch = (srcRowBytes + 255u) & ~255u;
+	const UINT uploadSize = rowPitch * (UINT)tex.height;
+	UploadAlloc alloc = QD3D12_AllocUpload(uploadSize, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
 
-    uint8_t* dstBase = (uint8_t*)alloc.cpu;
+	uint8_t* dstBase = (uint8_t*)alloc.cpu;
 
-    if (tex.sysmem.empty())
-    {
-        for (int y = 0; y < tex.height; ++y)
-        {
-            uint8_t* dst = dstBase + (size_t)y * rowPitch;
-            memset(dst, 255, tex.width * 4);
-        }
-    }
-    else if (tex.format == GL_RGBA)
-    {
-        const uint8_t* srcBase = tex.sysmem.data();
-        for (int y = 0; y < tex.height; ++y)
-        {
-            memcpy(dstBase + (size_t)y * rowPitch, srcBase + (size_t)y * tex.width * 4, tex.width * 4);
-        }
-    }
-    else if (tex.format == GL_RGB)
-    {
-        const uint8_t* srcBase = tex.sysmem.data();
+	if (tex.sysmem.empty())
+	{
+		for (int y = 0; y < tex.height; ++y)
+		{
+			uint8_t* dst = dstBase + (size_t)y * rowPitch;
+			memset(dst, 255, tex.width * 4);
+		}
+	}
+	else if (tex.format == GL_RGBA)
+	{
+		const uint8_t* srcBase = tex.sysmem.data();
+		for (int y = 0; y < tex.height; ++y)
+		{
+			memcpy(dstBase + (size_t)y * rowPitch, srcBase + (size_t)y * tex.width * 4, tex.width * 4);
+		}
+	}
+	else if (tex.format == GL_RGB)
+	{
+		const uint8_t* srcBase = tex.sysmem.data();
 
-        for (int y = 0; y < tex.height; ++y)
-        {
-            const uint8_t* src = srcBase + (size_t)y * tex.width * 3;
-            uint8_t* dst = dstBase + (size_t)y * rowPitch;
+		for (int y = 0; y < tex.height; ++y)
+		{
+			const uint8_t* src = srcBase + (size_t)y * tex.width * 3;
+			uint8_t* dst = dstBase + (size_t)y * rowPitch;
 
 #if defined(__SSSE3__) || defined(_M_X64)
-            const int count = tex.width;
-            int x = 0;
-            int srcByteOffset = 0;
-            const int srcBytes = count * 3;
+			const int count = tex.width;
+			int x = 0;
+			int srcByteOffset = 0;
+			const int srcBytes = count * 3;
 
-            const __m128i alphaMask = _mm_set1_epi32(0xFF000000);
+			const __m128i alphaMask = _mm_set1_epi32(0xFF000000);
 
-            while (x + 4 <= count && srcByteOffset + 16 <= srcBytes)
-            {
-                __m128i in = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + srcByteOffset));
+			while (x + 4 <= count && srcByteOffset + 16 <= srcBytes)
+			{
+				__m128i in = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + srcByteOffset));
 
-                __m128i shuffled = _mm_shuffle_epi8(
-                    in,
-                    _mm_setr_epi8(
-                        0, 1, 2, char(0x80),
-                        3, 4, 5, char(0x80),
-                        6, 7, 8, char(0x80),
-                        9, 10, 11, char(0x80)
-                    )
-                );
+				__m128i shuffled = _mm_shuffle_epi8(
+					in,
+					_mm_setr_epi8(
+						0, 1, 2, char(0x80),
+						3, 4, 5, char(0x80),
+						6, 7, 8, char(0x80),
+						9, 10, 11, char(0x80)
+					)
+				);
 
-                __m128i out = _mm_or_si128(shuffled, alphaMask);
-                _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + x * 4), out);
+				__m128i out = _mm_or_si128(shuffled, alphaMask);
+				_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + x * 4), out);
 
-                x += 4;
-                srcByteOffset += 12;
-            }
+				x += 4;
+				srcByteOffset += 12;
+			}
 
-            for (; x < count; ++x)
-            {
-                dst[x * 4 + 0] = src[x * 3 + 0];
-                dst[x * 4 + 1] = src[x * 3 + 1];
-                dst[x * 4 + 2] = src[x * 3 + 2];
-                dst[x * 4 + 3] = 255;
-            }
+			for (; x < count; ++x)
+			{
+				dst[x * 4 + 0] = src[x * 3 + 0];
+				dst[x * 4 + 1] = src[x * 3 + 1];
+				dst[x * 4 + 2] = src[x * 3 + 2];
+				dst[x * 4 + 3] = 255;
+			}
 #else
-            for (int x = 0; x < tex.width; ++x)
-            {
-                dst[x * 4 + 0] = src[x * 3 + 0];
-                dst[x * 4 + 1] = src[x * 3 + 1];
-                dst[x * 4 + 2] = src[x * 3 + 2];
-                dst[x * 4 + 3] = 255;
-            }
+			for (int x = 0; x < tex.width; ++x)
+			{
+				dst[x * 4 + 0] = src[x * 3 + 0];
+				dst[x * 4 + 1] = src[x * 3 + 1];
+				dst[x * 4 + 2] = src[x * 3 + 2];
+				dst[x * 4 + 3] = 255;
+			}
 #endif
-        }
-    }
-    else if (tex.format == GL_ALPHA)
-    {
-        const uint8_t* srcBase = tex.sysmem.data();
+		}
+	}
+	else if (tex.format == GL_ALPHA)
+	{
+		const uint8_t* srcBase = tex.sysmem.data();
 
-        for (int y = 0; y < tex.height; ++y)
-        {
-            const uint8_t* src = srcBase + (size_t)y * tex.width;
-            uint8_t* dst = dstBase + (size_t)y * rowPitch;
+		for (int y = 0; y < tex.height; ++y)
+		{
+			const uint8_t* src = srcBase + (size_t)y * tex.width;
+			uint8_t* dst = dstBase + (size_t)y * rowPitch;
 
 #if defined(__AVX2__)
-            int x = 0;
-            const __m256i white = _mm256_set1_epi32(0x00FFFFFF);
+			int x = 0;
+			const __m256i white = _mm256_set1_epi32(0x00FFFFFF);
 
-            for (; x + 32 <= tex.width; x += 32)
-            {
-                __m256i a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + x));
+			for (; x + 32 <= tex.width; x += 32)
+			{
+				__m256i a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + x));
 
-                __m256i lo16 = _mm256_unpacklo_epi8(_mm256_setzero_si256(), a);
-                __m256i hi16 = _mm256_unpackhi_epi8(_mm256_setzero_si256(), a);
+				__m256i lo16 = _mm256_unpacklo_epi8(_mm256_setzero_si256(), a);
+				__m256i hi16 = _mm256_unpackhi_epi8(_mm256_setzero_si256(), a);
 
-                __m256i p0 = _mm256_unpacklo_epi16(white, lo16);
-                __m256i p1 = _mm256_unpackhi_epi16(white, lo16);
-                __m256i p2 = _mm256_unpacklo_epi16(white, hi16);
-                __m256i p3 = _mm256_unpackhi_epi16(white, hi16);
+				__m256i p0 = _mm256_unpacklo_epi16(white, lo16);
+				__m256i p1 = _mm256_unpackhi_epi16(white, lo16);
+				__m256i p2 = _mm256_unpacklo_epi16(white, hi16);
+				__m256i p3 = _mm256_unpackhi_epi16(white, hi16);
 
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 0) * 4), p0);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 8) * 4), p1);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 16) * 4), p2);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 24) * 4), p3);
-            }
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 0) * 4), p0);
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 8) * 4), p1);
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 16) * 4), p2);
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 24) * 4), p3);
+			}
 
-            for (; x < tex.width; ++x)
-            {
-                dst[x * 4 + 0] = 255;
-                dst[x * 4 + 1] = 255;
-                dst[x * 4 + 2] = 255;
-                dst[x * 4 + 3] = src[x];
-            }
+			for (; x < tex.width; ++x)
+			{
+				dst[x * 4 + 0] = 255;
+				dst[x * 4 + 1] = 255;
+				dst[x * 4 + 2] = 255;
+				dst[x * 4 + 3] = src[x];
+			}
 #else
-            for (int x = 0; x < tex.width; ++x)
-            {
-                dst[x * 4 + 0] = 255;
-                dst[x * 4 + 1] = 255;
-                dst[x * 4 + 2] = 255;
-                dst[x * 4 + 3] = src[x];
-            }
+			for (int x = 0; x < tex.width; ++x)
+			{
+				dst[x * 4 + 0] = 255;
+				dst[x * 4 + 1] = 255;
+				dst[x * 4 + 2] = 255;
+				dst[x * 4 + 3] = src[x];
+			}
 #endif
-        }
-    }
-    else if (tex.format == GL_LUMINANCE || tex.format == GL_INTENSITY)
-    {
-        const bool intensity = (tex.format == GL_INTENSITY);
-        const uint8_t* srcBase = tex.sysmem.data();
+		}
+	}
+	else if (tex.format == GL_LUMINANCE || tex.format == GL_INTENSITY)
+	{
+		const bool intensity = (tex.format == GL_INTENSITY);
+		const uint8_t* srcBase = tex.sysmem.data();
 
-        for (int y = 0; y < tex.height; ++y)
-        {
-            const uint8_t* src = srcBase + (size_t)y * tex.width;
-            uint8_t* dst = dstBase + (size_t)y * rowPitch;
+		for (int y = 0; y < tex.height; ++y)
+		{
+			const uint8_t* src = srcBase + (size_t)y * tex.width;
+			uint8_t* dst = dstBase + (size_t)y * rowPitch;
 
 #if defined(__AVX2__)
-            int x = 0;
+			int x = 0;
 
-            for (; x + 32 <= tex.width; x += 32)
-            {
-                __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + x));
+			for (; x + 32 <= tex.width; x += 32)
+			{
+				__m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + x));
 
-                __m256i lo16 = _mm256_unpacklo_epi8(v, v);
-                __m256i hi16 = _mm256_unpackhi_epi8(v, v);
+				__m256i lo16 = _mm256_unpacklo_epi8(v, v);
+				__m256i hi16 = _mm256_unpackhi_epi8(v, v);
 
-                __m256i p0 = _mm256_unpacklo_epi16(lo16, lo16);
-                __m256i p1 = _mm256_unpackhi_epi16(lo16, lo16);
-                __m256i p2 = _mm256_unpacklo_epi16(hi16, hi16);
-                __m256i p3 = _mm256_unpackhi_epi16(hi16, hi16);
+				__m256i p0 = _mm256_unpacklo_epi16(lo16, lo16);
+				__m256i p1 = _mm256_unpackhi_epi16(lo16, lo16);
+				__m256i p2 = _mm256_unpacklo_epi16(hi16, hi16);
+				__m256i p3 = _mm256_unpackhi_epi16(hi16, hi16);
 
-                if (!intensity)
-                {
-                    const __m256i rgbMask = _mm256_set1_epi32(0x00FFFFFF);
-                    const __m256i alphaMask = _mm256_set1_epi32(0xFF000000);
+				if (!intensity)
+				{
+					const __m256i rgbMask = _mm256_set1_epi32(0x00FFFFFF);
+					const __m256i alphaMask = _mm256_set1_epi32(0xFF000000);
 
-                    p0 = _mm256_or_si256(_mm256_and_si256(p0, rgbMask), alphaMask);
-                    p1 = _mm256_or_si256(_mm256_and_si256(p1, rgbMask), alphaMask);
-                    p2 = _mm256_or_si256(_mm256_and_si256(p2, rgbMask), alphaMask);
-                    p3 = _mm256_or_si256(_mm256_and_si256(p3, rgbMask), alphaMask);
-                }
+					p0 = _mm256_or_si256(_mm256_and_si256(p0, rgbMask), alphaMask);
+					p1 = _mm256_or_si256(_mm256_and_si256(p1, rgbMask), alphaMask);
+					p2 = _mm256_or_si256(_mm256_and_si256(p2, rgbMask), alphaMask);
+					p3 = _mm256_or_si256(_mm256_and_si256(p3, rgbMask), alphaMask);
+				}
 
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 0) * 4), p0);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 8) * 4), p1);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 16) * 4), p2);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 24) * 4), p3);
-            }
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 0) * 4), p0);
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 8) * 4), p1);
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 16) * 4), p2);
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (x + 24) * 4), p3);
+			}
 
-            for (; x < tex.width; ++x)
-            {
-                uint8_t v = src[x];
-                dst[x * 4 + 0] = v;
-                dst[x * 4 + 1] = v;
-                dst[x * 4 + 2] = v;
-                dst[x * 4 + 3] = intensity ? v : 255;
-            }
+			for (; x < tex.width; ++x)
+			{
+				uint8_t v = src[x];
+				dst[x * 4 + 0] = v;
+				dst[x * 4 + 1] = v;
+				dst[x * 4 + 2] = v;
+				dst[x * 4 + 3] = intensity ? v : 255;
+			}
 #else
-            for (int x = 0; x < tex.width; ++x)
-            {
-                uint8_t v = src[x];
-                dst[x * 4 + 0] = v;
-                dst[x * 4 + 1] = v;
-                dst[x * 4 + 2] = v;
-                dst[x * 4 + 3] = intensity ? v : 255;
-            }
+			for (int x = 0; x < tex.width; ++x)
+			{
+				uint8_t v = src[x];
+				dst[x * 4 + 0] = v;
+				dst[x * 4 + 1] = v;
+				dst[x * 4 + 2] = v;
+				dst[x * 4 + 3] = intensity ? v : 255;
+			}
 #endif
-        }
-    }
-    else
-    {
-        for (int y = 0; y < tex.height; ++y)
-        {
-            uint8_t* dst = dstBase + (size_t)y * rowPitch;
-            memset(dst, 255, tex.width * 4);
-        }
-    }
+		}
+	}
+	else
+	{
+		for (int y = 0; y < tex.height; ++y)
+		{
+			uint8_t* dst = dstBase + (size_t)y * rowPitch;
+			memset(dst, 255, tex.width * 4);
+		}
+	}
 
-    if (tex.state != D3D12_RESOURCE_STATE_COPY_DEST)
-    {
-        D3D12_RESOURCE_BARRIER toCopy{};
-        toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        toCopy.Transition.pResource = tex.texture.Get();
-        toCopy.Transition.StateBefore = tex.state;
-        toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-        toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &toCopy);
+	if (tex.state != D3D12_RESOURCE_STATE_COPY_DEST)
+	{
+		D3D12_RESOURCE_BARRIER toCopy{};
+		toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		toCopy.Transition.pResource = tex.texture.Get();
+		toCopy.Transition.StateBefore = tex.state;
+		toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &toCopy);
 
-        tex.state = D3D12_RESOURCE_STATE_COPY_DEST;
-    }
+		tex.state = D3D12_RESOURCE_STATE_COPY_DEST;
+	}
 
-    D3D12_TEXTURE_COPY_LOCATION srcLoc{};
-    srcLoc.pResource = g_gl.upload.resource[g_currentWindow->frameIndex].Get();
-    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    srcLoc.PlacedFootprint.Offset = alloc.offset;
-    srcLoc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    srcLoc.PlacedFootprint.Footprint.Width = tex.width;
-    srcLoc.PlacedFootprint.Footprint.Height = tex.height;
-    srcLoc.PlacedFootprint.Footprint.Depth = 1;
-    srcLoc.PlacedFootprint.Footprint.RowPitch = rowPitch;
+	D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+	srcLoc.pResource = g_currentWindow->upload.resource[g_currentWindow->frameIndex].Get();
+	srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	srcLoc.PlacedFootprint.Offset = alloc.offset;
+	srcLoc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	srcLoc.PlacedFootprint.Footprint.Width = tex.width;
+	srcLoc.PlacedFootprint.Footprint.Height = tex.height;
+	srcLoc.PlacedFootprint.Footprint.Depth = 1;
+	srcLoc.PlacedFootprint.Footprint.RowPitch = rowPitch;
 
-    D3D12_TEXTURE_COPY_LOCATION dstLoc{};
-    dstLoc.pResource = tex.texture.Get();
-    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dstLoc.SubresourceIndex = 0;
+	D3D12_TEXTURE_COPY_LOCATION dstLoc{};
+	dstLoc.pResource = tex.texture.Get();
+	dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	dstLoc.SubresourceIndex = 0;
 
-    g_gl.cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+	g_gl.cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 
-    D3D12_RESOURCE_BARRIER toSrv{};
-    toSrv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    toSrv.Transition.pResource = tex.texture.Get();
-    toSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    toSrv.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    toSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    g_gl.cmdList->ResourceBarrier(1, &toSrv);
+	D3D12_RESOURCE_BARRIER toSrv{};
+	toSrv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	toSrv.Transition.pResource = tex.texture.Get();
+	toSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	toSrv.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	toSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	g_gl.cmdList->ResourceBarrier(1, &toSrv);
 
-    tex.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    tex.gpuValid = true;
+	tex.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	tex.gpuValid = true;
 }
 
 
 static PipelineMode PickPipeline(bool useTex0, bool useTex1)
 {
-    const bool textured = useTex0 || useTex1;
+	const bool textured = useTex0 || useTex1;
 
-    if (g_gl.blend)
-        return textured ? PIPE_BLEND_TEX : PIPE_BLEND_UNTEX;
+	if (g_gl.blend)
+		return textured ? PIPE_BLEND_TEX : PIPE_BLEND_UNTEX;
 
-    if (g_gl.alphaTest)
-        return textured ? PIPE_ALPHA_TEST_TEX : PIPE_OPAQUE_UNTEX;
+	if (g_gl.alphaTest)
+		return textured ? PIPE_ALPHA_TEST_TEX : PIPE_OPAQUE_UNTEX;
 
-    return textured ? PIPE_OPAQUE_TEX : PIPE_OPAQUE_UNTEX;
+	return textured ? PIPE_OPAQUE_TEX : PIPE_OPAQUE_UNTEX;
 }
 
 static void SetDynamicFixedFunctionState(ID3D12GraphicsCommandList* cl)
 {
-    cl->SetGraphicsRootSignature(g_gl.rootSig.Get());
-    ID3D12DescriptorHeap* heaps[] = { g_gl.srvHeap.Get() };
-    cl->SetDescriptorHeaps(1, heaps);
-    cl->RSSetViewports(1, &g_currentWindow->viewport);
-    cl->RSSetScissorRects(1, &g_currentWindow->scissor);
+	cl->SetGraphicsRootSignature(g_gl.rootSig.Get());
+	ID3D12DescriptorHeap* heaps[] = { g_gl.srvHeap.Get() };
+	cl->SetDescriptorHeaps(1, heaps);
+	cl->RSSetViewports(1, &g_currentWindow->viewport);
+	cl->RSSetScissorRects(1, &g_currentWindow->scissor);
 }
 
 static Mat4 CurrentMVP()
 {
-    return Mat4::Multiply(g_gl.projStack.back(), g_gl.modelStack.back());
+	return Mat4::Multiply(g_gl.projStack.back(), g_gl.modelStack.back());
 }
 
 void glLoadModelMatrixf(const float* m16)
 {
-    Mat4 m = Mat4::Identity();
+	Mat4 m = Mat4::Identity();
 
-    if (m16)
-    {
-        memcpy(m.m, m16, sizeof(float) * 16);
-    }
+	if (m16)
+	{
+		memcpy(m.m, m16, sizeof(float) * 16);
+	}
 
-    memcpy(g_gl.modelMatrix.m, m.m, sizeof(g_gl.modelMatrix.m));
+	memcpy(g_gl.modelMatrix.m, m.m, sizeof(g_gl.modelMatrix.m));
 }
 
-extern "C" void APIENTRY glMultMatrixf(const GLfloat *m)
+extern "C" void APIENTRY glMultMatrixf(const GLfloat* m)
 {
-    if (!m)
-        return;
+	if (!m)
+		return;
 
-    Mat4 rhs {};
-    memcpy(rhs.m, m, sizeof(rhs.m));
+	Mat4 rhs{};
+	memcpy(rhs.m, m, sizeof(rhs.m));
 
-    auto &top = QD3D12_CurrentMatrixStack().back();
-    top       = Mat4::Multiply(top, rhs);
+	auto& top = QD3D12_CurrentMatrixStack().back();
+	top = Mat4::Multiply(top, rhs);
 }
 
 static Mat4 CurrentModelMatrix()
 {
-    return g_gl.modelMatrix;
+	return g_gl.modelMatrix;
 }
 
 static inline void AppendVerticesFast(std::vector<GLVertex>& dst, const std::vector<GLVertex>& src)
@@ -3160,6 +3259,8 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 {
 	if (!src || n == 0)
 		return;
+
+	QD3D12_EnsureFrameOpen();
 
 	const bool useTex0 = g_gl.texture2D[0];
 	const bool useTex1 = g_gl.texture2D[1];
@@ -3452,191 +3553,191 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 
 static void QD3D12_EmitQueryMarkers(size_t beginIdx, size_t endIdx)
 {
-    for (size_t i = beginIdx; i < endIdx; ++i)
-    {
-        const QueryMarker &m  = g_gl.queryMarkers[i];
-        auto               it = g_gl.queries.find(m.id);
-        if (it == g_gl.queries.end())
-            continue;
+	for (size_t i = beginIdx; i < endIdx; ++i)
+	{
+		const QueryMarker& m = g_gl.queryMarkers[i];
+		auto               it = g_gl.queries.find(m.id);
+		if (it == g_gl.queries.end())
+			continue;
 
-        GLOcclusionQuery &q = it->second;
-        if (q.heapIndex == UINT_MAX)
-            continue;
+		GLOcclusionQuery& q = it->second;
+		if (q.heapIndex == UINT_MAX)
+			continue;
 
-        if (m.type == QueryMarker::Begin)
-        {
-            g_gl.cmdList->BeginQuery(g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex);
-        }
-        else
-        {
-            g_gl.cmdList->EndQuery(g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex);
+		if (m.type == QueryMarker::Begin)
+		{
+			g_gl.cmdList->BeginQuery(g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex);
+		}
+		else
+		{
+			g_gl.cmdList->EndQuery(g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex);
 
-            g_gl.cmdList->ResolveQueryData(
-            g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex, 1, g_gl.occlusionReadback.Get(), sizeof(UINT64) * q.heapIndex);
+			g_gl.cmdList->ResolveQueryData(
+				g_gl.occlusionQueryHeap.Get(), D3D12_QUERY_TYPE_OCCLUSION, q.heapIndex, 1, g_gl.occlusionReadback.Get(), sizeof(UINT64) * q.heapIndex);
 
-            q.submittedFence = QD3D12_CurrentSubmissionFenceValue();
-        }
-    }
+			q.submittedFence = QD3D12_CurrentSubmissionFenceValue();
+		}
+	}
 }
 
 static void QD3D12_FlushQueuedBatches()
 {
-    if (g_gl.queuedBatches.empty())
-        return;
+	if (g_gl.queuedBatches.empty())
+		return;
 
-    SetDynamicFixedFunctionState(g_gl.cmdList.Get());
+	SetDynamicFixedFunctionState(g_gl.cmdList.Get());
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
-    {
-        CurrentRTV(),
-        CurrentNormalRTV(),
-        CurrentPositionRTV()
-    };
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
-    g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
+	D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
+	{
+		CurrentRTV(),
+		CurrentNormalRTV(),
+		CurrentPositionRTV()
+	};
+	D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
+	g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
 
-    ID3D12PipelineState* lastPSO = nullptr;
-    D3D12_GPU_DESCRIPTOR_HANDLE lastTex0{};
-    D3D12_GPU_DESCRIPTOR_HANDLE lastTex1{};
-    bool haveLastTex0 = false;
-    bool haveLastTex1 = false;
-    D3D12_PRIMITIVE_TOPOLOGY lastTopo = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+	ID3D12PipelineState* lastPSO = nullptr;
+	D3D12_GPU_DESCRIPTOR_HANDLE lastTex0{};
+	D3D12_GPU_DESCRIPTOR_HANDLE lastTex1{};
+	bool haveLastTex0 = false;
+	bool haveLastTex1 = false;
+	D3D12_PRIMITIVE_TOPOLOGY lastTopo = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 
-    for (size_t i = 0; i < g_gl.queuedBatches.size(); ++i)
-    {
-        const QueuedBatch& batch = g_gl.queuedBatches[i];
+	for (size_t i = 0; i < g_gl.queuedBatches.size(); ++i)
+	{
+		const QueuedBatch& batch = g_gl.queuedBatches[i];
 		const GLVertex* verts = QD3D12_GetBatchVertices(batch);
 		const size_t count = batch.vertexCount;
 
-        if (count <= 0)
-            continue;
+		if (count <= 0)
+			continue;
 
-        QD3D12_EmitQueryMarkers(batch.markerBegin, batch.markerEnd);
+		QD3D12_EmitQueryMarkers(batch.markerBegin, batch.markerEnd);
 
-        g_gl.cmdList->RSSetViewports(1, &batch.key.viewport);
-        g_gl.cmdList->RSSetScissorRects(1, &batch.key.scissor);
+		g_gl.cmdList->RSSetViewports(1, &batch.key.viewport);
+		g_gl.cmdList->RSSetScissorRects(1, &batch.key.scissor);
 
-        UploadAlloc vbAlloc = QD3D12_AllocUpload((UINT)(count * sizeof(GLVertex)), 256);
-        memcpy(vbAlloc.cpu, verts, count * sizeof(GLVertex));
+		UploadAlloc vbAlloc = QD3D12_AllocUpload((UINT)(count * sizeof(GLVertex)), 256);
+		memcpy(vbAlloc.cpu, verts, count * sizeof(GLVertex));
 
-        UploadAlloc cbAlloc = QD3D12_AllocUpload(sizeof(DrawConstants), 256);
-        DrawConstants* dc = reinterpret_cast<DrawConstants*>(cbAlloc.cpu);
-        memset(dc, 0, sizeof(*dc));
+		UploadAlloc cbAlloc = QD3D12_AllocUpload(sizeof(DrawConstants), 256);
+		DrawConstants* dc = reinterpret_cast<DrawConstants*>(cbAlloc.cpu);
+		memset(dc, 0, sizeof(*dc));
 
-        dc->mvp = batch.key.mvp;
-        dc->geometryFlag = batch.key.geometryFlag;
-        dc->modelMatrix = batch.key.modelMatrix;
-        dc->alphaRef = batch.key.alphaRef;
-        dc->useTex0 = batch.key.useTex0;
-        dc->useTex1 = batch.key.useTex1;
-        dc->tex1IsLightmap = batch.key.tex1IsLightmap;
-        dc->texEnvMode0 = batch.key.texEnvMode0;
-        dc->texEnvMode1 = batch.key.texEnvMode1;
+		dc->mvp = batch.key.mvp;
+		dc->geometryFlag = batch.key.geometryFlag;
+		dc->modelMatrix = batch.key.modelMatrix;
+		dc->alphaRef = batch.key.alphaRef;
+		dc->useTex0 = batch.key.useTex0;
+		dc->useTex1 = batch.key.useTex1;
+		dc->tex1IsLightmap = batch.key.tex1IsLightmap;
+		dc->texEnvMode0 = batch.key.texEnvMode0;
+		dc->texEnvMode1 = batch.key.texEnvMode1;
 
-        dc->fogEnabled = g_gl.fog ? 1.0f : 0.0f;
+		dc->fogEnabled = g_gl.fog ? 1.0f : 0.0f;
 
-        switch (g_gl.fogMode)
-        {
-        case GL_LINEAR: dc->fogMode = 0.0f; break;
-        case GL_EXP:    dc->fogMode = 1.0f; break;
-        case GL_EXP2:   dc->fogMode = 2.0f; break;
-        default:        dc->fogMode = 1.0f; break;
-        }
+		switch (g_gl.fogMode)
+		{
+		case GL_LINEAR: dc->fogMode = 0.0f; break;
+		case GL_EXP:    dc->fogMode = 1.0f; break;
+		case GL_EXP2:   dc->fogMode = 2.0f; break;
+		default:        dc->fogMode = 1.0f; break;
+		}
 
-        dc->fogDensity = g_gl.fogDensity;
-        dc->fogStart = g_gl.fogStart;
-        dc->fogEnd = g_gl.fogEnd;
-        dc->fogColor[0] = g_gl.fogColor[0];
-        dc->fogColor[1] = g_gl.fogColor[1];
-        dc->fogColor[2] = g_gl.fogColor[2];
-        dc->fogColor[3] = g_gl.fogColor[3];
+		dc->fogDensity = g_gl.fogDensity;
+		dc->fogStart = g_gl.fogStart;
+		dc->fogEnd = g_gl.fogEnd;
+		dc->fogColor[0] = g_gl.fogColor[0];
+		dc->fogColor[1] = g_gl.fogColor[1];
+		dc->fogColor[2] = g_gl.fogColor[2];
+		dc->fogColor[3] = g_gl.fogColor[3];
 
-        D3D12_VERTEX_BUFFER_VIEW vbv{};
-        vbv.BufferLocation = vbAlloc.gpu;
-        vbv.SizeInBytes = (UINT)(count * sizeof(GLVertex));
-        vbv.StrideInBytes = sizeof(GLVertex);
+		D3D12_VERTEX_BUFFER_VIEW vbv{};
+		vbv.BufferLocation = vbAlloc.gpu;
+		vbv.SizeInBytes = (UINT)(count * sizeof(GLVertex));
+		vbv.StrideInBytes = sizeof(GLVertex);
 
-        ID3D12PipelineState* pso = nullptr;
-        const D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType =
-            GetTopologyTypeFromTopology(batch.key.topology);
+		ID3D12PipelineState* pso = nullptr;
+		const D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType =
+			GetTopologyTypeFromTopology(batch.key.topology);
 
-        if (topoType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT) {
-            dc->PointSize = g_gl.pointSize;
-        }
-        else {
-            dc->PointSize = 1.0f;
-        }
+		if (topoType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT) {
+			dc->PointSize = g_gl.pointSize;
+		}
+		else {
+			dc->PointSize = 1.0f;
+		}
 
-        switch (batch.key.pipeline)
-        {
-        case PIPE_BLEND_TEX:
-        case PIPE_BLEND_UNTEX:
-            pso = QD3D12_GetPSO(
-                batch.key.pipeline,
-                batch.key.blendSrc,
-                batch.key.blendDst,
-                batch.key.depthTest,
-                batch.key.depthWrite,
-                batch.key.depthFunc,
-                topoType);
-            break;
+		switch (batch.key.pipeline)
+		{
+		case PIPE_BLEND_TEX:
+		case PIPE_BLEND_UNTEX:
+			pso = QD3D12_GetPSO(
+				batch.key.pipeline,
+				batch.key.blendSrc,
+				batch.key.blendDst,
+				batch.key.depthTest,
+				batch.key.depthWrite,
+				batch.key.depthFunc,
+				topoType);
+			break;
 
-        case PIPE_ALPHA_TEST_TEX:
-        case PIPE_OPAQUE_UNTEX:
-        case PIPE_OPAQUE_TEX:
-        default:
-            pso = QD3D12_GetPSO(
-                batch.key.pipeline,
-                batch.key.blendSrc,
-                batch.key.blendDst,
-                batch.key.depthTest,
-                batch.key.depthWrite,
-                batch.key.depthFunc,
-                topoType);
-            break;
-        }
+		case PIPE_ALPHA_TEST_TEX:
+		case PIPE_OPAQUE_UNTEX:
+		case PIPE_OPAQUE_TEX:
+		default:
+			pso = QD3D12_GetPSO(
+				batch.key.pipeline,
+				batch.key.blendSrc,
+				batch.key.blendDst,
+				batch.key.depthTest,
+				batch.key.depthWrite,
+				batch.key.depthFunc,
+				topoType);
+			break;
+		}
 
-        if (pso != lastPSO)
-        {
-            g_gl.cmdList->SetPipelineState(pso);
-            lastPSO = pso;
-        }
+		if (pso != lastPSO)
+		{
+			g_gl.cmdList->SetPipelineState(pso);
+			lastPSO = pso;
+		}
 
-        D3D12_GPU_DESCRIPTOR_HANDLE tex0Gpu = QD3D12_SrvGpu(batch.key.tex0SrvIndex);
-        D3D12_GPU_DESCRIPTOR_HANDLE tex1Gpu = QD3D12_SrvGpu(batch.key.tex1SrvIndex);
+		D3D12_GPU_DESCRIPTOR_HANDLE tex0Gpu = QD3D12_SrvGpu(batch.key.tex0SrvIndex);
+		D3D12_GPU_DESCRIPTOR_HANDLE tex1Gpu = QD3D12_SrvGpu(batch.key.tex1SrvIndex);
 
-        if (!haveLastTex0 || tex0Gpu.ptr != lastTex0.ptr)
-        {
-            // Don't know if this should be here or not could burry bugs, but rather then crash set to white.
-            if (batch.key.tex0SrvIndex == UINT_MAX)
-            {
-                tex0Gpu = QD3D12_SrvGpu(g_gl.whiteTexture.srvIndex);
-            }
-            g_gl.cmdList->SetGraphicsRootDescriptorTable(1, tex0Gpu);
-            lastTex0 = tex0Gpu;
-            haveLastTex0 = true;
-        }
+		if (!haveLastTex0 || tex0Gpu.ptr != lastTex0.ptr)
+		{
+			// Don't know if this should be here or not could burry bugs, but rather then crash set to white.
+			if (batch.key.tex0SrvIndex == UINT_MAX)
+			{
+				tex0Gpu = QD3D12_SrvGpu(g_gl.whiteTexture.srvIndex);
+			}
+			g_gl.cmdList->SetGraphicsRootDescriptorTable(1, tex0Gpu);
+			lastTex0 = tex0Gpu;
+			haveLastTex0 = true;
+		}
 
-        if (!haveLastTex1 || tex1Gpu.ptr != lastTex1.ptr)
-        {
-            g_gl.cmdList->SetGraphicsRootDescriptorTable(2, tex1Gpu);
-            lastTex1 = tex1Gpu;
-            haveLastTex1 = true;
-        }
+		if (!haveLastTex1 || tex1Gpu.ptr != lastTex1.ptr)
+		{
+			g_gl.cmdList->SetGraphicsRootDescriptorTable(2, tex1Gpu);
+			lastTex1 = tex1Gpu;
+			haveLastTex1 = true;
+		}
 
-        g_gl.cmdList->SetGraphicsRootConstantBufferView(0, cbAlloc.gpu);
+		g_gl.cmdList->SetGraphicsRootConstantBufferView(0, cbAlloc.gpu);
 
-        if (batch.key.topology != lastTopo)
-        {
-            g_gl.cmdList->IASetPrimitiveTopology(batch.key.topology);
-            lastTopo = batch.key.topology;
-        }
+		if (batch.key.topology != lastTopo)
+		{
+			g_gl.cmdList->IASetPrimitiveTopology(batch.key.topology);
+			lastTopo = batch.key.topology;
+		}
 
-        g_gl.cmdList->IASetVertexBuffers(0, 1, &vbv);
-        g_gl.cmdList->DrawInstanced((UINT)count, 1, 0, 0);
-    }
+		g_gl.cmdList->IASetVertexBuffers(0, 1, &vbv);
+		g_gl.cmdList->DrawInstanced((UINT)count, 1, 0, 0);
+	}
 
-    g_gl.queuedBatches.clear();
+	g_gl.queuedBatches.clear();
 }
 
 // ============================================================
@@ -3645,217 +3746,222 @@ static void QD3D12_FlushQueuedBatches()
 
 extern "C" const GLubyte* APIENTRY glGetString(GLenum name)
 {
-    switch (name)
-    {
-    case GL_VENDOR: return (const GLubyte*)vendor;
-    case GL_RENDERER: return (const GLubyte*)renderer;
-    case GL_VERSION: return (const GLubyte*)version;
-    case GL_EXTENSIONS: return (const GLubyte*)extensions;
-    default: return (const GLubyte*)"";
-    }
+	switch (name)
+	{
+	case GL_VENDOR: return (const GLubyte*)vendor;
+	case GL_RENDERER: return (const GLubyte*)renderer;
+	case GL_VERSION: return (const GLubyte*)version;
+	case GL_EXTENSIONS: return (const GLubyte*)extensions;
+	default: return (const GLubyte*)"";
+	}
 }
 
 extern "C" void APIENTRY glClearColor(GLclampf r, GLclampf g, GLclampf b, GLclampf a)
 {
-    g_gl.clearColor[0] = r;
-    g_gl.clearColor[1] = g;
-    g_gl.clearColor[2] = b;
-    g_gl.clearColor[3] = a;
+	g_gl.clearColor[0] = r;
+	g_gl.clearColor[1] = g;
+	g_gl.clearColor[2] = b;
+	g_gl.clearColor[3] = a;
 }
 
 static D3D12_RECT QD3D12_GetActiveClearRect()
 {
-    if (g_gl.scissorTest)
-    {
-        D3D12_RECT r{};
-        r.left   = ClampValue<LONG>(g_gl.scissorX, 0, (LONG)g_currentWindow->width);
-        r.right  = ClampValue<LONG>(g_gl.scissorX + g_gl.scissorW, 0, (LONG)g_currentWindow->width);
+	if (g_gl.scissorTest)
+	{
+		D3D12_RECT r{};
+		r.left = ClampValue<LONG>(g_gl.scissorX, 0, (LONG)g_currentWindow->width);
+		r.right = ClampValue<LONG>(g_gl.scissorX + g_gl.scissorW, 0, (LONG)g_currentWindow->width);
 
-        // OpenGL scissor is bottom-left origin, D3D12 is top-left origin.
-        const LONG topGL    = g_gl.scissorY + g_gl.scissorH;
-        const LONG bottomGL = g_gl.scissorY;
+		// OpenGL scissor is bottom-left origin, D3D12 is top-left origin.
+		const LONG topGL = g_gl.scissorY + g_gl.scissorH;
+		const LONG bottomGL = g_gl.scissorY;
 
-        r.top    = ClampValue<LONG>((LONG)g_currentWindow->height - topGL, 0, (LONG)g_currentWindow->height);
-        r.bottom = ClampValue<LONG>((LONG)g_currentWindow->height - bottomGL, 0, (LONG)g_currentWindow->height);
+		r.top = ClampValue<LONG>((LONG)g_currentWindow->height - topGL, 0, (LONG)g_currentWindow->height);
+		r.bottom = ClampValue<LONG>((LONG)g_currentWindow->height - bottomGL, 0, (LONG)g_currentWindow->height);
 
-        if (r.right < r.left)   std::swap(r.right, r.left);
-        if (r.bottom < r.top)   std::swap(r.bottom, r.top);
-        return r;
-    }
+		if (r.right < r.left)   std::swap(r.right, r.left);
+		if (r.bottom < r.top)   std::swap(r.bottom, r.top);
+		return r;
+	}
 
-    D3D12_RECT r{};
-    r.left = 0;
-    r.top = 0;
-    r.right = (LONG)g_currentWindow->width;
-    r.bottom = (LONG)g_currentWindow->height;
-    return r;
+	D3D12_RECT r{};
+	r.left = 0;
+	r.top = 0;
+	r.right = (LONG)g_currentWindow->width;
+	r.bottom = (LONG)g_currentWindow->height;
+	return r;
 }
 
 static void QD3D12_EnsureFrameOpen()
 {
-    if (!g_gl.frameOpen)
-    {
-        QD3D12_BeginFrame();
-        g_gl.frameOpen = true;
-    }
+	if (g_gl.frameOpen)
+	{
+		if (g_gl.frameOwner == g_currentWindow)
+			return;
+
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+	}
+
+	QD3D12_BeginFrame();
 }
 
 extern "C" void APIENTRY glClear(GLbitfield mask)
 {
-    if (mask == 0)
-        return;
+	if (mask == 0)
+		return;
 
-    QD3D12_FlushQueuedBatches();
+	QD3D12_EnsureFrameOpen();
+	QD3D12_FlushQueuedBatches();
 
-    if (g_gl.backBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
-    {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
-        b.Transition.StateBefore = g_gl.backBufferState[g_currentWindow->frameIndex];
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.backBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
+	if (g_currentWindow->backBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+	{
+		D3D12_RESOURCE_BARRIER b{};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Transition.pResource = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
+		b.Transition.StateBefore = g_currentWindow->backBufferState[g_currentWindow->frameIndex];
+		b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &b);
+		g_currentWindow->backBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	}
 
-    if (g_currentWindow->normalBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
-    {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
-        b.Transition.StateBefore = g_currentWindow->normalBufferState[g_currentWindow->frameIndex];
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &b);
-        g_currentWindow->normalBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
+	if (g_currentWindow->normalBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+	{
+		D3D12_RESOURCE_BARRIER b{};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Transition.pResource = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
+		b.Transition.StateBefore = g_currentWindow->normalBufferState[g_currentWindow->frameIndex];
+		b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &b);
+		g_currentWindow->normalBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	}
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
-    {
-        CurrentRTV(),
-        CurrentNormalRTV(),
-        CurrentPositionRTV()
-    };
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
+	{
+		CurrentRTV(),
+		CurrentNormalRTV(),
+		CurrentPositionRTV()
+	};
+	D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
-    g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
-    g_gl.cmdList->RSSetViewports(1, &g_currentWindow->viewport);
+	g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
+	g_gl.cmdList->RSSetViewports(1, &g_currentWindow->viewport);
 
-    const D3D12_RECT clearRect = QD3D12_GetActiveClearRect();
-    g_gl.cmdList->RSSetScissorRects(1, &clearRect);
+	const D3D12_RECT clearRect = QD3D12_GetActiveClearRect();
+	g_gl.cmdList->RSSetScissorRects(1, &clearRect);
 
-    if (mask & GL_COLOR_BUFFER_BIT)
-    {
-        const float cc[4] =
-        {
-            g_gl.clearColor[0],
-            g_gl.clearColor[1],
-            g_gl.clearColor[2],
-            g_gl.clearColor[3]
-        };
+	if (mask & GL_COLOR_BUFFER_BIT)
+	{
+		const float cc[4] =
+		{
+			g_gl.clearColor[0],
+			g_gl.clearColor[1],
+			g_gl.clearColor[2],
+			g_gl.clearColor[3]
+		};
 
-        g_gl.cmdList->ClearRenderTargetView(
-            CurrentRTV(),
-            cc,
-            1,
-            &clearRect);
+		g_gl.cmdList->ClearRenderTargetView(
+			CurrentRTV(),
+			cc,
+			1,
+			&clearRect);
 
-        const float normalClear[4] = { 0.5f, 0.5f, 1.0f, 1.0f };
-        g_gl.cmdList->ClearRenderTargetView(
-            CurrentNormalRTV(),
-            normalClear,
-            1,
-            &clearRect);
-    }
+		const float normalClear[4] = { 0.5f, 0.5f, 1.0f, 1.0f };
+		g_gl.cmdList->ClearRenderTargetView(
+			CurrentNormalRTV(),
+			normalClear,
+			1,
+			&clearRect);
+	}
 
-    if (mask & GL_DEPTH_BUFFER_BIT)
-    {
-        g_gl.cmdList->ClearDepthStencilView(
-            dsv,
-            D3D12_CLEAR_FLAG_DEPTH,
-            (FLOAT)ClampValue<GLclampd>(g_gl.clearDepthValue, 0.0, 1.0),
-            0,
-            1,
-            &clearRect);
-    }
+	if (mask & GL_DEPTH_BUFFER_BIT)
+	{
+		g_gl.cmdList->ClearDepthStencilView(
+			dsv,
+			D3D12_CLEAR_FLAG_DEPTH,
+			(FLOAT)ClampValue<GLclampd>(g_gl.clearDepthValue, 0.0, 1.0),
+			0,
+			1,
+			&clearRect);
+	}
 
-    if (mask & GL_STENCIL_BUFFER_BIT)
-    {
-        g_gl.cmdList->ClearDepthStencilView(
-            dsv,
-            D3D12_CLEAR_FLAG_STENCIL,
-            (FLOAT)ClampValue<GLclampd>(g_gl.clearDepthValue, 0.0, 1.0),
-            (UINT8)(g_gl.clearStencilValue & 0xFF),
-            1,
-            &clearRect);
-    }
+	if (mask & GL_STENCIL_BUFFER_BIT)
+	{
+		g_gl.cmdList->ClearDepthStencilView(
+			dsv,
+			D3D12_CLEAR_FLAG_STENCIL,
+			(FLOAT)ClampValue<GLclampd>(g_gl.clearDepthValue, 0.0, 1.0),
+			(UINT8)(g_gl.clearStencilValue & 0xFF),
+			1,
+			&clearRect);
+	}
 }
 
 extern "C" void APIENTRY glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
 {
-    g_gl.viewportX = x;
-    g_gl.viewportY = y;
-    g_gl.viewportW = width;
-    g_gl.viewportH = height;
-    QD3D12_UpdateViewportState();
+	g_gl.viewportX = x;
+	g_gl.viewportY = y;
+	g_gl.viewportW = width;
+	g_gl.viewportH = height;
+	QD3D12_UpdateViewportState();
 }
 
 extern "C" void APIENTRY glEnable(GLenum cap)
 {
-    switch (cap)
-    {
-    case GL_BLEND: g_gl.blend = true; break;
-    case GL_ALPHA_TEST: g_gl.alphaTest = true; break;
-    case GL_DEPTH_TEST: g_gl.depthTest = true; break;
-    case GL_CULL_FACE: g_gl.cullFace = true; break;
-    case GL_TEXTURE_2D: g_gl.texture2D[g_gl.activeTextureUnit] = true; break;
-    case GL_FOG: g_gl.fog = true; break;
-    default: break;
-    }
+	switch (cap)
+	{
+	case GL_BLEND: g_gl.blend = true; break;
+	case GL_ALPHA_TEST: g_gl.alphaTest = true; break;
+	case GL_DEPTH_TEST: g_gl.depthTest = true; break;
+	case GL_CULL_FACE: g_gl.cullFace = true; break;
+	case GL_TEXTURE_2D: g_gl.texture2D[g_gl.activeTextureUnit] = true; break;
+	case GL_FOG: g_gl.fog = true; break;
+	default: break;
+	}
 }
 
 extern "C" void APIENTRY glDisable(GLenum cap)
 {
-    switch (cap)
-    {
-    case GL_BLEND: g_gl.blend = false; break;
-    case GL_ALPHA_TEST: g_gl.alphaTest = false; break;
-    case GL_DEPTH_TEST: g_gl.depthTest = false; break;
-    case GL_CULL_FACE: g_gl.cullFace = false; break;
-    case GL_TEXTURE_2D: g_gl.texture2D[g_gl.activeTextureUnit] = false; break;
-    case GL_FOG: g_gl.fog = false; break;
-    default: break;
-    }
+	switch (cap)
+	{
+	case GL_BLEND: g_gl.blend = false; break;
+	case GL_ALPHA_TEST: g_gl.alphaTest = false; break;
+	case GL_DEPTH_TEST: g_gl.depthTest = false; break;
+	case GL_CULL_FACE: g_gl.cullFace = false; break;
+	case GL_TEXTURE_2D: g_gl.texture2D[g_gl.activeTextureUnit] = false; break;
+	case GL_FOG: g_gl.fog = false; break;
+	default: break;
+	}
 }
 
 extern "C" void APIENTRY glBlendFunc(GLenum sfactor, GLenum dfactor)
 {
-    g_gl.blendSrc = sfactor;
-    g_gl.blendDst = dfactor;
+	g_gl.blendSrc = sfactor;
+	g_gl.blendDst = dfactor;
 }
 
 extern "C" void APIENTRY glAlphaFunc(GLenum func, GLclampf ref)
 {
-    g_gl.alphaFunc = func;
-    g_gl.alphaRef = ref;
+	g_gl.alphaFunc = func;
+	g_gl.alphaRef = ref;
 }
 
 extern "C" void APIENTRY glDepthMask(GLboolean flag)
 {
-    g_gl.depthWrite = (flag != 0);
+	g_gl.depthWrite = (flag != 0);
 }
 
 extern "C" void APIENTRY glDepthRange(GLclampd zNear, GLclampd zFar)
 {
-    g_gl.depthRangeNear = ClampValue<GLclampd>(zNear, 0.0, 1.0);
-    g_gl.depthRangeFar = ClampValue<GLclampd>(zFar, 0.0, 1.0);
-    QD3D12_UpdateViewportState();
+	g_gl.depthRangeNear = ClampValue<GLclampd>(zNear, 0.0, 1.0);
+	g_gl.depthRangeFar = ClampValue<GLclampd>(zFar, 0.0, 1.0);
+	QD3D12_UpdateViewportState();
 }
 
 extern "C" void APIENTRY glCullFace(GLenum mode)
 {
-    g_gl.cullMode = mode;
+	g_gl.cullMode = mode;
 }
 
 extern "C" void APIENTRY glPolygonMode(GLenum, GLenum)
@@ -3864,155 +3970,146 @@ extern "C" void APIENTRY glPolygonMode(GLenum, GLenum)
 
 extern "C" void APIENTRY glShadeModel(GLenum mode)
 {
-    g_gl.shadeModel = mode;
+	g_gl.shadeModel = mode;
 }
 
 extern "C" void APIENTRY glHint(GLenum target, GLenum mode)
 {
-    if (target == GL_FOG_HINT)
-        g_gl.fogHint = mode;
+	if (target == GL_FOG_HINT)
+		g_gl.fogHint = mode;
 }
 
 extern "C" void APIENTRY glFinish(void)
 {
-    if (!g_gl.device || !g_gl.queue || !g_gl.cmdList)
-        return;
+	if (!g_gl.device || !g_gl.queue || !g_gl.cmdList)
+		return;
 
-    //
-    // Flush any queued GL batches into the current command list first.
-    //
-    QD3D12_FlushQueuedBatches();
+	if (!g_gl.frameOpen && g_gl.queuedBatches.empty())
+	{
+		QD3D12_WaitForGPU();
+		return;
+	}
 
-    //
-    // Close and submit the current command list, but do NOT present.
-    // glFinish should block until all submitted GPU work is complete,
-    // then reopen the same frame command list so rendering can continue.
-    //
-    QD3D12_CHECK(g_gl.cmdList->Close());
+	QD3D12_EnsureFrameOpen();
+	QD3D12_FlushQueuedBatches();
 
-    ID3D12CommandList* lists[] = { g_gl.cmdList.Get() };
-    g_gl.queue->ExecuteCommandLists(1, lists);
+	QD3D12_CHECK(g_gl.cmdList->Close());
 
-    //
-    // Wait for this submission to fully complete before resetting the allocator.
-    // This avoids:
-    // "The command allocator was reset after the command list was recorded."
-    //
-    const UINT64 signalValue = g_gl.nextFenceValue++;
-    QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
+	ID3D12CommandList* lists[] = { g_gl.cmdList.Get() };
+	g_gl.queue->ExecuteCommandLists(1, lists);
 
-    if (g_gl.fence->GetCompletedValue() < signalValue)
-    {
-        QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(signalValue, g_gl.fenceEvent));
-        WaitForSingleObject(g_gl.fenceEvent, INFINITE);
-    }
+	const UINT64 signalValue = g_gl.nextFenceValue++;
+	QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
 
-    //
-    // Reopen the same allocator/list now that the GPU is done with it.
-    //
-    FrameResources& fr = g_currentWindow->frames[g_currentWindow->frameIndex];
-    fr.fenceValue = signalValue;
+	if (g_gl.fence->GetCompletedValue() < signalValue)
+	{
+		QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(signalValue, g_gl.fenceEvent));
+		WaitForSingleObject(g_gl.fenceEvent, INFINITE);
+	}
 
-    QD3D12_CHECK(fr.cmdAlloc->Reset());
-    QD3D12_CHECK(g_gl.cmdList->Reset(fr.cmdAlloc.Get(), nullptr));
+	FrameResources& fr = g_currentWindow->frames[g_currentWindow->frameIndex];
+	fr.fenceValue = signalValue;
 
-    //
-    // Rebind render targets and raster state because Reset() clears command-list state.
-    //
-    if (g_gl.backBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
-    {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
-        b.Transition.StateBefore = g_currentWindow->backBufferState[g_currentWindow->frameIndex];
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &b);
-        g_gl.backBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
+	QD3D12_CHECK(fr.cmdAlloc->Reset());
+	QD3D12_CHECK(g_gl.cmdList->Reset(fr.cmdAlloc.Get(), nullptr));
 
-    if (g_currentWindow->normalBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
-    {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
-        b.Transition.StateBefore = g_currentWindow->normalBufferState[g_currentWindow->frameIndex];
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &b);
-        g_currentWindow->normalBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
+	if (g_currentWindow->backBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+	{
+		D3D12_RESOURCE_BARRIER b{};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Transition.pResource = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
+		b.Transition.StateBefore = g_currentWindow->backBufferState[g_currentWindow->frameIndex];
+		b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &b);
+		g_currentWindow->backBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	}
 
-    if (g_currentWindow->positionBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
-    {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = g_currentWindow->positionBuffers[g_currentWindow->frameIndex].Get();
-        b.Transition.StateBefore = g_currentWindow->positionBufferState[g_currentWindow->frameIndex];
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        g_gl.cmdList->ResourceBarrier(1, &b);
-        g_currentWindow->positionBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
+	if (g_currentWindow->normalBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+	{
+		D3D12_RESOURCE_BARRIER b{};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Transition.pResource = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
+		b.Transition.StateBefore = g_currentWindow->normalBufferState[g_currentWindow->frameIndex];
+		b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &b);
+		g_currentWindow->normalBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	}
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
-    {
-        CurrentRTV(),
-        CurrentNormalRTV(),
-        CurrentPositionRTV()
-    };
+	if (g_currentWindow->positionBufferState[g_currentWindow->frameIndex] != D3D12_RESOURCE_STATE_RENDER_TARGET)
+	{
+		D3D12_RESOURCE_BARRIER b{};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Transition.pResource = g_currentWindow->positionBuffers[g_currentWindow->frameIndex].Get();
+		b.Transition.StateBefore = g_currentWindow->positionBufferState[g_currentWindow->frameIndex];
+		b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &b);
+		g_currentWindow->positionBufferState[g_currentWindow->frameIndex] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	}
 
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
-    g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
-    g_gl.cmdList->RSSetViewports(1, &g_currentWindow->viewport);
-    g_gl.cmdList->RSSetScissorRects(1, &g_currentWindow->scissor);
+	D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
+	{
+		CurrentRTV(),
+		CurrentNormalRTV(),
+		CurrentPositionRTV()
+	};
+
+	D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
+	g_gl.cmdList->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
+	g_gl.cmdList->RSSetViewports(1, &g_currentWindow->viewport);
+	g_gl.cmdList->RSSetScissorRects(1, &g_currentWindow->scissor);
+
+	g_gl.frameOpen = true;
+	g_gl.frameOwner = g_currentWindow;
 }
 
 extern "C" void APIENTRY glMatrixMode(GLenum mode)
 {
-    g_gl.matrixMode = mode;
+	g_gl.matrixMode = mode;
 }
 
 extern "C" void APIENTRY glLoadIdentity(void)
 {
-    QD3D12_CurrentMatrixStack().back() = Mat4::Identity();
+	QD3D12_CurrentMatrixStack().back() = Mat4::Identity();
 }
 
 extern "C" void APIENTRY glPushMatrix(void)
 {
-    auto& s = QD3D12_CurrentMatrixStack();
-    s.push_back(s.back());
+	auto& s = QD3D12_CurrentMatrixStack();
+	s.push_back(s.back());
 }
 
 extern "C" void APIENTRY glPopMatrix(void)
 {
-    auto& s = QD3D12_CurrentMatrixStack();
-    if (s.size() > 1)
-        s.pop_back();
+	auto& s = QD3D12_CurrentMatrixStack();
+	if (s.size() > 1)
+		s.pop_back();
 }
 
 extern "C" void APIENTRY glTranslatef(GLfloat x, GLfloat y, GLfloat z)
 {
-    auto& t = QD3D12_CurrentMatrixStack().back();
-    t = Mat4::Multiply(t, Mat4::Translation(x, y, z));
+	auto& t = QD3D12_CurrentMatrixStack().back();
+	t = Mat4::Multiply(t, Mat4::Translation(x, y, z));
 }
 
 extern "C" void APIENTRY glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
 {
-    auto& t = QD3D12_CurrentMatrixStack().back();
-    t = Mat4::Multiply(t, Mat4::RotationAxisDeg(angle, x, y, z));
+	auto& t = QD3D12_CurrentMatrixStack().back();
+	t = Mat4::Multiply(t, Mat4::RotationAxisDeg(angle, x, y, z));
 }
 
 extern "C" void APIENTRY glScalef(GLfloat x, GLfloat y, GLfloat z)
 {
-    auto& t = QD3D12_CurrentMatrixStack().back();
-    t = Mat4::Multiply(t, Mat4::Scale(x, y, z));
+	auto& t = QD3D12_CurrentMatrixStack().back();
+	t = Mat4::Multiply(t, Mat4::Scale(x, y, z));
 }
 
 extern "C" void APIENTRY glOrtho(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar)
 {
-    auto& t = QD3D12_CurrentMatrixStack().back();
-    t = Mat4::Multiply(t, Mat4::Ortho(left, right, bottom, top, zNear, zFar));
+	auto& t = QD3D12_CurrentMatrixStack().back();
+	t = Mat4::Multiply(t, Mat4::Ortho(left, right, bottom, top, zNear, zFar));
 }
 
 extern "C" void APIENTRY glBegin(GLenum mode)
@@ -4028,12 +4125,11 @@ extern "C" void APIENTRY glEnd(void)
 	assert(g_gl.inBeginEnd);
 	g_gl.inBeginEnd = false;
 	FlushImmediate(g_gl.currentPrim, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
-	g_gl.immediateVerts.Clear();
 }
 
 extern "C" void APIENTRY glVertex2f(GLfloat x, GLfloat y)
 {
-    glVertex3f(x, y, 0.0f);
+	glVertex3f(x, y, 0.0f);
 }
 
 extern "C" void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z)
@@ -4057,69 +4153,69 @@ extern "C" void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z)
 
 extern "C" void APIENTRY glVertex3fv(const GLfloat* v)
 {
-    glVertex3f(v[0], v[1], v[2]);
+	glVertex3f(v[0], v[1], v[2]);
 }
 
 extern "C" void APIENTRY glTexCoord2f(GLfloat s, GLfloat t)
 {
-    g_gl.curU[g_gl.activeTextureUnit] = s;
-    g_gl.curV[g_gl.activeTextureUnit] = t;
+	g_gl.curU[g_gl.activeTextureUnit] = s;
+	g_gl.curV[g_gl.activeTextureUnit] = t;
 }
 
 extern "C" void APIENTRY glColor3f(GLfloat r, GLfloat g, GLfloat b)
 {
-    g_gl.curColor[0] = r;
-    g_gl.curColor[1] = g;
-    g_gl.curColor[2] = b;
-    g_gl.curColor[3] = 1.0f;
+	g_gl.curColor[0] = r;
+	g_gl.curColor[1] = g;
+	g_gl.curColor[2] = b;
+	g_gl.curColor[3] = 1.0f;
 }
 
 extern "C" void APIENTRY glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
 {
-    g_gl.curColor[0] = r;
-    g_gl.curColor[1] = g;
-    g_gl.curColor[2] = b;
-    g_gl.curColor[3] = a;
+	g_gl.curColor[0] = r;
+	g_gl.curColor[1] = g;
+	g_gl.curColor[2] = b;
+	g_gl.curColor[3] = a;
 }
 
 extern "C" void APIENTRY glGenTextures(GLsizei n, GLuint* textures)
 {
-    for (GLsizei i = 0; i < n; ++i)
-    {
-        GLuint id = g_gl.nextTextureId++;
-        TextureResource tex{};
-        tex.glId = id;
-        tex.srvIndex = UINT_MAX;
-        tex.minFilter = g_gl.defaultMinFilter;
-        tex.magFilter = g_gl.defaultMagFilter;
-        tex.wrapS = g_gl.defaultWrapS;
-        tex.wrapT = g_gl.defaultWrapT;
+	for (GLsizei i = 0; i < n; ++i)
+	{
+		GLuint id = g_gl.nextTextureId++;
+		TextureResource tex{};
+		tex.glId = id;
+		tex.srvIndex = UINT_MAX;
+		tex.minFilter = g_gl.defaultMinFilter;
+		tex.magFilter = g_gl.defaultMagFilter;
+		tex.wrapS = g_gl.defaultWrapS;
+		tex.wrapT = g_gl.defaultWrapT;
 
-        g_gl.textures[id] = tex;
-        textures[i] = id;
-    }
+		g_gl.textures[id] = tex;
+		textures[i] = id;
+	}
 }
 
 extern "C" void APIENTRY glDeleteTextures(GLsizei n, const GLuint* textures)
 {
-    for (GLsizei i = 0; i < n; ++i)
-    {
-        const GLuint deadId = textures[i];
+	for (GLsizei i = 0; i < n; ++i)
+	{
+		const GLuint deadId = textures[i];
 
-        for (UINT unit = 0; unit < QD3D12_MaxTextureUnits; ++unit)
-        {
-            if (g_gl.boundTexture[unit] == deadId)
-                g_gl.boundTexture[unit] = 0;
-        }
+		for (UINT unit = 0; unit < QD3D12_MaxTextureUnits; ++unit)
+		{
+			if (g_gl.boundTexture[unit] == deadId)
+				g_gl.boundTexture[unit] = 0;
+		}
 
-        auto it = g_gl.textures.find(deadId);
-        if (it != g_gl.textures.end())
-        {
-            QD3D12_RetireResource(it->second.texture);
-            it->second.gpuValid = false;
-            g_gl.textures.erase(it);
-        }
-    }
+		auto it = g_gl.textures.find(deadId);
+		if (it != g_gl.textures.end())
+		{
+			QD3D12_RetireResource(it->second.texture);
+			it->second.gpuValid = false;
+			g_gl.textures.erase(it);
+		}
+	}
 }
 
 #ifdef _DEBUG
@@ -4127,24 +4223,24 @@ extern "C" void APIENTRY glDeleteTextures(GLsizei n, const GLuint* textures)
 #endif
 extern "C" void APIENTRY glBindTexture(GLenum, GLuint texture)
 {
-    g_gl.boundTexture[g_gl.activeTextureUnit] = texture;
+	g_gl.boundTexture[g_gl.activeTextureUnit] = texture;
 
-    if (texture == 0)
-        return;
+	if (texture == 0)
+		return;
 
-    auto& textures = g_gl.textures;
-    auto it = textures.find(texture);
-    if (it == textures.end())
-    {
-        TextureResource tex{};
-        tex.glId = texture;
-        tex.srvIndex = UINT_MAX;
-        tex.minFilter = g_gl.defaultMinFilter;
-        tex.magFilter = g_gl.defaultMagFilter;
-        tex.wrapS = g_gl.defaultWrapS;
-        tex.wrapT = g_gl.defaultWrapT;
-        textures.emplace(texture, tex);
-    }
+	auto& textures = g_gl.textures;
+	auto it = textures.find(texture);
+	if (it == textures.end())
+	{
+		TextureResource tex{};
+		tex.glId = texture;
+		tex.srvIndex = UINT_MAX;
+		tex.minFilter = g_gl.defaultMinFilter;
+		tex.magFilter = g_gl.defaultMagFilter;
+		tex.wrapS = g_gl.defaultWrapS;
+		tex.wrapT = g_gl.defaultWrapT;
+		textures.emplace(texture, tex);
+	}
 }
 #ifdef _DEBUG
 #pragma optimize on
@@ -4152,320 +4248,320 @@ extern "C" void APIENTRY glBindTexture(GLenum, GLuint texture)
 
 extern "C" void APIENTRY glLoadMatrixf(const GLfloat* m)
 {
-    if (!m)
-        return;
+	if (!m)
+		return;
 
-    auto& top = QD3D12_CurrentMatrixStack().back();
-    memcpy(top.m, m, sizeof(top.m));
+	auto& top = QD3D12_CurrentMatrixStack().back();
+	memcpy(top.m, m, sizeof(top.m));
 }
 
-extern "C" void APIENTRY glGetIntegerv(GLenum pname, GLint *params)
+extern "C" void APIENTRY glGetIntegerv(GLenum pname, GLint* params)
 {
-    if (!params)
-        return;
+	if (!params)
+		return;
 
-    switch (pname)
-    {
-        case GL_MAX_TEXTURES_SGIS:
-        case GL_MAX_ACTIVE_TEXTURES_ARB:
-            *params = (GLint)QD3D12_MaxTextureUnits;
-            break;
+	switch (pname)
+	{
+	case GL_MAX_TEXTURES_SGIS:
+	case GL_MAX_ACTIVE_TEXTURES_ARB:
+		*params = (GLint)QD3D12_MaxTextureUnits;
+		break;
 
-        case GL_VIEWPORT:
-            params[0] = g_gl.viewportX;
-            params[1] = g_gl.viewportY;
-            params[2] = (GLint)g_gl.viewportW;
-            params[3] = (GLint)g_gl.viewportH;
-            break;
+	case GL_VIEWPORT:
+		params[0] = g_gl.viewportX;
+		params[1] = g_gl.viewportY;
+		params[2] = (GLint)g_gl.viewportW;
+		params[3] = (GLint)g_gl.viewportH;
+		break;
 
-        case GL_FOG_MODE:
-            *params = (GLint)g_gl.fogMode;
-            break;
-        case GL_FOG_HINT:
-            *params = (GLint)g_gl.fogHint;
-            break;
+	case GL_FOG_MODE:
+		*params = (GLint)g_gl.fogMode;
+		break;
+	case GL_FOG_HINT:
+		*params = (GLint)g_gl.fogHint;
+		break;
 
-        case GL_SELECTED_TEXTURE_SGIS:
-            *params = (GLint)(GL_TEXTURE0_SGIS + g_gl.activeTextureUnit);
-            break;
+	case GL_SELECTED_TEXTURE_SGIS:
+		*params = (GLint)(GL_TEXTURE0_SGIS + g_gl.activeTextureUnit);
+		break;
 
-        case GL_ACTIVE_TEXTURE_ARB:
-            *params = (GLint)(GL_TEXTURE0_ARB + g_gl.activeTextureUnit);
-            break;
+	case GL_ACTIVE_TEXTURE_ARB:
+		*params = (GLint)(GL_TEXTURE0_ARB + g_gl.activeTextureUnit);
+		break;
 
-        case GL_CLIENT_ACTIVE_TEXTURE_ARB:
-            *params = (GLint)(GL_TEXTURE0_ARB + g_gl.clientActiveTextureUnit);
-            break;
+	case GL_CLIENT_ACTIVE_TEXTURE_ARB:
+		*params = (GLint)(GL_TEXTURE0_ARB + g_gl.clientActiveTextureUnit);
+		break;
 
-        case GL_MAX_TEXTURE_SIZE:
-            *params = 4096;
-            break;
+	case GL_MAX_TEXTURE_SIZE:
+		*params = 4096;
+		break;
 
-        default:
-            *params = 0;
-            break;
-    }
+	default:
+		*params = 0;
+		break;
+	}
 }
 
-extern "C" void APIENTRY glGetFloatv(GLenum pname, GLfloat *params)
+extern "C" void APIENTRY glGetFloatv(GLenum pname, GLfloat* params)
 {
-    if (!params)
-        return;
+	if (!params)
+		return;
 
-    switch (pname)
-    {
-        case GL_FOG_DENSITY:
-            params[0] = g_gl.fogDensity;
-            break;
-        case GL_FOG_START:
-            params[0] = g_gl.fogStart;
-            break;
-        case GL_FOG_END:
-            params[0] = g_gl.fogEnd;
-            break;
-        case GL_FOG_COLOR:
-            params[0] = g_gl.fogColor[0];
-            params[1] = g_gl.fogColor[1];
-            params[2] = g_gl.fogColor[2];
-            params[3] = g_gl.fogColor[3];
-            break;
-        case GL_MODELVIEW_MATRIX:
-            memcpy(params, g_gl.modelStack.back().m, sizeof(GLfloat) * 16);
-            break;
-        case GL_PROJECTION_MATRIX:
-            memcpy(params, g_gl.projStack.back().m, sizeof(GLfloat) * 16);
-            break;
-        default:
-            memset(params, 0, sizeof(GLfloat) * 16);
-            break;
-    }
+	switch (pname)
+	{
+	case GL_FOG_DENSITY:
+		params[0] = g_gl.fogDensity;
+		break;
+	case GL_FOG_START:
+		params[0] = g_gl.fogStart;
+		break;
+	case GL_FOG_END:
+		params[0] = g_gl.fogEnd;
+		break;
+	case GL_FOG_COLOR:
+		params[0] = g_gl.fogColor[0];
+		params[1] = g_gl.fogColor[1];
+		params[2] = g_gl.fogColor[2];
+		params[3] = g_gl.fogColor[3];
+		break;
+	case GL_MODELVIEW_MATRIX:
+		memcpy(params, g_gl.modelStack.back().m, sizeof(GLfloat) * 16);
+		break;
+	case GL_PROJECTION_MATRIX:
+		memcpy(params, g_gl.projStack.back().m, sizeof(GLfloat) * 16);
+		break;
+	default:
+		memset(params, 0, sizeof(GLfloat) * 16);
+		break;
+	}
 }
 
-extern "C" void APIENTRY glGetDoublev(GLenum pname, GLdouble *params)
+extern "C" void APIENTRY glGetDoublev(GLenum pname, GLdouble* params)
 {
-    if (!params)
-        return;
+	if (!params)
+		return;
 
-    switch (pname)
-    {
-        case GL_MODELVIEW_MATRIX:
-            for (int i = 0; i < 16; ++i)
-                params[i] = (GLdouble)g_gl.modelStack.back().m[i];
-            break;
+	switch (pname)
+	{
+	case GL_MODELVIEW_MATRIX:
+		for (int i = 0; i < 16; ++i)
+			params[i] = (GLdouble)g_gl.modelStack.back().m[i];
+		break;
 
-        case GL_PROJECTION_MATRIX:
-            for (int i = 0; i < 16; ++i)
-                params[i] = (GLdouble)g_gl.projStack.back().m[i];
-            break;
+	case GL_PROJECTION_MATRIX:
+		for (int i = 0; i < 16; ++i)
+			params[i] = (GLdouble)g_gl.projStack.back().m[i];
+		break;
 
-        default:
-            for (int i = 0; i < 16; ++i)
-                params[i] = 0.0;
-            break;
-    }
+	default:
+		for (int i = 0; i < 16; ++i)
+			params[i] = 0.0;
+		break;
+	}
 }
 
 extern "C" void APIENTRY glFrustum(GLdouble left, GLdouble right,
-    GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar)
+	GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar)
 {
-    auto Quantize = [](float v, float steps) -> float
-        {
-            return floorf(v * steps + 0.5f) / steps;
-        };
+	auto Quantize = [](float v, float steps) -> float
+		{
+			return floorf(v * steps + 0.5f) / steps;
+		};
 
-    const float l = (float)left;
-    const float r = (float)right;
-    const float b = (float)bottom;
-    const float t = (float)top;
-    const float n = (float)zNear;
-    const float fz = (float)zFar;
+	const float l = (float)left;
+	const float r = (float)right;
+	const float b = (float)bottom;
+	const float t = (float)top;
+	const float n = (float)zNear;
+	const float fz = (float)zFar;
 
-    const float invW = 1.0f / (r - l);
-    const float invH = 1.0f / (t - b);
-    const float invD = 1.0f / (fz - n);
+	const float invW = 1.0f / (r - l);
+	const float invH = 1.0f / (t - b);
+	const float invD = 1.0f / (fz - n);
 
-    float xScale = (2.0f * n) * invW;
-    float yScale = (2.0f * n) * invH;
-    float xCenter = (r + l) * invW;
-    float yCenter = (t + b) * invH;
-    float zScale = -(fz + n) * invD;
-    float zTrans = -(2.0f * fz * n) * invD;
+	float xScale = (2.0f * n) * invW;
+	float yScale = (2.0f * n) * invH;
+	float xCenter = (r + l) * invW;
+	float yCenter = (t + b) * invH;
+	float zScale = -(fz + n) * invD;
+	float zTrans = -(2.0f * fz * n) * invD;
 
-    //
-    // Intentionally degrade precision a bit to feel less "perfect OpenGL".
-    // Tune these to taste.
-    //
-    // Lower numbers = chunkier / more old-school distortion feel.
-    //
-    const float scaleQuant = 256.0f;
-    const float centerQuant = 128.0f;
-    const float depthQuant = 1024.0f;
+	//
+	// Intentionally degrade precision a bit to feel less "perfect OpenGL".
+	// Tune these to taste.
+	//
+	// Lower numbers = chunkier / more old-school distortion feel.
+	//
+	const float scaleQuant = 256.0f;
+	const float centerQuant = 128.0f;
+	const float depthQuant = 1024.0f;
 
-    xScale = Quantize(xScale, scaleQuant);
-    yScale = Quantize(yScale, scaleQuant);
-    xCenter = Quantize(xCenter, centerQuant);
-    yCenter = Quantize(yCenter, centerQuant);
+	xScale = Quantize(xScale, scaleQuant);
+	yScale = Quantize(yScale, scaleQuant);
+	xCenter = Quantize(xCenter, centerQuant);
+	yCenter = Quantize(yCenter, centerQuant);
 
-    // Optional: make depth a little less precise / less "modern perfect".
-    zScale = Quantize(zScale, depthQuant);
-    zTrans = Quantize(zTrans, depthQuant);
+	// Optional: make depth a little less precise / less "modern perfect".
+	zScale = Quantize(zScale, depthQuant);
+	zTrans = Quantize(zTrans, depthQuant);
 
-    Mat4 proj{};
-    proj.m[0] = xScale;
-    proj.m[5] = yScale;
-    proj.m[8] = xCenter;
-    proj.m[9] = yCenter;
-    proj.m[10] = zScale;
-    proj.m[11] = -1.0f;
-    proj.m[14] = zTrans;
+	Mat4 proj{};
+	proj.m[0] = xScale;
+	proj.m[5] = yScale;
+	proj.m[8] = xCenter;
+	proj.m[9] = yCenter;
+	proj.m[10] = zScale;
+	proj.m[11] = -1.0f;
+	proj.m[14] = zTrans;
 
-    auto& topMat = QD3D12_CurrentMatrixStack().back();
-    topMat = Mat4::Multiply(topMat, proj);
+	auto& topMat = QD3D12_CurrentMatrixStack().back();
+	topMat = Mat4::Multiply(topMat, proj);
 }
 
 extern "C" void APIENTRY glDepthFunc(GLenum func)
 {
-    g_gl.depthFunc = func;
+	g_gl.depthFunc = func;
 }
 
 extern "C" void APIENTRY glColor4fv(const GLfloat* v)
 {
-    if (!v)
-        return;
+	if (!v)
+		return;
 
-    g_gl.curColor[0] = v[0];
-    g_gl.curColor[1] = v[1];
-    g_gl.curColor[2] = v[2];
-    g_gl.curColor[3] = v[3];
+	g_gl.curColor[0] = v[0];
+	g_gl.curColor[1] = v[1];
+	g_gl.curColor[2] = v[2];
+	g_gl.curColor[3] = v[3];
 }
 
 extern "C" void APIENTRY glTexParameterf(GLenum, GLenum pname, GLfloat param)
 {
-    GLenum value = (GLenum)param;
-    GLuint bound = g_gl.boundTexture[g_gl.activeTextureUnit];
+	GLenum value = (GLenum)param;
+	GLuint bound = g_gl.boundTexture[g_gl.activeTextureUnit];
 
-    if (bound == 0 || g_gl.textures.empty())
-    {
-        switch (pname)
-        {
-        case GL_TEXTURE_MIN_FILTER: g_gl.defaultMinFilter = value; break;
-        case GL_TEXTURE_MAG_FILTER: g_gl.defaultMagFilter = value; break;
-        case GL_TEXTURE_WRAP_S:     g_gl.defaultWrapS = value; break;
-        case GL_TEXTURE_WRAP_T:     g_gl.defaultWrapT = value; break;
-        default: break;
-        }
-        return;
-    }
+	if (bound == 0 || g_gl.textures.empty())
+	{
+		switch (pname)
+		{
+		case GL_TEXTURE_MIN_FILTER: g_gl.defaultMinFilter = value; break;
+		case GL_TEXTURE_MAG_FILTER: g_gl.defaultMagFilter = value; break;
+		case GL_TEXTURE_WRAP_S:     g_gl.defaultWrapS = value; break;
+		case GL_TEXTURE_WRAP_T:     g_gl.defaultWrapT = value; break;
+		default: break;
+		}
+		return;
+	}
 
-    auto it = g_gl.textures.find(bound);
-    if (it == g_gl.textures.end())
-        return;
+	auto it = g_gl.textures.find(bound);
+	if (it == g_gl.textures.end())
+		return;
 
-    TextureResource& tex = it->second;
-    switch (pname)
-    {
-    case GL_TEXTURE_MIN_FILTER: tex.minFilter = value; break;
-    case GL_TEXTURE_MAG_FILTER: tex.magFilter = value; break;
-    case GL_TEXTURE_WRAP_S:     tex.wrapS = value; break;
-    case GL_TEXTURE_WRAP_T:     tex.wrapT = value; break;
-    default: break;
-    }
+	TextureResource& tex = it->second;
+	switch (pname)
+	{
+	case GL_TEXTURE_MIN_FILTER: tex.minFilter = value; break;
+	case GL_TEXTURE_MAG_FILTER: tex.magFilter = value; break;
+	case GL_TEXTURE_WRAP_S:     tex.wrapS = value; break;
+	case GL_TEXTURE_WRAP_T:     tex.wrapT = value; break;
+	default: break;
+	}
 }
 
 extern "C" void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param)
 {
 #if 0
-    if (target != GL_TEXTURE_ENV)
-        return;
+	if (target != GL_TEXTURE_ENV)
+		return;
 
-    if (pname != GL_TEXTURE_ENV_MODE)
-        return;
+	if (pname != GL_TEXTURE_ENV_MODE)
+		return;
 
-    GLenum mode = (GLenum)param;
-    switch (mode)
-    {
-    case GL_MODULATE:
-    case GL_REPLACE:
-    case GL_BLEND:
+	GLenum mode = (GLenum)param;
+	switch (mode)
+	{
+	case GL_MODULATE:
+	case GL_REPLACE:
+	case GL_BLEND:
 #ifdef GL_ADD
-    case GL_ADD:
+	case GL_ADD:
 #endif
-        g_gl.texEnvMode[g_gl.activeTextureUnit] = mode;
-        break;
+		g_gl.texEnvMode[g_gl.activeTextureUnit] = mode;
+		break;
 
-    default:
-        // Quake mostly uses MODULATE; fall back safely.
-        g_gl.texEnvMode[g_gl.activeTextureUnit] = GL_MODULATE;
-        break;
-    }
+	default:
+		// Quake mostly uses MODULATE; fall back safely.
+		g_gl.texEnvMode[g_gl.activeTextureUnit] = GL_MODULATE;
+		break;
+	}
 #endif
 }
 
 extern "C" void APIENTRY glTexImage2D(GLenum, GLint, GLint internalFormat,
-    GLsizei width, GLsizei height, GLint, GLenum format, GLenum type, const GLvoid* pixels)
+	GLsizei width, GLsizei height, GLint, GLenum format, GLenum type, const GLvoid* pixels)
 {
-    auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
-    if (it == g_gl.textures.end())
-        return;
+	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
+	if (it == g_gl.textures.end())
+		return;
 
-    TextureResource& tex = it->second;
+	TextureResource& tex = it->second;
 
-    tex.width = width;
-    tex.height = height;
-    tex.format = (format != 0) ? format : (GLenum)internalFormat;
+	tex.width = width;
+	tex.height = height;
+	tex.format = (format != 0) ? format : (GLenum)internalFormat;
 
-    const int bpp = BytesPerPixel(tex.format, type);
-    tex.sysmem.resize((size_t)width * (size_t)height * (size_t)bpp);
-    if (pixels)
-        memcpy(tex.sysmem.data(), pixels, tex.sysmem.size());
-    else
-        memset(tex.sysmem.data(), 0, tex.sysmem.size());
+	const int bpp = BytesPerPixel(tex.format, type);
+	tex.sysmem.resize((size_t)width * (size_t)height * (size_t)bpp);
+	if (pixels)
+		memcpy(tex.sysmem.data(), pixels, tex.sysmem.size());
+	else
+		memset(tex.sysmem.data(), 0, tex.sysmem.size());
 
-    EnsureTextureResource(tex);
-    tex.gpuValid = false;
+	EnsureTextureResource(tex);
+	tex.gpuValid = false;
 }
 
 extern "C" void APIENTRY glTexSubImage2D(GLenum, GLint, GLint xoffset, GLint yoffset,
-    GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* pixels)
+	GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* pixels)
 {
-    auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
-    if (it == g_gl.textures.end() || !pixels)
-        return;
+	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
+	if (it == g_gl.textures.end() || !pixels)
+		return;
 
-    TextureResource& tex = it->second;
-    if (tex.width <= 0 || tex.height <= 0)
-        return;
+	TextureResource& tex = it->second;
+	if (tex.width <= 0 || tex.height <= 0)
+		return;
 
-    const int bpp = BytesPerPixel(format, type);
-    if (tex.sysmem.empty())
-        tex.sysmem.resize((size_t)tex.width * (size_t)tex.height * (size_t)bpp);
+	const int bpp = BytesPerPixel(format, type);
+	if (tex.sysmem.empty())
+		tex.sysmem.resize((size_t)tex.width * (size_t)tex.height * (size_t)bpp);
 
-    const uint8_t* src = (const uint8_t*)pixels;
-    for (int row = 0; row < height; ++row)
-    {
-        size_t dstOff = ((size_t)(yoffset + row) * (size_t)tex.width + (size_t)xoffset) * (size_t)bpp;
-        size_t srcOff = (size_t)row * (size_t)width * (size_t)bpp;
-        memcpy(tex.sysmem.data() + dstOff, src + srcOff, (size_t)width * (size_t)bpp);
-    }
+	const uint8_t* src = (const uint8_t*)pixels;
+	for (int row = 0; row < height; ++row)
+	{
+		size_t dstOff = ((size_t)(yoffset + row) * (size_t)tex.width + (size_t)xoffset) * (size_t)bpp;
+		size_t srcOff = (size_t)row * (size_t)width * (size_t)bpp;
+		memcpy(tex.sysmem.data() + dstOff, src + srcOff, (size_t)width * (size_t)bpp);
+	}
 
-    tex.gpuValid = false;
+	tex.gpuValid = false;
 }
 
 extern "C" void APIENTRY glReadPixels(GLint, GLint, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid* data)
 {
-    if (!data)
-        return;
-    memset(data, 0, (size_t)width * (size_t)height * (size_t)BytesPerPixel(format, type));
+	if (!data)
+		return;
+	memset(data, 0, (size_t)width * (size_t)height * (size_t)BytesPerPixel(format, type));
 }
 
 extern "C" void APIENTRY glDrawBuffer(GLenum mode)
 {
-    g_gl.drawBuffer = mode;
+	g_gl.drawBuffer = mode;
 }
 
 extern "C" void APIENTRY glReadBuffer(GLenum mode)
 {
-    g_gl.readBuffer = mode;
+	g_gl.readBuffer = mode;
 }
 
 // ============================================================
@@ -4474,7 +4570,7 @@ extern "C" void APIENTRY glReadBuffer(GLenum mode)
 
 void QD3D12_DrawArrays(GLenum mode, const GLVertex* verts, size_t count)
 {
-    FlushImmediate(mode, verts, count);
+	FlushImmediate(mode, verts, count);
 }
 
 void QD3D12_ReleaseWindowSizeResources(QD3D12Window& w)
@@ -4509,6 +4605,9 @@ void QD3D12_Resize()
 	if (g_currentWindow->width == width && g_currentWindow->height == height)
 		return;
 
+	if (g_gl.frameOpen || !g_gl.queuedBatches.empty())
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+
 	QD3D12_WaitForGPU();
 
 	g_gl.queuedBatches.clear();
@@ -4537,166 +4636,166 @@ void QD3D12_Resize()
 }
 
 extern "C" GLenum APIENTRY glGetError(void) {
-    GLenum e = g_gl.lastError;
-    g_gl.lastError = GL_NO_ERROR;
-    return e;
+	GLenum e = g_gl.lastError;
+	g_gl.lastError = GL_NO_ERROR;
+	return e;
 }
 
 extern "C" void APIENTRY glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
-    g_gl.scissorX = x;
-    g_gl.scissorY = y;
-    g_gl.scissorW = width;
-    g_gl.scissorH = height;
+	g_gl.scissorX = x;
+	g_gl.scissorY = y;
+	g_gl.scissorW = width;
+	g_gl.scissorH = height;
 }
 
 extern "C" void APIENTRY glClearDepth(GLclampd depth) {
-    g_gl.clearDepthValue = depth;
+	g_gl.clearDepthValue = depth;
 }
 
 extern "C" void APIENTRY glClipPlane(GLenum plane, const GLdouble* equation) {
-    if (plane == GL_CLIP_PLANE0 && equation) {
-        memcpy(g_gl.clipPlane0, equation, sizeof(g_gl.clipPlane0));
-    }
+	if (plane == GL_CLIP_PLANE0 && equation) {
+		memcpy(g_gl.clipPlane0, equation, sizeof(g_gl.clipPlane0));
+	}
 }
 
 extern "C" void APIENTRY glPolygonOffset(GLfloat factor, GLfloat units) {
-    g_gl.polygonOffsetFactor = factor;
-    g_gl.polygonOffsetUnits = units;
+	g_gl.polygonOffsetFactor = factor;
+	g_gl.polygonOffsetUnits = units;
 }
 
 extern "C" void APIENTRY glTexCoord2fv(const GLfloat* v) {
-    if (!v) return;
-    glTexCoord2f(v[0], v[1]);
+	if (!v) return;
+	glTexCoord2f(v[0], v[1]);
 }
 
 extern "C" void APIENTRY glColor4ubv(const GLubyte* v) {
-    if (!v) return;
-    g_gl.curColor[0] = v[0] / 255.0f;
-    g_gl.curColor[1] = v[1] / 255.0f;
-    g_gl.curColor[2] = v[2] / 255.0f;
-    g_gl.curColor[3] = v[3] / 255.0f;
+	if (!v) return;
+	g_gl.curColor[0] = v[0] / 255.0f;
+	g_gl.curColor[1] = v[1] / 255.0f;
+	g_gl.curColor[2] = v[2] / 255.0f;
+	g_gl.curColor[3] = v[3] / 255.0f;
 }
 
 extern "C" void APIENTRY glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {
-    if (!params) return;
-    glTexParameterf(target, pname, params[0]);
+	if (!params) return;
+	glTexParameterf(target, pname, params[0]);
 }
 
 extern "C" void APIENTRY glStencilMask(GLuint mask) {
-    g_gl.stencilMask = mask;
+	g_gl.stencilMask = mask;
 }
 
 extern "C" void APIENTRY glClearStencil(GLint s) {
-    g_gl.clearStencilValue = s;
+	g_gl.clearStencilValue = s;
 }
 
 extern "C" void APIENTRY glStencilFunc(GLenum func, GLint ref, GLuint mask) {
-    g_gl.stencilFunc = func;
-    g_gl.stencilRef = ref;
-    g_gl.stencilFuncMask = mask;
+	g_gl.stencilFunc = func;
+	g_gl.stencilRef = ref;
+	g_gl.stencilFuncMask = mask;
 }
 
 extern "C" void APIENTRY glStencilOp(GLenum sfail, GLenum dpfail, GLenum dppass) {
-    g_gl.stencilSFail = sfail;
-    g_gl.stencilDPFail = dpfail;
-    g_gl.stencilDPPass = dppass;
+	g_gl.stencilSFail = sfail;
+	g_gl.stencilDPFail = dpfail;
+	g_gl.stencilDPPass = dppass;
 }
 
 extern "C" void APIENTRY glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
-    g_gl.colorMaskR = r;
-    g_gl.colorMaskG = g;
-    g_gl.colorMaskB = b;
-    g_gl.colorMaskA = a;
+	g_gl.colorMaskR = r;
+	g_gl.colorMaskG = g;
+	g_gl.colorMaskB = b;
+	g_gl.colorMaskA = a;
 }
 
 extern "C" void APIENTRY glClientActiveTextureARB(GLenum texture) {
-    if (texture >= GL_TEXTURE0_ARB)
-        g_gl.clientActiveTextureUnit = ClampValue<GLuint>((GLuint)(texture - GL_TEXTURE0_ARB), 0, QD3D12_MaxTextureUnits - 1);
-    else
-        g_gl.clientActiveTextureUnit = 0;
+	if (texture >= GL_TEXTURE0_ARB)
+		g_gl.clientActiveTextureUnit = ClampValue<GLuint>((GLuint)(texture - GL_TEXTURE0_ARB), 0, QD3D12_MaxTextureUnits - 1);
+	else
+		g_gl.clientActiveTextureUnit = 0;
 }
 
 extern "C" void APIENTRY glLockArraysEXT(GLint first, GLsizei count) {
-    (void)first;
-    (void)count;
+	(void)first;
+	(void)count;
 }
 
 extern "C" void APIENTRY glUnlockArraysEXT(void) {
 }
 
-extern "C" void APIENTRY glNormalPointer(GLenum type, GLsizei stride, const void *pointer)
+extern "C" void APIENTRY glNormalPointer(GLenum type, GLsizei stride, const void* pointer)
 {
-    g_gl.normalArray.size   = 3;
-    g_gl.normalArray.type   = type;
-    g_gl.normalArray.stride = stride;
-    g_gl.normalArray.ptr    = QD3D12_ResolveArrayPointer(pointer);
+	g_gl.normalArray.size = 3;
+	g_gl.normalArray.type = type;
+	g_gl.normalArray.stride = stride;
+	g_gl.normalArray.ptr = QD3D12_ResolveArrayPointer(pointer);
 }
 
 extern "C" void APIENTRY glEnableClientState(GLenum array)
 {
-    switch (array)
-    {
-    case GL_VERTEX_ARRAY:
-        g_gl.vertexArray.enabled = true;
-        break;
-    case GL_NORMAL_ARRAY:
-        g_gl.normalArray.enabled = true;
-        break;
-    case GL_COLOR_ARRAY:
-        g_gl.colorArray.enabled = true;
-        break;
-    case GL_TEXTURE_COORD_ARRAY:
-        g_gl.texCoordArray[g_gl.clientActiveTextureUnit].enabled = true;
-        break;
-    default:
-        break;
-    }
+	switch (array)
+	{
+	case GL_VERTEX_ARRAY:
+		g_gl.vertexArray.enabled = true;
+		break;
+	case GL_NORMAL_ARRAY:
+		g_gl.normalArray.enabled = true;
+		break;
+	case GL_COLOR_ARRAY:
+		g_gl.colorArray.enabled = true;
+		break;
+	case GL_TEXTURE_COORD_ARRAY:
+		g_gl.texCoordArray[g_gl.clientActiveTextureUnit].enabled = true;
+		break;
+	default:
+		break;
+	}
 }
 
 extern "C" void APIENTRY glDisableClientState(GLenum array)
 {
-    switch (array)
-    {
-    case GL_VERTEX_ARRAY:
-        g_gl.vertexArray.enabled = false;
-        break;
-    case GL_NORMAL_ARRAY:
-        g_gl.normalArray.enabled = false;
-        break;
-    case GL_COLOR_ARRAY:
-        g_gl.colorArray.enabled = false;
-        break;
-    case GL_TEXTURE_COORD_ARRAY:
-        g_gl.texCoordArray[g_gl.clientActiveTextureUnit].enabled = false;
-        break;
-    default:
-        break;
-    }
+	switch (array)
+	{
+	case GL_VERTEX_ARRAY:
+		g_gl.vertexArray.enabled = false;
+		break;
+	case GL_NORMAL_ARRAY:
+		g_gl.normalArray.enabled = false;
+		break;
+	case GL_COLOR_ARRAY:
+		g_gl.colorArray.enabled = false;
+		break;
+	case GL_TEXTURE_COORD_ARRAY:
+		g_gl.texCoordArray[g_gl.clientActiveTextureUnit].enabled = false;
+		break;
+	default:
+		break;
+	}
 }
 
-extern "C" void APIENTRY glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr)
+extern "C" void APIENTRY glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
 {
-    g_gl.vertexArray.size   = size;
-    g_gl.vertexArray.type   = type;
-    g_gl.vertexArray.stride = stride;
-    g_gl.vertexArray.ptr    = QD3D12_ResolveArrayPointer(ptr);
+	g_gl.vertexArray.size = size;
+	g_gl.vertexArray.type = type;
+	g_gl.vertexArray.stride = stride;
+	g_gl.vertexArray.ptr = QD3D12_ResolveArrayPointer(ptr);
 }
 
-extern "C" void APIENTRY glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr)
+extern "C" void APIENTRY glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
 {
-    g_gl.colorArray.size   = size;
-    g_gl.colorArray.type   = type;
-    g_gl.colorArray.stride = stride;
-    g_gl.colorArray.ptr    = QD3D12_ResolveArrayPointer(ptr);
+	g_gl.colorArray.size = size;
+	g_gl.colorArray.type = type;
+	g_gl.colorArray.stride = stride;
+	g_gl.colorArray.ptr = QD3D12_ResolveArrayPointer(ptr);
 }
 
-extern "C" void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr)
+extern "C" void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
 {
-    auto &tc  = g_gl.texCoordArray[g_gl.clientActiveTextureUnit];
-    tc.size   = size;
-    tc.type   = type;
-    tc.stride = stride;
-    tc.ptr    = QD3D12_ResolveArrayPointer(ptr);
+	auto& tc = g_gl.texCoordArray[g_gl.clientActiveTextureUnit];
+	tc.size = size;
+	tc.type = type;
+	tc.stride = stride;
+	tc.ptr = QD3D12_ResolveArrayPointer(ptr);
 }
 
 extern "C" void APIENTRY glArrayElement(GLint i)
@@ -4763,565 +4862,570 @@ extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type,
 }
 
 extern "C" PROC WINAPI qd3d12_wglGetProcAddress(LPCSTR name) {
-    if (!name) return nullptr;
+	if (!name) return nullptr;
 
-    struct ProcMap { const char* name; PROC proc; };
-    static const ProcMap table[] = {
-        { "glActiveTextureARB",         (PROC)glActiveTextureARB },
-        { "glClientActiveTextureARB",   (PROC)glClientActiveTextureARB },
-        { "glMultiTexCoord2fARB",       (PROC)glMultiTexCoord2fARB },
-        { "glSelectTextureSGIS",        (PROC)glSelectTextureSGIS },
-        { "glMTexCoord2fSGIS",          (PROC)glMTexCoord2fSGIS },
-        { "glLockArraysEXT",            (PROC)glLockArraysEXT },
-        { "glUnlockArraysEXT",          (PROC)glUnlockArraysEXT },
-        { "wglSwapIntervalEXT",         (PROC)qd3d12_wglSwapIntervalEXT },
-        { "wglGetDeviceGammaRamp3DFX",  (PROC)qd3d12_wglGetDeviceGammaRamp3DFX },
-        { "wglSetDeviceGammaRamp3DFX",  (PROC)qd3d12_wglSetDeviceGammaRamp3DFX },
-        { "glBindTextureEXT",           (PROC)glBindTextureEXT },
-    };
+	struct ProcMap { const char* name; PROC proc; };
+	static const ProcMap table[] = {
+		{ "glActiveTextureARB",         (PROC)glActiveTextureARB },
+		{ "glClientActiveTextureARB",   (PROC)glClientActiveTextureARB },
+		{ "glMultiTexCoord2fARB",       (PROC)glMultiTexCoord2fARB },
+		{ "glSelectTextureSGIS",        (PROC)glSelectTextureSGIS },
+		{ "glMTexCoord2fSGIS",          (PROC)glMTexCoord2fSGIS },
+		{ "glLockArraysEXT",            (PROC)glLockArraysEXT },
+		{ "glUnlockArraysEXT",          (PROC)glUnlockArraysEXT },
+		{ "wglSwapIntervalEXT",         (PROC)qd3d12_wglSwapIntervalEXT },
+		{ "wglGetDeviceGammaRamp3DFX",  (PROC)qd3d12_wglGetDeviceGammaRamp3DFX },
+		{ "wglSetDeviceGammaRamp3DFX",  (PROC)qd3d12_wglSetDeviceGammaRamp3DFX },
+		{ "glBindTextureEXT",           (PROC)glBindTextureEXT },
+	};
 
-    for (size_t i = 0; i < _countof(table); ++i) {
-        if (!strcmp(name, table[i].name))
-            return table[i].proc;
-    }
-    return nullptr;
+	for (size_t i = 0; i < _countof(table); ++i) {
+		if (!strcmp(name, table[i].name))
+			return table[i].proc;
+	}
+	return nullptr;
 }
 
 extern "C" void APIENTRY glFogf(GLenum pname, GLfloat param)
 {
-    switch (pname)
-    {
-    case GL_FOG_MODE:
-        g_gl.fogMode = (GLenum)param;
-        break;
-    case GL_FOG_DENSITY:
-        g_gl.fogDensity = param;
-        break;
-    case GL_FOG_START:
-        g_gl.fogStart = param;
-        break;
-    case GL_FOG_END:
-        g_gl.fogEnd = param;
-        break;
-    default:
-        g_gl.lastError = GL_INVALID_ENUM;
-        break;
-    }
+	switch (pname)
+	{
+	case GL_FOG_MODE:
+		g_gl.fogMode = (GLenum)param;
+		break;
+	case GL_FOG_DENSITY:
+		g_gl.fogDensity = param;
+		break;
+	case GL_FOG_START:
+		g_gl.fogStart = param;
+		break;
+	case GL_FOG_END:
+		g_gl.fogEnd = param;
+		break;
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		break;
+	}
 }
 
 extern "C" void APIENTRY glFogi(GLenum pname, GLint param)
 {
-    glFogf(pname, (GLfloat)param);
+	glFogf(pname, (GLfloat)param);
 }
 
 extern "C" void APIENTRY glFogfv(GLenum pname, const GLfloat* params)
 {
-    if (!params)
-        return;
+	if (!params)
+		return;
 
-    switch (pname)
-    {
-    case GL_FOG_MODE:
-        g_gl.fogMode = (GLenum)params[0];
-        break;
-    case GL_FOG_DENSITY:
-        g_gl.fogDensity = params[0];
-        break;
-    case GL_FOG_START:
-        g_gl.fogStart = params[0];
-        break;
-    case GL_FOG_END:
-        g_gl.fogEnd = params[0];
-        break;
-    case GL_FOG_COLOR:
-        g_gl.fogColor[0] = params[0];
-        g_gl.fogColor[1] = params[1];
-        g_gl.fogColor[2] = params[2];
-        g_gl.fogColor[3] = params[3];
-        break;
-    default:
-        g_gl.lastError = GL_INVALID_ENUM;
-        break;
-    }
+	switch (pname)
+	{
+	case GL_FOG_MODE:
+		g_gl.fogMode = (GLenum)params[0];
+		break;
+	case GL_FOG_DENSITY:
+		g_gl.fogDensity = params[0];
+		break;
+	case GL_FOG_START:
+		g_gl.fogStart = params[0];
+		break;
+	case GL_FOG_END:
+		g_gl.fogEnd = params[0];
+		break;
+	case GL_FOG_COLOR:
+		g_gl.fogColor[0] = params[0];
+		g_gl.fogColor[1] = params[1];
+		g_gl.fogColor[2] = params[2];
+		g_gl.fogColor[3] = params[3];
+		break;
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		break;
+	}
 }
 
 extern "C" void APIENTRY glFogiv(GLenum pname, const GLint* params)
 {
-    if (!params)
-        return;
+	if (!params)
+		return;
 
-    switch (pname)
-    {
-    case GL_FOG_MODE:
-        g_gl.fogMode = (GLenum)params[0];
-        break;
-    case GL_FOG_DENSITY:
-        g_gl.fogDensity = (GLfloat)params[0];
-        break;
-    case GL_FOG_START:
-        g_gl.fogStart = (GLfloat)params[0];
-        break;
-    case GL_FOG_END:
-        g_gl.fogEnd = (GLfloat)params[0];
-        break;
-    case GL_FOG_COLOR:
-        g_gl.fogColor[0] = (GLfloat)params[0];
-        g_gl.fogColor[1] = (GLfloat)params[1];
-        g_gl.fogColor[2] = (GLfloat)params[2];
-        g_gl.fogColor[3] = (GLfloat)params[3];
-        break;
-    default:
-        g_gl.lastError = GL_INVALID_ENUM;
-        break;
-    }
+	switch (pname)
+	{
+	case GL_FOG_MODE:
+		g_gl.fogMode = (GLenum)params[0];
+		break;
+	case GL_FOG_DENSITY:
+		g_gl.fogDensity = (GLfloat)params[0];
+		break;
+	case GL_FOG_START:
+		g_gl.fogStart = (GLfloat)params[0];
+		break;
+	case GL_FOG_END:
+		g_gl.fogEnd = (GLfloat)params[0];
+		break;
+	case GL_FOG_COLOR:
+		g_gl.fogColor[0] = (GLfloat)params[0];
+		g_gl.fogColor[1] = (GLfloat)params[1];
+		g_gl.fogColor[2] = (GLfloat)params[2];
+		g_gl.fogColor[3] = (GLfloat)params[3];
+		break;
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		break;
+	}
 }
 
 extern "C" ID3D12Device* QD3D12_GetDevice(void)
 {
-    return g_gl.device.Get();
+	return g_gl.device.Get();
 }
 
 extern "C" ID3D12CommandQueue* QD3D12_GetQueue(void)
 {
-    return g_gl.queue.Get();
+	return g_gl.queue.Get();
 }
 
 extern "C" ID3D12GraphicsCommandList* QD3D12_GetCommandList(void)
 {
-    return g_gl.cmdList.Get();
+	return g_gl.cmdList.Get();
 }
 
 extern "C" ID3D12CommandAllocator* QD3D12_GetFrameCommandAllocator(void)
 {
-    return g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc.Get();
+	return g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc.Get();
 }
 
 extern "C" UINT QD3D12_GetFrameIndex(void)
 {
-    return g_currentWindow->frameIndex;
+	return g_currentWindow->frameIndex;
 }
 
 extern "C" void QD3D12_WaitForGPU_External(void)
 {
-    QD3D12_WaitForGPU();
+	if (g_gl.frameOpen || !g_gl.queuedBatches.empty())
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+
+	QD3D12_WaitForGPU();
 }
 
 extern "C" ID3D12Resource* glRaytracingGetTopLevelAS(void);
 
 static void QD3D12_TransitionResource(
-    ID3D12GraphicsCommandList* cl,
-    ID3D12Resource* res,
-    D3D12_RESOURCE_STATES& trackedState,
-    D3D12_RESOURCE_STATES newState)
+	ID3D12GraphicsCommandList* cl,
+	ID3D12Resource* res,
+	D3D12_RESOURCE_STATES& trackedState,
+	D3D12_RESOURCE_STATES newState)
 {
-    if (!res || trackedState == newState)
-        return;
+	if (!res || trackedState == newState)
+		return;
 
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = res;
-    b.Transition.StateBefore = trackedState;
-    b.Transition.StateAfter = newState;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cl->ResourceBarrier(1, &b);
+	D3D12_RESOURCE_BARRIER b{};
+	b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	b.Transition.pResource = res;
+	b.Transition.StateBefore = trackedState;
+	b.Transition.StateAfter = newState;
+	b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	cl->ResourceBarrier(1, &b);
 
-    trackedState = newState;
+	trackedState = newState;
 }
 
 extern "C" void glLightScene(void)
 {
-    int width = (int)g_currentWindow->width;
-    int height = (int)g_currentWindow->height;
+	int width = (int)g_currentWindow->width;
+	int height = (int)g_currentWindow->height;
 
-    if (width <= 0 || height <= 0)
-        return;
+	if (width <= 0 || height <= 0)
+		return;
 
-    if (!g_gl.device || !g_gl.cmdList)
-        return;
+	if (!g_gl.device || !g_gl.cmdList)
+		return;
 
-    TextureResource* lightingTex = QD3D12_EnsureLightingTexture(width, height);
-    if (!lightingTex || !lightingTex->texture)
-        return;
+	QD3D12_EnsureFrameOpen();
 
-    glRaytracingBuildScene();
+	TextureResource* lightingTex = QD3D12_EnsureLightingTexture(width, height);
+	if (!lightingTex || !lightingTex->texture)
+		return;
 
-    QD3D12_FlushQueuedBatches();
+	glRaytracingBuildScene();
 
-    ID3D12GraphicsCommandList* cl = g_gl.cmdList.Get();
-    ID3D12Resource* sceneColor = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
-    ID3D12Resource* sceneNormal = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
-    ID3D12Resource* scenePosition = g_currentWindow->positionBuffers[g_currentWindow->frameIndex].Get();
-    ID3D12Resource* sceneDepth = g_currentWindow->depthBuffer.Get();
-    ID3D12Resource* tlas = glRaytracingGetTopLevelAS();
+	QD3D12_FlushQueuedBatches();
 
-    if (!sceneColor || !sceneNormal || !scenePosition || !sceneDepth || !tlas)
-        return;
+	ID3D12GraphicsCommandList* cl = g_gl.cmdList.Get();
+	ID3D12Resource* sceneColor = g_currentWindow->backBuffers[g_currentWindow->frameIndex].Get();
+	ID3D12Resource* sceneNormal = g_currentWindow->normalBuffers[g_currentWindow->frameIndex].Get();
+	ID3D12Resource* scenePosition = g_currentWindow->positionBuffers[g_currentWindow->frameIndex].Get();
+	ID3D12Resource* sceneDepth = g_currentWindow->depthBuffer.Get();
+	ID3D12Resource* tlas = glRaytracingGetTopLevelAS();
 
-    //
-    // 1) Transition G-buffer inputs for DXR reads.
-    //
-    QD3D12_TransitionResource(
-        cl,
-        sceneColor,
-        g_gl.backBufferState[g_currentWindow->frameIndex],
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	if (!sceneColor || !sceneNormal || !scenePosition || !sceneDepth || !tlas)
+		return;
 
-    QD3D12_TransitionResource(
-        cl,
-        sceneNormal,
-        g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	//
+	// 1) Transition G-buffer inputs for DXR reads.
+	//
+	QD3D12_TransitionResource(
+		cl,
+		sceneColor,
+		g_currentWindow->backBufferState[g_currentWindow->frameIndex],
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-    QD3D12_TransitionResource(
-        cl,
-        scenePosition,
-        g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	QD3D12_TransitionResource(
+		cl,
+		sceneNormal,
+		g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-    D3D12_RESOURCE_STATES depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    QD3D12_TransitionResource(
-        cl,
-        sceneDepth,
-        depthState,
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	QD3D12_TransitionResource(
+		cl,
+		scenePosition,
+		g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-    QD3D12_TransitionResource(
-        cl,
-        lightingTex->texture.Get(),
-        g_lightingTextureState,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	D3D12_RESOURCE_STATES depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	QD3D12_TransitionResource(
+		cl,
+		sceneDepth,
+		depthState,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-    //
-    // 2) Run DXR lighting.
-    //
-    glRaytracingLightingPassDesc_t pass = {};
-    pass.albedoTexture = sceneColor;
-    pass.albedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+	QD3D12_TransitionResource(
+		cl,
+		lightingTex->texture.Get(),
+		g_lightingTextureState,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-    pass.normalTexture = sceneNormal;
-    pass.normalFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	//
+	// 2) Run DXR lighting.
+	//
+	glRaytracingLightingPassDesc_t pass = {};
+	pass.albedoTexture = sceneColor;
+	pass.albedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    pass.positionTexture = scenePosition;
-    pass.positionFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	pass.normalTexture = sceneNormal;
+	pass.normalFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-    pass.depthTexture = sceneDepth;
-    pass.depthFormat = DXGI_FORMAT_D32_FLOAT;
+	pass.positionTexture = scenePosition;
+	pass.positionFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-    pass.outputTexture = lightingTex->texture.Get();
-    pass.outputFormat = lightingTex->dxgiFormat;
+	pass.depthTexture = sceneDepth;
+	pass.depthFormat = DXGI_FORMAT_D32_FLOAT;
 
-    pass.topLevelAS = tlas;
-    pass.width = (uint32_t)width;
-    pass.height = (uint32_t)height;
+	pass.outputTexture = lightingTex->texture.Get();
+	pass.outputFormat = lightingTex->dxgiFormat;
 
-    if (!glRaytracingLightingExecute(&pass))
-    {
-        // restore states before bailing
-        QD3D12_TransitionResource(
-            cl,
-            sceneColor,
-            g_gl.backBufferState[g_currentWindow->frameIndex],
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
+	pass.topLevelAS = tlas;
+	pass.width = (uint32_t)width;
+	pass.height = (uint32_t)height;
 
-        QD3D12_TransitionResource(
-            cl,
-            sceneNormal,
-            g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
+	if (!glRaytracingLightingExecute(&pass))
+	{
+		// restore states before bailing
+		QD3D12_TransitionResource(
+			cl,
+			sceneColor,
+			g_currentWindow->backBufferState[g_currentWindow->frameIndex],
+			D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-        QD3D12_TransitionResource(
-            cl,
-            scenePosition,
-            g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
+		QD3D12_TransitionResource(
+			cl,
+			sceneNormal,
+			g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
+			D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-        return;
-    }
+		QD3D12_TransitionResource(
+			cl,
+			scenePosition,
+			g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
+			D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    //
-    // 3) Transition lighting result for raster composite and restore scene RTs.
-    //
-    QD3D12_TransitionResource(
-        cl,
-        lightingTex->texture.Get(),
-        g_lightingTextureState,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+		return;
+	}
 
-    QD3D12_TransitionResource(
-        cl,
-        sceneColor,
-        g_gl.backBufferState[g_currentWindow->frameIndex],
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
+	//
+	// 3) Transition lighting result for raster composite and restore scene RTs.
+	//
+	QD3D12_TransitionResource(
+		cl,
+		lightingTex->texture.Get(),
+		g_lightingTextureState,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    QD3D12_TransitionResource(
-        cl,
-        sceneNormal,
-        g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
+	QD3D12_TransitionResource(
+		cl,
+		sceneColor,
+		g_currentWindow->backBufferState[g_currentWindow->frameIndex],
+		D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    QD3D12_TransitionResource(
-        cl,
-        scenePosition,
-        g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
+	QD3D12_TransitionResource(
+		cl,
+		sceneNormal,
+		g_currentWindow->normalBufferState[g_currentWindow->frameIndex],
+		D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    //
-    // 4) Composite lighting back onto scene color.
-    //
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
+	QD3D12_TransitionResource(
+		cl,
+		scenePosition,
+		g_currentWindow->positionBufferState[g_currentWindow->frameIndex],
+		D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
-    {
-        CurrentRTV(),
-        CurrentNormalRTV(),
-        CurrentPositionRTV()
-    };
-    cl->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
+	//
+	// 4) Composite lighting back onto scene color.
+	//
+	D3D12_CPU_DESCRIPTOR_HANDLE dsv = g_currentWindow->dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
-    GLVertex fsq[6];
-    fsq[0] = { -1.0f, -1.0f, 0.0f, 0, 1, 0, 0, 1, 1, 1, 1 };
-    fsq[1] = { -1.0f,  1.0f, 0.0f, 0, 0, 0, 0, 1, 1, 1, 1 };
-    fsq[2] = { 1.0f,  1.0f, 0.0f, 1, 0, 0, 0, 1, 1, 1, 1 };
-    fsq[3] = { -1.0f, -1.0f, 0.0f, 0, 1, 0, 0, 1, 1, 1, 1 };
-    fsq[4] = { 1.0f,  1.0f, 0.0f, 1, 0, 0, 0, 1, 1, 1, 1 };
-    fsq[5] = { 1.0f, -1.0f, 0.0f, 1, 1, 0, 0, 1, 1, 1, 1 };
+	D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] =
+	{
+		CurrentRTV(),
+		CurrentNormalRTV(),
+		CurrentPositionRTV()
+	};
+	cl->OMSetRenderTargets(3, rtvs, FALSE, &dsv);
 
-    const bool oldBlend = g_gl.blend;
-    const GLenum oldSrc = g_gl.blendSrc;
-    const GLenum oldDst = g_gl.blendDst;
-    const bool oldDepthTest = g_gl.depthTest;
-    const bool oldDepthWrite = g_gl.depthWrite;
-    const bool oldTex0 = g_gl.texture2D[0];
-    const GLuint oldTex0Id = g_gl.boundTexture[0];
+	GLVertex fsq[6];
+	fsq[0] = { -1.0f, -1.0f, 0.0f, 0, 1, 0, 0, 1, 1, 1, 1 };
+	fsq[1] = { -1.0f,  1.0f, 0.0f, 0, 0, 0, 0, 1, 1, 1, 1 };
+	fsq[2] = { 1.0f,  1.0f, 0.0f, 1, 0, 0, 0, 1, 1, 1, 1 };
+	fsq[3] = { -1.0f, -1.0f, 0.0f, 0, 1, 0, 0, 1, 1, 1, 1 };
+	fsq[4] = { 1.0f,  1.0f, 0.0f, 1, 0, 0, 0, 1, 1, 1, 1 };
+	fsq[5] = { 1.0f, -1.0f, 0.0f, 1, 1, 0, 0, 1, 1, 1, 1 };
 
-    g_gl.blend = true;
-    g_gl.blendSrc = GL_ONE;
-    g_gl.blendDst = GL_ONE;
-    g_gl.depthTest = false;
-    g_gl.depthWrite = false;
-    g_gl.texture2D[0] = true;
-    g_gl.boundTexture[0] = g_lightingTextureId;
+	const bool oldBlend = g_gl.blend;
+	const GLenum oldSrc = g_gl.blendSrc;
+	const GLenum oldDst = g_gl.blendDst;
+	const bool oldDepthTest = g_gl.depthTest;
+	const bool oldDepthWrite = g_gl.depthWrite;
+	const bool oldTex0 = g_gl.texture2D[0];
+	const GLuint oldTex0Id = g_gl.boundTexture[0];
 
-    QD3D12_DrawArrays(GL_TRIANGLES, fsq, 6);
-    QD3D12_FlushQueuedBatches();
+	g_gl.blend = true;
+	g_gl.blendSrc = GL_ONE;
+	g_gl.blendDst = GL_ONE;
+	g_gl.depthTest = false;
+	g_gl.depthWrite = false;
+	g_gl.texture2D[0] = true;
+	g_gl.boundTexture[0] = g_lightingTextureId;
 
-    g_gl.blend = oldBlend;
-    g_gl.blendSrc = oldSrc;
-    g_gl.blendDst = oldDst;
-    g_gl.depthTest = oldDepthTest;
-    g_gl.depthWrite = oldDepthWrite;
-    g_gl.texture2D[0] = oldTex0;
-    g_gl.boundTexture[0] = oldTex0Id;
+	QD3D12_DrawArrays(GL_TRIANGLES, fsq, 6);
+	QD3D12_FlushQueuedBatches();
 
-    //
-    // 5) Restore MRT binding for anything else before EndFrame closes.
-    //
-    D3D12_CPU_DESCRIPTOR_HANDLE restoreRtvs[3] =
-    {
-        CurrentRTV(),
-        CurrentNormalRTV(),
-        CurrentPositionRTV()
-    };
-    cl->OMSetRenderTargets(3, restoreRtvs, FALSE, &dsv);
+	g_gl.blend = oldBlend;
+	g_gl.blendSrc = oldSrc;
+	g_gl.blendDst = oldDst;
+	g_gl.depthTest = oldDepthTest;
+	g_gl.depthWrite = oldDepthWrite;
+	g_gl.texture2D[0] = oldTex0;
+	g_gl.boundTexture[0] = oldTex0Id;
+
+	//
+	// 5) Restore MRT binding for anything else before EndFrame closes.
+	//
+	D3D12_CPU_DESCRIPTOR_HANDLE restoreRtvs[3] =
+	{
+		CurrentRTV(),
+		CurrentNormalRTV(),
+		CurrentPositionRTV()
+	};
+	cl->OMSetRenderTargets(3, restoreRtvs, FALSE, &dsv);
 }
 
 ID3D12Resource* QD3D12_GetCurrentBackBuffer()
 {
-    if (!g_currentWindow->swapChain)
-        return nullptr;
+	if (!g_currentWindow->swapChain)
+		return nullptr;
 
-    const UINT index = g_currentWindow->frameIndex;
-    if (index >= QD3D12_FrameCount)
-        return nullptr;
+	const UINT index = g_currentWindow->frameIndex;
+	if (index >= QD3D12_FrameCount)
+		return nullptr;
 
-    return g_currentWindow->backBuffers[index].Get();
+	return g_currentWindow->backBuffers[index].Get();
 }
 
 extern "C" void APIENTRY glGeometryFlagf(GLfloat flag)
 {
-    g_gl.currentGeometryFlag = flag;
+	g_gl.currentGeometryFlag = flag;
 }
 
-extern "C" void APIENTRY glGenBuffers(GLsizei n, GLuint *buffers)
+extern "C" void APIENTRY glGenBuffers(GLsizei n, GLuint* buffers)
 {
-    if (n < 0)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (n < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    if (!buffers)
-        return;
+	if (!buffers)
+		return;
 
-    for (GLsizei i = 0; i < n; ++i)
-    {
-        GLuint         id = g_gl.nextBufferId++;
-        GLBufferObject bo {};
-        bo.id = id;
-        g_gl.buffers.emplace(id, std::move(bo));
-        buffers[i] = id;
-    }
+	for (GLsizei i = 0; i < n; ++i)
+	{
+		GLuint         id = g_gl.nextBufferId++;
+		GLBufferObject bo{};
+		bo.id = id;
+		g_gl.buffers.emplace(id, std::move(bo));
+		buffers[i] = id;
+	}
 }
 
-extern "C" void APIENTRY glDeleteBuffers(GLsizei n, const GLuint *buffers)
+extern "C" void APIENTRY glDeleteBuffers(GLsizei n, const GLuint* buffers)
 {
-    if (n < 0)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (n < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    if (!buffers)
-        return;
+	if (!buffers)
+		return;
 
-    for (GLsizei i = 0; i < n; ++i)
-    {
-        const GLuint id = buffers[i];
-        if (id == 0)
-            continue;
+	for (GLsizei i = 0; i < n; ++i)
+	{
+		const GLuint id = buffers[i];
+		if (id == 0)
+			continue;
 
-        if (g_gl.boundArrayBuffer == id)
-            g_gl.boundArrayBuffer = 0;
+		if (g_gl.boundArrayBuffer == id)
+			g_gl.boundArrayBuffer = 0;
 
-        if (g_gl.boundElementArrayBuffer == id)
-            g_gl.boundElementArrayBuffer = 0;
+		if (g_gl.boundElementArrayBuffer == id)
+			g_gl.boundElementArrayBuffer = 0;
 
-        g_gl.buffers.erase(id);
-    }
+		g_gl.buffers.erase(id);
+	}
 }
 
 extern "C" GLboolean APIENTRY glIsBuffer(GLuint buffer) { return g_gl.buffers.find(buffer) != g_gl.buffers.end() ? GL_TRUE : GL_FALSE; }
 
 extern "C" void APIENTRY glBindBuffer(GLenum target, GLuint buffer)
 {
-    switch (target)
-    {
-        case GL_ARRAY_BUFFER:
-            g_gl.boundArrayBuffer = buffer;
-            break;
+	switch (target)
+	{
+	case GL_ARRAY_BUFFER:
+		g_gl.boundArrayBuffer = buffer;
+		break;
 
-        case GL_ELEMENT_ARRAY_BUFFER:
-            g_gl.boundElementArrayBuffer = buffer;
-            break;
+	case GL_ELEMENT_ARRAY_BUFFER:
+		g_gl.boundElementArrayBuffer = buffer;
+		break;
 
-        default:
-            g_gl.lastError = GL_INVALID_ENUM;
-            return;
-    }
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
 
-    if (buffer == 0)
-        return;
+	if (buffer == 0)
+		return;
 
-    auto it = g_gl.buffers.find(buffer);
-    if (it == g_gl.buffers.end())
-    {
-        GLBufferObject bo {};
-        bo.id     = buffer;
-        bo.target = target;
-        g_gl.buffers.emplace(buffer, std::move(bo));
-    }
-    else
-    {
-        it->second.target = target;
-    }
+	auto it = g_gl.buffers.find(buffer);
+	if (it == g_gl.buffers.end())
+	{
+		GLBufferObject bo{};
+		bo.id = buffer;
+		bo.target = target;
+		g_gl.buffers.emplace(buffer, std::move(bo));
+	}
+	else
+	{
+		it->second.target = target;
+	}
 }
 
-extern "C" void APIENTRY glBufferStorage(GLenum target, GLsizeiptr size, const void *data, GLbitfield flags)
+extern "C" void APIENTRY glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags)
 {
-    GLuint bound = 0;
+	GLuint bound = 0;
 
-    switch (target)
-    {
-        case GL_ARRAY_BUFFER:
-            bound = g_gl.boundArrayBuffer;
-            break;
+	switch (target)
+	{
+	case GL_ARRAY_BUFFER:
+		bound = g_gl.boundArrayBuffer;
+		break;
 
-        case GL_ELEMENT_ARRAY_BUFFER:
-            bound = g_gl.boundElementArrayBuffer;
-            break;
+	case GL_ELEMENT_ARRAY_BUFFER:
+		bound = g_gl.boundElementArrayBuffer;
+		break;
 
-        default:
-            g_gl.lastError = GL_INVALID_ENUM;
-            return;
-    }
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
 
-    if (size < 0)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (size < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    if (bound == 0)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return;
-    }
+	if (bound == 0)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
-    GLBufferObject *bo = QD3D12_GetBuffer(bound);
-    if (!bo)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return;
-    }
+	GLBufferObject* bo = QD3D12_GetBuffer(bound);
+	if (!bo)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
-    bo->target       = target;
-    bo->storageFlags = flags;
-    bo->data.resize((size_t)size);
+	bo->target = target;
+	bo->storageFlags = flags;
+	bo->data.resize((size_t)size);
 
-    if (size > 0)
-    {
-        if (data)
-            memcpy(bo->data.data(), data, (size_t)size);
-        else
-            memset(bo->data.data(), 0, (size_t)size);
-    }
+	if (size > 0)
+	{
+		if (data)
+			memcpy(bo->data.data(), data, (size_t)size);
+		else
+			memset(bo->data.data(), 0, (size_t)size);
+	}
 }
 
-extern "C" void APIENTRY glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage)
+extern "C" void APIENTRY glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage)
 {
-    (void)usage;
-    glBufferStorage(target, size, data, 0);
+	(void)usage;
+	glBufferStorage(target, size, data, 0);
 }
 
-extern "C" void APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data)
+extern "C" void APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data)
 {
-    GLuint bound = 0;
+	GLuint bound = 0;
 
-    switch (target)
-    {
-        case GL_ARRAY_BUFFER:
-            bound = g_gl.boundArrayBuffer;
-            break;
+	switch (target)
+	{
+	case GL_ARRAY_BUFFER:
+		bound = g_gl.boundArrayBuffer;
+		break;
 
-        case GL_ELEMENT_ARRAY_BUFFER:
-            bound = g_gl.boundElementArrayBuffer;
-            break;
+	case GL_ELEMENT_ARRAY_BUFFER:
+		bound = g_gl.boundElementArrayBuffer;
+		break;
 
-        default:
-            g_gl.lastError = GL_INVALID_ENUM;
-            return;
-    }
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
 
-    if (offset < 0 || size < 0 || !data)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (offset < 0 || size < 0 || !data)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    GLBufferObject *bo = QD3D12_GetBuffer(bound);
-    if (!bo)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return;
-    }
+	GLBufferObject* bo = QD3D12_GetBuffer(bound);
+	if (!bo)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
-    if ((size_t)offset > bo->data.size() || (size_t)size > (bo->data.size() - (size_t)offset))
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if ((size_t)offset > bo->data.size() || (size_t)size > (bo->data.size() - (size_t)offset))
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    memcpy(bo->data.data() + (size_t)offset, data, (size_t)size);
+	memcpy(bo->data.data() + (size_t)offset, data, (size_t)size);
 }
 
 extern "C" void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
@@ -5346,402 +5450,402 @@ extern "C" void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 	FlushImmediate(mode, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
 }
 
-extern "C" void *APIENTRY glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
+extern "C" void* APIENTRY glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
 {
-    GLuint bound = 0;
+	GLuint bound = 0;
 
-    switch (target)
-    {
-        case GL_ARRAY_BUFFER:
-            bound = g_gl.boundArrayBuffer;
-            break;
+	switch (target)
+	{
+	case GL_ARRAY_BUFFER:
+		bound = g_gl.boundArrayBuffer;
+		break;
 
-        case GL_ELEMENT_ARRAY_BUFFER:
-            bound = g_gl.boundElementArrayBuffer;
-            break;
+	case GL_ELEMENT_ARRAY_BUFFER:
+		bound = g_gl.boundElementArrayBuffer;
+		break;
 
-        default:
-            g_gl.lastError = GL_INVALID_ENUM;
-            return nullptr;
-    }
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		return nullptr;
+	}
 
-    if (offset < 0 || length < 0)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return nullptr;
-    }
+	if (offset < 0 || length < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return nullptr;
+	}
 
-    GLBufferObject *bo = QD3D12_GetBuffer(bound);
-    if (!bo)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return nullptr;
-    }
+	GLBufferObject* bo = QD3D12_GetBuffer(bound);
+	if (!bo)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return nullptr;
+	}
 
-    if (bo->mapped)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return nullptr;
-    }
+	if (bo->mapped)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return nullptr;
+	}
 
-    if ((size_t)offset > bo->data.size() || (size_t)length > (bo->data.size() - (size_t)offset))
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return nullptr;
-    }
+	if ((size_t)offset > bo->data.size() || (size_t)length > (bo->data.size() - (size_t)offset))
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return nullptr;
+	}
 
-    // optional light validation
-    if ((access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) == 0)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return nullptr;
-    }
+	// optional light validation
+	if ((access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) == 0)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return nullptr;
+	}
 
-    // emulate invalidation/orphan-ish behavior on CPU backing store
+	// emulate invalidation/orphan-ish behavior on CPU backing store
 #ifdef GL_MAP_INVALIDATE_RANGE_BIT
-    if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && length > 0)
-    {
-        memset(bo->data.data() + offset, 0, (size_t)length);
-    }
+	if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && length > 0)
+	{
+		memset(bo->data.data() + offset, 0, (size_t)length);
+	}
 #endif
 
 #ifdef GL_MAP_INVALIDATE_BUFFER_BIT
-    if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !bo->data.empty())
-    {
-        memset(bo->data.data(), 0, bo->data.size());
-    }
+	if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !bo->data.empty())
+	{
+		memset(bo->data.data(), 0, bo->data.size());
+	}
 #endif
 
-    bo->mapped       = true;
-    bo->mappedOffset = offset;
-    bo->mappedLength = length;
-    bo->mappedAccess = access;
+	bo->mapped = true;
+	bo->mappedOffset = offset;
+	bo->mappedLength = length;
+	bo->mappedAccess = access;
 
-    return bo->data.data() + offset;
+	return bo->data.data() + offset;
 }
 
 extern "C" GLboolean APIENTRY glUnmapBuffer(GLenum target)
 {
-    GLuint bound = 0;
+	GLuint bound = 0;
 
-    switch (target)
-    {
-        case GL_ARRAY_BUFFER:
-            bound = g_gl.boundArrayBuffer;
-            break;
+	switch (target)
+	{
+	case GL_ARRAY_BUFFER:
+		bound = g_gl.boundArrayBuffer;
+		break;
 
-        case GL_ELEMENT_ARRAY_BUFFER:
-            bound = g_gl.boundElementArrayBuffer;
-            break;
+	case GL_ELEMENT_ARRAY_BUFFER:
+		bound = g_gl.boundElementArrayBuffer;
+		break;
 
-        default:
-            g_gl.lastError = GL_INVALID_ENUM;
-            return GL_FALSE;
-    }
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		return GL_FALSE;
+	}
 
-    GLBufferObject *bo = QD3D12_GetBuffer(bound);
-    if (!bo)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return GL_FALSE;
-    }
+	GLBufferObject* bo = QD3D12_GetBuffer(bound);
+	if (!bo)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return GL_FALSE;
+	}
 
-    if (!bo->mapped)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return GL_FALSE;
-    }
+	if (!bo->mapped)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return GL_FALSE;
+	}
 
-    bo->mapped       = false;
-    bo->mappedOffset = 0;
-    bo->mappedLength = 0;
-    bo->mappedAccess = 0;
+	bo->mapped = false;
+	bo->mappedOffset = 0;
+	bo->mappedLength = 0;
+	bo->mappedAccess = 0;
 
-    return GL_TRUE;
+	return GL_TRUE;
 }
 
-extern "C" void APIENTRY glGenQueries(GLsizei n, GLuint *ids)
+extern "C" void APIENTRY glGenQueries(GLsizei n, GLuint* ids)
 {
-    if (n < 0)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (n < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    if (!ids)
-        return;
+	if (!ids)
+		return;
 
-    for (GLsizei i = 0; i < n; ++i)
-    {
-        GLuint           id = g_gl.nextQueryId++;
-        GLOcclusionQuery q {};
-        q.id        = id;
-        q.heapIndex = id % QD3D12_MaxQueries;  // simple scheme; good enough if IDs stay bounded
-        g_gl.queries.emplace(id, q);
-        ids[i] = id;
-    }
+	for (GLsizei i = 0; i < n; ++i)
+	{
+		GLuint           id = g_gl.nextQueryId++;
+		GLOcclusionQuery q{};
+		q.id = id;
+		q.heapIndex = id % QD3D12_MaxQueries;  // simple scheme; good enough if IDs stay bounded
+		g_gl.queries.emplace(id, q);
+		ids[i] = id;
+	}
 }
 
-extern "C" void APIENTRY glDeleteQueries(GLsizei n, const GLuint *ids)
+extern "C" void APIENTRY glDeleteQueries(GLsizei n, const GLuint* ids)
 {
-    if (n < 0)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (n < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    if (!ids)
-        return;
+	if (!ids)
+		return;
 
-    for (GLsizei i = 0; i < n; ++i)
-    {
-        GLuint id = ids[i];
-        if (id == 0)
-            continue;
+	for (GLsizei i = 0; i < n; ++i)
+	{
+		GLuint id = ids[i];
+		if (id == 0)
+			continue;
 
-        if (g_gl.currentQuery == id)
-        {
-            g_gl.lastError = GL_INVALID_OPERATION;
-            return;
-        }
+		if (g_gl.currentQuery == id)
+		{
+			g_gl.lastError = GL_INVALID_OPERATION;
+			return;
+		}
 
-        g_gl.queries.erase(id);
-    }
+		g_gl.queries.erase(id);
+	}
 }
 
 extern "C" GLboolean APIENTRY glIsQuery(GLuint id) { return g_gl.queries.find(id) != g_gl.queries.end() ? GL_TRUE : GL_FALSE; }
 
 extern "C" void APIENTRY glBeginQuery(GLenum target, GLuint id)
 {
-    if (target != GL_SAMPLES_PASSED)
-    {
-        g_gl.lastError = GL_INVALID_ENUM;
-        return;
-    }
+	if (target != GL_SAMPLES_PASSED)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
 
-    auto it = g_gl.queries.find(id);
-    if (it == g_gl.queries.end() || id == 0)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return;
-    }
+	auto it = g_gl.queries.find(id);
+	if (it == g_gl.queries.end() || id == 0)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
-    if (g_gl.currentQuery != 0)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return;
-    }
+	if (g_gl.currentQuery != 0)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
-    GLOcclusionQuery &q = it->second;
-    q.active            = true;
-    q.pending           = false;
-    q.resultReady       = false;
-    q.result            = 0;
+	GLOcclusionQuery& q = it->second;
+	q.active = true;
+	q.pending = false;
+	q.resultReady = false;
+	q.result = 0;
 
-    g_gl.currentQuery = id;
+	g_gl.currentQuery = id;
 
-    QueryMarker m {};
-    m.type = QueryMarker::Begin;
-    m.id   = id;
-    g_gl.queryMarkers.push_back(m);
+	QueryMarker m{};
+	m.type = QueryMarker::Begin;
+	m.id = id;
+	g_gl.queryMarkers.push_back(m);
 
-    if (!g_gl.queuedBatches.empty())
-        g_gl.queuedBatches.back().markerEnd = g_gl.queryMarkers.size();
+	if (!g_gl.queuedBatches.empty())
+		g_gl.queuedBatches.back().markerEnd = g_gl.queryMarkers.size();
 }
 
 extern "C" void APIENTRY glEndQuery(GLenum target)
 {
-    if (target != GL_SAMPLES_PASSED)
-    {
-        g_gl.lastError = GL_INVALID_ENUM;
-        return;
-    }
+	if (target != GL_SAMPLES_PASSED)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
 
-    if (g_gl.currentQuery == 0)
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return;
-    }
+	if (g_gl.currentQuery == 0)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
-    auto it = g_gl.queries.find(g_gl.currentQuery);
-    if (it == g_gl.queries.end())
-    {
-        g_gl.lastError    = GL_INVALID_OPERATION;
-        g_gl.currentQuery = 0;
-        return;
-    }
+	auto it = g_gl.queries.find(g_gl.currentQuery);
+	if (it == g_gl.queries.end())
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		g_gl.currentQuery = 0;
+		return;
+	}
 
-    it->second.active  = false;
-    it->second.pending = true;
+	it->second.active = false;
+	it->second.pending = true;
 
-    QueryMarker m {};
-    m.type = QueryMarker::End;
-    m.id   = g_gl.currentQuery;
-    g_gl.queryMarkers.push_back(m);
+	QueryMarker m{};
+	m.type = QueryMarker::End;
+	m.id = g_gl.currentQuery;
+	g_gl.queryMarkers.push_back(m);
 
-    g_gl.currentQuery = 0;
+	g_gl.currentQuery = 0;
 
-    if (!g_gl.queuedBatches.empty())
-        g_gl.queuedBatches.back().markerEnd = g_gl.queryMarkers.size();
+	if (!g_gl.queuedBatches.empty())
+		g_gl.queuedBatches.back().markerEnd = g_gl.queryMarkers.size();
 }
 
-static void QD3D12_UpdateQueryResult(GLOcclusionQuery &q)
+static void QD3D12_UpdateQueryResult(GLOcclusionQuery& q)
 {
-    if (!q.pending || q.resultReady)
-        return;
+	if (!q.pending || q.resultReady)
+		return;
 
-    if (q.submittedFence == 0)
-        return;
+	if (q.submittedFence == 0)
+		return;
 
-    if (g_gl.fence->GetCompletedValue() < q.submittedFence)
-        return;
+	if (g_gl.fence->GetCompletedValue() < q.submittedFence)
+		return;
 
-    q.result      = g_gl.occlusionReadbackCpu[q.heapIndex];
-    q.resultReady = true;
-    q.pending     = false;
+	q.result = g_gl.occlusionReadbackCpu[q.heapIndex];
+	q.resultReady = true;
+	q.pending = false;
 }
 
-extern "C" void APIENTRY glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint *params)
+extern "C" void APIENTRY glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* params)
 {
-    if (!params)
-        return;
+	if (!params)
+		return;
 
-    auto it = g_gl.queries.find(id);
-    if (it == g_gl.queries.end())
-    {
-        g_gl.lastError = GL_INVALID_OPERATION;
-        return;
-    }
+	auto it = g_gl.queries.find(id);
+	if (it == g_gl.queries.end())
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
-    GLOcclusionQuery &q = it->second;
-    QD3D12_UpdateQueryResult(q);
+	GLOcclusionQuery& q = it->second;
+	QD3D12_UpdateQueryResult(q);
 
-    switch (pname)
-    {
-        case GL_QUERY_RESULT_AVAILABLE:
-            *params = q.resultReady ? GL_TRUE : GL_FALSE;
-            break;
+	switch (pname)
+	{
+	case GL_QUERY_RESULT_AVAILABLE:
+		*params = q.resultReady ? GL_TRUE : GL_FALSE;
+		break;
 
-        case GL_QUERY_RESULT:
-            if (!q.resultReady)
-            {
-                QD3D12_WaitForGPU();
-                QD3D12_UpdateQueryResult(q);
-            }
-            *params = (GLuint)q.result;
-            break;
+	case GL_QUERY_RESULT:
+		if (!q.resultReady)
+		{
+			QD3D12_WaitForGPU();
+			QD3D12_UpdateQueryResult(q);
+		}
+		*params = (GLuint)q.result;
+		break;
 
-        default:
-            g_gl.lastError = GL_INVALID_ENUM;
-            break;
-    }
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		break;
+	}
 }
 
-extern "C" void APIENTRY glGetQueryObjectiv(GLuint id, GLenum pname, GLint *params)
+extern "C" void APIENTRY glGetQueryObjectiv(GLuint id, GLenum pname, GLint* params)
 {
-    if (!params)
-        return;
+	if (!params)
+		return;
 
-    GLuint u = 0;
-    glGetQueryObjectuiv(id, pname, &u);
-    *params = (GLint)u;
+	GLuint u = 0;
+	glGetQueryObjectuiv(id, pname, &u);
+	*params = (GLint)u;
 }
 
 extern "C" void APIENTRY glPointSize(GLfloat size)
 {
-    if (size <= 0.0f)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (size <= 0.0f)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    g_gl.pointSize = size;
+	g_gl.pointSize = size;
 }
 
 extern "C" void APIENTRY glPointParameterfEXT(GLenum pname, GLfloat param)
 {
-    switch (pname)
-    {
-    case GL_POINT_SIZE_MIN_EXT:
-        if (param < 0.0f)
-        {
-            g_gl.lastError = GL_INVALID_VALUE;
-            return;
-        }
-        g_gl.pointSizeMin = param;
-        break;
+	switch (pname)
+	{
+	case GL_POINT_SIZE_MIN_EXT:
+		if (param < 0.0f)
+		{
+			g_gl.lastError = GL_INVALID_VALUE;
+			return;
+		}
+		g_gl.pointSizeMin = param;
+		break;
 
-    case GL_POINT_SIZE_MAX_EXT:
-        if (param < 0.0f)
-        {
-            g_gl.lastError = GL_INVALID_VALUE;
-            return;
-        }
-        g_gl.pointSizeMax = param;
-        break;
+	case GL_POINT_SIZE_MAX_EXT:
+		if (param < 0.0f)
+		{
+			g_gl.lastError = GL_INVALID_VALUE;
+			return;
+		}
+		g_gl.pointSizeMax = param;
+		break;
 
-    case GL_POINT_FADE_THRESHOLD_SIZE_EXT:
-        if (param < 0.0f)
-        {
-            g_gl.lastError = GL_INVALID_VALUE;
-            return;
-        }
-        g_gl.pointFadeThresholdSize = param;
-        break;
+	case GL_POINT_FADE_THRESHOLD_SIZE_EXT:
+		if (param < 0.0f)
+		{
+			g_gl.lastError = GL_INVALID_VALUE;
+			return;
+		}
+		g_gl.pointFadeThresholdSize = param;
+		break;
 
-    default:
-        g_gl.lastError = GL_INVALID_ENUM;
-        break;
-    }
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		break;
+	}
 }
 
 extern "C" void APIENTRY glPointParameterfvEXT(GLenum pname, const GLfloat* params)
 {
-    if (!params)
-    {
-        g_gl.lastError = GL_INVALID_VALUE;
-        return;
-    }
+	if (!params)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
 
-    switch (pname)
-    {
-    case GL_POINT_SIZE_MIN_EXT:
-        if (params[0] < 0.0f)
-        {
-            g_gl.lastError = GL_INVALID_VALUE;
-            return;
-        }
-        g_gl.pointSizeMin = params[0];
-        break;
+	switch (pname)
+	{
+	case GL_POINT_SIZE_MIN_EXT:
+		if (params[0] < 0.0f)
+		{
+			g_gl.lastError = GL_INVALID_VALUE;
+			return;
+		}
+		g_gl.pointSizeMin = params[0];
+		break;
 
-    case GL_POINT_SIZE_MAX_EXT:
-        if (params[0] < 0.0f)
-        {
-            g_gl.lastError = GL_INVALID_VALUE;
-            return;
-        }
-        g_gl.pointSizeMax = params[0];
-        break;
+	case GL_POINT_SIZE_MAX_EXT:
+		if (params[0] < 0.0f)
+		{
+			g_gl.lastError = GL_INVALID_VALUE;
+			return;
+		}
+		g_gl.pointSizeMax = params[0];
+		break;
 
-    case GL_POINT_FADE_THRESHOLD_SIZE_EXT:
-        if (params[0] < 0.0f)
-        {
-            g_gl.lastError = GL_INVALID_VALUE;
-            return;
-        }
-        g_gl.pointFadeThresholdSize = params[0];
-        break;
+	case GL_POINT_FADE_THRESHOLD_SIZE_EXT:
+		if (params[0] < 0.0f)
+		{
+			g_gl.lastError = GL_INVALID_VALUE;
+			return;
+		}
+		g_gl.pointFadeThresholdSize = params[0];
+		break;
 
-    case GL_DISTANCE_ATTENUATION_EXT:
-        g_gl.pointDistanceAttenuation[0] = params[0];
-        g_gl.pointDistanceAttenuation[1] = params[1];
-        g_gl.pointDistanceAttenuation[2] = params[2];
-        break;
+	case GL_DISTANCE_ATTENUATION_EXT:
+		g_gl.pointDistanceAttenuation[0] = params[0];
+		g_gl.pointDistanceAttenuation[1] = params[1];
+		g_gl.pointDistanceAttenuation[2] = params[2];
+		break;
 
-    default:
-        g_gl.lastError = GL_INVALID_ENUM;
-        break;
-    }
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		break;
+	}
 }
 
 extern "C" void APIENTRY glColor3fv(const GLfloat* v)
@@ -5994,6 +6098,199 @@ extern "C" void APIENTRY glCopyPixels(GLint x, GLint y, GLsizei width, GLsizei h
 	// Stub. Often only needed for old UI or editor paths.
 }
 
-// -----------------------------------------------------------------------------
-// Double-precision wrappers
-// -----------------------------------------------------------------------------
+static void ExpandImmediateSlow(GLenum mode, ImmediateVertexBuffer& src, std::vector<glRaytracingVertex_t>& out)
+{
+	const size_t n = src.count;
+
+	switch (mode)
+	{
+	case GL_TRIANGLES:
+	{
+		out.resize(g_gl.immediateVerts.count);
+		for (int i = 0; i < g_gl.immediateVerts.count; i++)
+		{
+			out[i].xyz[0] = g_gl.immediateVerts.Data()[i].px;
+			out[i].xyz[1] = g_gl.immediateVerts.Data()[i].py;
+			out[i].xyz[2] = g_gl.immediateVerts.Data()[i].pz;
+
+			out[i].normal[0] = g_gl.immediateVerts.Data()[i].nx;
+			out[i].normal[1] = g_gl.immediateVerts.Data()[i].ny;
+			out[i].normal[2] = g_gl.immediateVerts.Data()[i].nz;
+
+			out[i].st[0] = g_gl.immediateVerts.Data()[i].u0;
+			out[i].st[1] = g_gl.immediateVerts.Data()[i].v0;
+		}
+		return;
+	}
+
+	case GL_TRIANGLE_STRIP:
+	{
+		if (n < 3)
+		{
+			out.clear();
+			return;
+		}
+
+		const size_t triCount = n - 2;
+		out.resize(triCount * 3);
+
+		size_t d = 0;
+		for (size_t i = 2; i < n; ++i, d += 3)
+		{
+			if ((i & 1) == 0)
+			{
+				out[d + 0] = src.Data()[i - 2];
+				out[d + 1] = src.Data()[i - 1];
+				out[d + 2] = src.Data()[i];
+			}
+			else
+			{
+				out[d + 0] = src.Data()[i - 1];
+				out[d + 1] = src.Data()[i - 2];
+				out[d + 2] = src.Data()[i];
+			}
+		}
+		return;
+	}
+
+	case GL_TRIANGLE_FAN:
+	{
+		if (n < 3)
+		{
+			out.clear();
+			return;
+		}
+
+		const size_t triCount = n - 2;
+		out.resize(triCount * 3);
+
+		const GLVertex v0 = src.Data()[0];
+		size_t d = 0;
+		for (size_t i = 2; i < n; ++i, d += 3)
+		{
+			out[d + 0] = v0;
+			out[d + 1] = src.Data()[i - 1];
+			out[d + 2] = src.Data()[i];
+		}
+		return;
+	}
+
+	case GL_QUADS:
+	{
+		const size_t quadCount = n >> 2;
+		out.resize(quadCount * 6);
+
+		size_t d = 0;
+		for (size_t i = 0; i + 3 < n; i += 4, d += 6)
+		{
+			const GLVertex& v0 = src.Data()[i + 0];
+			const GLVertex& v1 = src.Data()[i + 1];
+			const GLVertex& v2 = src.Data()[i + 2];
+			const GLVertex& v3 = src.Data()[i + 3];
+
+			out[d + 0] = v0;
+			out[d + 1] = v1;
+			out[d + 2] = v2;
+			out[d + 3] = v0;
+			out[d + 4] = v2;
+			out[d + 5] = v3;
+		}
+		return;
+	}
+
+	case GL_QUAD_STRIP:
+	{
+		if (n < 4)
+		{
+			out.clear();
+			return;
+		}
+
+		const size_t quadCount = (n - 2) >> 1;
+		out.resize(quadCount * 6);
+
+		size_t d = 0;
+		for (size_t i = 0; i + 3 < n; i += 2, d += 6)
+		{
+			const GLVertex& v0 = src.Data()[i + 0];
+			const GLVertex& v1 = src.Data()[i + 1];
+			const GLVertex& v2 = src.Data()[i + 2];
+			const GLVertex& v3 = src.Data()[i + 3];
+
+			out[d + 0] = v0;
+			out[d + 1] = v1;
+			out[d + 2] = v2;
+			out[d + 3] = v2;
+			out[d + 4] = v1;
+			out[d + 5] = v3;
+		}
+		return;
+	}
+
+	//	case GL_POLYGON:
+	//	{
+	//		// This is still going to be the expensive path.
+	//		TessellatePolygon(src, out);
+	//		return;
+	//	}
+
+	default:
+	{
+		assert(!"Unknown ExpandImmediate type!");
+		out.clear();
+		return;
+	}
+	}
+}
+
+void glUpdateBottomAccelStructure(bool opaque, uint32_t& meshHandle)
+{
+	std::vector<glRaytracingVertex_t> drawVertexes;
+	ExpandImmediateSlow(g_gl.currentPrim, g_gl.immediateVerts, drawVertexes);
+
+	std::vector<unsigned int> drawIndexes(drawVertexes.size());
+	for (int i = 0; i < drawVertexes.size(); i++)
+	{
+		drawIndexes[i] = i;
+	}
+	glRaytracingMeshDesc_t meshDesc;
+	memset(&meshDesc, 0, sizeof(meshDesc));
+	meshDesc.vertices = &drawVertexes[0];
+	meshDesc.vertexCount = (uint32_t)drawVertexes.size();
+	meshDesc.indices = &drawIndexes[0];
+	meshDesc.indexCount = (uint32_t)drawIndexes.size();
+	meshDesc.allowUpdate = 1;
+	meshDesc.opaque = opaque;
+
+	if (meshHandle)
+		glRaytracingUpdateMesh(meshHandle, &meshDesc);
+	else
+		meshHandle = glRaytracingCreateMesh(&meshDesc);
+}
+
+void glUpdateTopLevelAceelStructure(uint32_t mesh, float* transform, uint32_t& topLevelHandle) {
+	glRaytracingInstanceDesc_t instDesc = {};
+	instDesc.meshHandle = mesh;
+	instDesc.instanceID = 0;
+	instDesc.mask = 0xFF;
+
+	if (transform == NULL)
+	{
+		instDesc.transform[0] = 1.0f; instDesc.transform[1] = 0.0f; instDesc.transform[2] = 0.0f; instDesc.transform[3] = 0.0f;
+		instDesc.transform[4] = 0.0f; instDesc.transform[5] = 1.0f; instDesc.transform[6] = 0.0f; instDesc.transform[7] = 0.0f;
+		instDesc.transform[8] = 0.0f; instDesc.transform[9] = 0.0f; instDesc.transform[10] = 1.0f; instDesc.transform[11] = 0.0f;
+	}
+	else
+	{
+		memcpy(instDesc.transform, transform, sizeof(float) * 12);
+	}
+
+	if (topLevelHandle == 0)
+	{
+		topLevelHandle = glRaytracingCreateInstance(&instDesc);
+	}
+	else {
+		glRaytracingUpdateInstance(topLevelHandle, &instDesc);
+	}
+
+}
