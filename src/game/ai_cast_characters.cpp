@@ -2,9 +2,9 @@
 ===========================================================================
 
 Return to Castle Wolfenstein single player GPL Source Code
-Copyright (C) 1999-2010 id Software LLC, a ZeniMax Media company. 
+Copyright (C) 1999-2010 id Software LLC, a ZeniMax Media company.
 
-This file is part of the Return to Castle Wolfenstein single player GPL Source Code (RTCW SP Source Code).  
+This file is part of the Return to Castle Wolfenstein single player GPL Source Code (RTCW SP Source Code).
 
 RTCW SP Source Code is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -44,6 +44,10 @@ If you have questions concerning this license or the applicable additional terms
 #include "../botai/botai.h"          //bot ai interface
 
 #include "ai_cast.h"
+
+void AIChar_Sight(gentity_t* ent, gentity_t* other, int lastSight);
+void AIChar_Pain(gentity_t* ent, gentity_t* attacker, int damage, vec3_t point);
+void AIChar_Death(gentity_t* ent, gentity_t* attacker, int damage, int mod);
 
 //---------------------------------------------------------------------------
 // Character specific attributes (defaults, these can be altered in the editor (TODO!))
@@ -230,22 +234,22 @@ AICharacterDefaults_t aiDefaults[NUM_CHARACTERS] = {
 			"warzombieSilentDeath", //----(SA)	added
 			"warzombieFlameDeath", //----(SA)	added
 			"warzombiePain",
-//----(SA)	changed per DK
-//		"sound/weapons/melee/fstatck.wav",		// stay - you're told to stay put
-			"sound/weapons/melee/warz_hit.wav",
-//		"sound/weapons/melee/fstmiss.wav",		// follow - go with ordering player ("i'm with you" rather than "yes sir!")
-			"sound/weapons/melee/warz_miss.wav",
-			"warzombieOrdersDeny", // deny - refuse orders (doing something else)
-		},
-		AITEAM_MONSTER,
-		"warrior/crypt2",
-		{WP_MONSTER_ATTACK1,WP_MONSTER_ATTACK2,WP_MONSTER_ATTACK3},
-		BBOX_SMALL, {10,48},    // very low defense position
-		AIFL_NO_RELOAD,
-		AIFunc_WarriorZombieMeleeStart, /*AIFunc_WarriorZombieSightStart*/ NULL, AIFunc_WarriorZombieDefenseStart,
-		NULL,
-		AISTATE_ALERT
-	},
+			//----(SA)	changed per DK
+			//		"sound/weapons/melee/fstatck.wav",		// stay - you're told to stay put
+						"sound/weapons/melee/warz_hit.wav",
+						//		"sound/weapons/melee/fstmiss.wav",		// follow - go with ordering player ("i'm with you" rather than "yes sir!")
+									"sound/weapons/melee/warz_miss.wav",
+									"warzombieOrdersDeny", // deny - refuse orders (doing something else)
+								},
+								AITEAM_MONSTER,
+								"warrior/crypt2",
+								{WP_MONSTER_ATTACK1,WP_MONSTER_ATTACK2,WP_MONSTER_ATTACK3},
+								BBOX_SMALL, {10,48},    // very low defense position
+								AIFL_NO_RELOAD,
+								AIFunc_WarriorZombieMeleeStart, /*AIFunc_WarriorZombieSightStart*/ NULL, AIFunc_WarriorZombieDefenseStart,
+								NULL,
+								AISTATE_ALERT
+							},
 
 	//AICHAR_VENOM
 	{
@@ -624,14 +628,14 @@ AICharacterDefaults_t aiDefaults[NUM_CHARACTERS] = {
 		},
 		AITEAM_NAZI,
 		"blackguard/default",
-//		{WP_MP40, WP_GRENADE_LAUNCHER, WP_MONSTER_ATTACK1},	// attack1 is melee kick
-		{WP_FG42, WP_FG42SCOPE, WP_GRENADE_LAUNCHER, WP_MONSTER_ATTACK1},   // attack1 is melee kick
-		BBOX_SMALL, {32,48},
-		AIFL_CATCH_GRENADE | AIFL_FLIP_ANIM | AIFL_STAND_IDLE2,
-		AIFunc_BlackGuardAttack1Start, NULL, NULL,
-		NULL,
-		AISTATE_RELAXED
-	},
+		//		{WP_MP40, WP_GRENADE_LAUNCHER, WP_MONSTER_ATTACK1},	// attack1 is melee kick
+				{WP_FG42, WP_FG42SCOPE, WP_GRENADE_LAUNCHER, WP_MONSTER_ATTACK1},   // attack1 is melee kick
+				BBOX_SMALL, {32,48},
+				AIFL_CATCH_GRENADE | AIFL_FLIP_ANIM | AIFL_STAND_IDLE2,
+				AIFunc_BlackGuardAttack1Start, NULL, NULL,
+				NULL,
+				AISTATE_RELAXED
+			},
 
 	//AICHAR_PROTOSOLDIER
 	{
@@ -922,115 +926,504 @@ AICharacterDefaults_t aiDefaults[NUM_CHARACTERS] = {
 	},
 
 };
-//---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
-// Bounding boxes
-static vec3_t bbmins[2] = {{-18, -18, -24},{-32,-32,-24}};
-static vec3_t bbmaxs[2] = {{ 18,  18,  48},{ 32, 32, 68}};
-//static float crouchMaxZ[2] = {32,48};	// same as player, will head be ok? // TTimo: unused
+// Bounding boxes used by the AI routing worlds.
+// Index 0 = small hull, index 1 = large hull.
 //---------------------------------------------------------------------------
 
+static vec3_t bbmins[2] = {
+	{ -18, -18, -24 },
+	{ -32, -32, -24 }
+};
+
+static vec3_t bbmaxs[2] = {
+	{ 18, 18, 48 },
+	{ 32, 32, 68 }
+};
+
 //---------------------------------------------------------------------------
-// Weapon info
+// Temporary weapon loadout description used during character creation.
+//---------------------------------------------------------------------------
+
 cast_weapon_info_t weaponInfo;
+
 //---------------------------------------------------------------------------
+// Internal helpers
+//---------------------------------------------------------------------------
+
+/*
+====================
+AIChar_ApplyBBox
+
+Copies a bbox into both playerstate and server collision fields.
+====================
+*/
+static void AIChar_ApplyBBox(gentity_t* ent, cast_state_t* cs, vec3_t mins, vec3_t maxs) {
+	VectorCopy(mins, ent->client->ps.mins);
+	VectorCopy(maxs, ent->client->ps.maxs);
+	VectorCopy(mins, ent->r.mins);
+	VectorCopy(maxs, ent->r.maxs);
+
+	ent->client->ps.crouchMaxZ = aiDefaults[cs->aiCharacter].crouchstandZ[0];
+	ent->s.density = cs->aasWorldIndex;
+}
+
+/*
+====================
+AIChar_SetDefaultBBox
+
+Uses the fixed hull for the actor's AAS world and the per-character stand height.
+====================
+*/
+static void AIChar_SetDefaultBBox(gentity_t* ent, cast_state_t* cs) {
+	vec3_t mins;
+	vec3_t maxs;
+
+	VectorCopy(bbmins[cs->aasWorldIndex], mins);
+	VectorCopy(bbmaxs[cs->aasWorldIndex], maxs);
+	maxs[2] = aiDefaults[cs->aiCharacter].crouchstandZ[1];
+
+	AIChar_ApplyBBox(ent, cs, mins, maxs);
+}
+
+/*
+====================
+AIChar_ClampHeadHeight
+
+Constrains a head-tag-derived height to a sane gameplay range.
+====================
+*/
+static float AIChar_ClampHeadHeight(cast_state_t* cs, float z) {
+	const float maxHeight = aiDefaults[cs->aiCharacter].crouchstandZ[1] + 30.0f;
+
+	if (z < 0.0f) {
+		return 0.0f;
+	}
+	if (z > maxHeight) {
+		return maxHeight;
+	}
+	return z;
+}
+
+/*
+====================
+AIChar_GetHeadTagBBox
+
+Builds a bbox whose top is driven by the model head tag.
+Returns qtrue if the tag exists.
+====================
+*/
+static qboolean AIChar_GetHeadTagBBox(gentity_t* ent, cast_state_t* cs, vec3_t mins, vec3_t maxs) {
+	orientation_t or ;
+
+	if (!sys->GetTag(ent->s.number, "tag_head", &or )) {
+		return qfalse;
+	}
+
+	VectorCopy(bbmins[cs->aasWorldIndex], mins);
+	VectorCopy(bbmaxs[cs->aasWorldIndex], maxs);
+
+	or .origin[2] -= ent->client->ps.origin[2];
+	or .origin[2] += 11.0f;
+
+	maxs[2] = AIChar_ClampHeadHeight(cs, or .origin[2]);
+	return qtrue;
+}
+
+/*
+====================
+AIChar_CanExpandBBox
+
+Checks whether expanding to the new bbox would clip into the world.
+Shrinks are always accepted.
+====================
+*/
+static qboolean AIChar_CanExpandBBox(gentity_t* ent, vec3_t mins, vec3_t maxs) {
+	trace_t tr;
+
+	memset(&tr, 0, sizeof(tr));
+
+	if (maxs[2] > ent->client->ps.maxs[2]) {
+		sys->TraceCapsule(
+			&tr,
+			ent->client->ps.origin,
+			mins,
+			maxs,
+			ent->client->ps.origin,
+			ent->s.number,
+			ent->clipmask
+		);
+	}
+
+	return (!tr.startsolid && !tr.allsolid);
+}
+
+/*
+====================
+AIChar_IsAttackSoundBlocked
+
+Common sound suppression rules shared by sight/attack reactions.
+====================
+*/
+static qboolean AIChar_IsAttackSoundBlocked(cast_state_t* cs) {
+	if (cs->castScriptStatus.scriptNoAttackTime >= level.time) {
+		return qtrue;
+	}
+	if (cs->noAttackTime >= level.time) {
+		return qtrue;
+	}
+
+	return qfalse;
+}
+
+/*
+====================
+AIChar_IsFriendlyTeam
+
+Friendly actors can be directly activated by the player.
+====================
+*/
+static qboolean AIChar_IsFriendlyTeam(int team) {
+	return (team == AITEAM_ALLIES || team == AITEAM_NEUTRAL);
+}
+
+/*
+====================
+AIChar_ResetQuotaOverTime
+
+Bleeds off stored pain quota so brief bursts matter more than old damage.
+====================
+*/
+static void AIChar_ResetQuotaOverTime(cast_state_t* cs) {
+	if (!cs->damageQuotaTime || cs->damageQuota <= 0) {
+		return;
+	}
+
+	cs->damageQuota -= (int)(
+		(1.0f + (g_gameskill.value / GSKILL_MAX)) *
+		((float)(level.time - cs->damageQuotaTime) / 1000.0f) *
+		(7.5f + cs->attributes[ATTACK_SKILL] * 10.0f)
+		);
+
+	if (cs->damageQuota < 0) {
+		cs->damageQuota = 0;
+	}
+}
+
+/*
+====================
+AIChar_ScalePainDamageByDelay
+
+If the actor has gone a while without pain, let the next hit count more.
+====================
+*/
+static int AIChar_ScalePainDamageByDelay(cast_state_t* cs, int damage) {
+	float scale;
+
+	if (cs->painSoundTime >= level.time - 1000) {
+		return damage;
+	}
+
+	scale = (float)(level.time - cs->painSoundTime - 1000) / 1000.0f;
+	if (scale > 4.0f) {
+		scale = 4.0f;
+	}
+
+	return (int)(
+		(float)damage *
+		(1.0f + (scale * (1.0f - 0.5f * g_gameskill.value / GSKILL_MAX)))
+		);
+}
+
+/*
+====================
+AIChar_ScalePainDamageByDistance
+
+Close-range rushdown is intentionally less likely to stun-lock AI.
+====================
+*/
+static int AIChar_ScalePainDamageByDistance(gentity_t* ent, gentity_t* attacker, int damage) {
+	float dist;
+
+	if (attacker->s.weapon == WP_TESLA) {
+		return damage;
+	}
+
+	dist = VectorDistance(ent->r.currentOrigin, attacker->r.currentAngles);
+	if (dist >= 384.0f) {
+		return damage;
+	}
+
+	damage -= (int)(
+		(float)damage *
+		(1.0f - (dist / 384.0f)) *
+		(0.5f + 0.5f * g_gameskill.value / GSKILL_MAX)
+		);
+
+	return damage;
+}
+
+/*
+====================
+AIChar_SetSpawnWeapons
+
+Builds the temporary weapon/ammo loadout for a freshly spawned AI.
+====================
+*/
+static void AIChar_SetSpawnWeapons(AICharacterDefaults_t* aiCharDefaults) {
+	int i;
+
+	memset(&weaponInfo, 0, sizeof(weaponInfo));
+
+	for (i = 0; aiCharDefaults->weapons[i]; ++i) {
+		const weapon_t weapon = (weapon_t)aiCharDefaults->weapons[i];
+		const int ammoIndex = BG_FindAmmoForWeapon(weapon);
+
+		COM_BitSet(weaponInfo.startingWeapons, weapon);
+
+		if (weapon == WP_GRENADE_LAUNCHER) {
+			weaponInfo.startingAmmo[ammoIndex] = 6;
+		}
+		else {
+			weaponInfo.startingAmmo[ammoIndex] = 999;
+		}
+	}
+}
+
+/*
+====================
+AIChar_CopySpawnFields
+
+Copies mapper/authored fields from the placeholder entity to the live AI actor.
+====================
+*/
+static void AIChar_CopySpawnFields(gentity_t* src, gentity_t* dst, AICharacterDefaults_t* aiCharDefaults) {
+	dst->target = src->target;
+	dst->classname = src->classname;
+	dst->r.svFlags |= (src->r.svFlags & SVF_NOFOOTSTEPS);
+	dst->aiCharacter = src->aiCharacter;
+	dst->client->ps.aiChar = src->aiCharacter;
+	dst->spawnflags = src->spawnflags;
+	dst->aiTeam = src->aiTeam;
+
+	if (dst->aiTeam < 0) {
+		dst->aiTeam = aiCharDefaults->aiTeam;
+	}
+
+	dst->client->ps.teamNum = dst->aiTeam;
+}
+
+/*
+====================
+AIChar_PreCacheSounds
+
+Precaches generic event sounds for the spawned character.
+====================
+*/
+static void AIChar_PreCacheSounds(gentity_t* ent, AICharacterDefaults_t* aiCharDefaults) {
+	int i;
+
+	if (aiCharDefaults->loopingSound) {
+		ent->s.loopSound = G_SoundIndex(aiCharDefaults->loopingSound);
+	}
+
+	for (i = 0; i < MAX_AI_EVENT_SOUNDS; ++i) {
+		if (aiDefaults[ent->aiCharacter].soundScripts[i]) {
+			G_SoundIndex(aiDefaults[ent->aiCharacter].soundScripts[i]);
+		}
+	}
+
+	if (ent->aiCharacter == AICHAR_HEINRICH) {
+		AICast_Heinrich_SoundPrecache();
+	}
+}
+
+/*
+====================
+AIChar_InitAnimationFlags
+
+Marks which special move animations are available for this actor.
+====================
+*/
+static void AIChar_InitAnimationFlags(gentity_t* ent, cast_state_t* cs) {
+	if (BG_GetAnimScriptEvent(&ent->client->ps, ANIM_ET_ROLL) >= 0) {
+		cs->aiFlags |= AIFL_ROLL_ANIM;
+	}
+	if (BG_GetAnimScriptEvent(&ent->client->ps, ANIM_ET_FLIP) >= 0) {
+		cs->aiFlags |= AIFL_FLIP_ANIM;
+	}
+	if (BG_GetAnimScriptEvent(&ent->client->ps, ANIM_ET_DIVE) >= 0) {
+		cs->aiFlags |= AIFL_DIVE_ANIM;
+	}
+}
+
+/*
+====================
+AIChar_InitSpawnState
+
+Finalizes cast_state bookkeeping after the live AI entity is created.
+====================
+*/
+static void AIChar_InitSpawnState(gentity_t* ent, cast_state_t* cs, AICharacterDefaults_t* aiCharDefaults) {
+	cs->deathfunc = AIChar_Death;
+	cs->painfunc = AIChar_Pain;
+	cs->sightfunc = AIChar_Sight;
+
+	cs->aiFlags |= aiCharDefaults->aiFlags;
+	cs->aiState = aiCharDefaults->aiState;
+	cs->queryCountValidTime = -1;
+
+	if (cs->aiFlags & AIFL_STAND_IDLE2) {
+		ent->client->ps.eFlags |= EF_STAND_IDLE2;
+	}
+
+	if (AIChar_IsFriendlyTeam(ent->aiTeam)) {
+		cs->activate = AICast_ProcessActivate;
+	}
+	else {
+		cs->activate = NULL;
+	}
+
+	cs->aifuncAttack1 = aiCharDefaults->aifuncAttack1;
+	cs->aifuncAttack2 = aiCharDefaults->aifuncAttack2;
+	cs->aifuncAttack3 = aiCharDefaults->aifuncAttack3;
+
+	if (ent->spawnflags & 2) {
+		cs->secondDeadTime = qtrue;
+	}
+
+	cs->castScriptStatus.castScriptEventIndex = -1;
+	cs->castScriptStatus.scriptAttackEnt = -1;
+
+	ent->client->ps.crouchSpeedScale =
+		cs->attributes[CROUCHING_SPEED] / cs->attributes[RUNNING_SPEED];
+
+	AIChar_InitAnimationFlags(ent, cs);
+
+	// Special-case legacy script behavior.
+	if (ent->aiName && !Q_stricmp(ent->aiName, "deathshead")) {
+		cs->aiFlags |= AIFL_NO_FLAME_DAMAGE;
+	}
+
+	if (cs->aiFlags & AIFL_NO_HEADSHOT_DMG) {
+		ent->headshotDamageScale = 0.0f;
+	}
+
+	// Seed the bot state immediately so scripts do not depend on a prior Think().
+	VectorCopy(ent->client->ps.origin, cs->bs->origin);
+	VectorCopy(ent->client->ps.velocity, cs->bs->velocity);
+	cs->bs->cur_ps = ent->client->ps;
+}
+
+/*
+====================
+AIChar_SetupSpawnSkin
+
+Falls back to the character default skin if the mapper did not specify one.
+====================
+*/
+static void AIChar_SetupSpawnSkin(gentity_t* ent, AICharacterDefaults_t* aiCharDefaults) {
+	if (!ent->aiSkin || !strlen(ent->aiSkin)) {
+		ent->aiSkin = aiCharDefaults->skin;
+	}
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 
 /*
 ============
 AIChar_SetBBox
 
-  FIXME: pass a maxZ into this so we can tailor the height for each character,
-  since height isn't important for the AAS routing (whereas width is very important)
+Sets the collision box for an AI actor.
+
+If useHeadTag is false we use the fixed AAS hull width and the configured stand
+height for the character class.
+
+If useHeadTag is true we try to expand/shrink the top of the bbox using the
+current head tag, but only if the new bbox is not blocked.
 ============
 */
-void AIChar_SetBBox( gentity_t *ent, cast_state_t *cs, qboolean useHeadTag ) {
-	vec3_t bbox[2];
-	trace_t tr;
-	orientation_t or;
+void AIChar_SetBBox(gentity_t* ent, cast_state_t* cs, qboolean useHeadTag) {
+	vec3_t mins;
+	vec3_t maxs;
 
-	if ( !useHeadTag ) {
-		VectorCopy( bbmins[cs->aasWorldIndex], ent->client->ps.mins );
-		VectorCopy( bbmaxs[cs->aasWorldIndex], ent->client->ps.maxs );
-		ent->client->ps.maxs[2] = aiDefaults[cs->aiCharacter].crouchstandZ[1];
-		VectorCopy( ent->client->ps.mins, ent->r.mins );
-		VectorCopy( ent->client->ps.maxs, ent->r.maxs );
-		ent->client->ps.crouchMaxZ = aiDefaults[cs->aiCharacter].crouchstandZ[0];
-		ent->s.density = cs->aasWorldIndex;
-	} else if ( sys->GetTag( ent->s.number, "tag_head", &or ) ) {  // if not found, then just leave it
-		or.origin[2] -= ent->client->ps.origin[2];  // convert to local coordinates
-		or.origin[2] += 11;
-		if ( or.origin[2] < 0 ) {
-			or.origin[2] = 0;
-		}
-		if ( or.origin[2] > aiDefaults[cs->aiCharacter].crouchstandZ[1] + 30 ) {
-			or.origin[2] = aiDefaults[cs->aiCharacter].crouchstandZ[1] + 30;
-		}
-
-		memset( &tr, 0, sizeof( tr ) );
-
-		// check that the new height is ok first, otherwise leave it alone
-		VectorCopy( bbmins[cs->aasWorldIndex], bbox[0] );
-		VectorCopy( bbmaxs[cs->aasWorldIndex], bbox[1] );
-		// set the head tag height
-		bbox[1][2] = or.origin[2];
-
-		if ( bbox[1][2] > ent->client->ps.maxs[2] ) {
-			// check this area is clear
-			sys->TraceCapsule( &tr, ent->client->ps.origin, bbox[0], bbox[1], ent->client->ps.origin, ent->s.number, ent->clipmask );
-		}
-
-		if ( !tr.startsolid && !tr.allsolid ) {
-			VectorCopy( bbox[0], ent->client->ps.mins );
-			VectorCopy( bbox[1], ent->client->ps.maxs );
-			VectorCopy( ent->client->ps.mins, ent->r.mins );
-			VectorCopy( ent->client->ps.maxs, ent->r.maxs );
-			ent->client->ps.crouchMaxZ = aiDefaults[cs->aiCharacter].crouchstandZ[0];
-			ent->s.density = cs->aasWorldIndex;
+	if (!useHeadTag) {
+		AIChar_SetDefaultBBox(ent, cs);
+	}
+	else if (AIChar_GetHeadTagBBox(ent, cs, mins, maxs)) {
+		if (AIChar_CanExpandBBox(ent, mins, maxs)) {
+			AIChar_ApplyBBox(ent, cs, mins, maxs);
 		}
 	}
 
-	// if they are linked, then relink to update bbox
-	if ( ent->r.linked ) {
-		sys->LinkEntity( ent );
+	if (ent->r.linked) {
+		sys->LinkEntity(ent);
 	}
 }
 
 /*
 ============
 AIChar_Death
+
+Chooses the death sound based on how the actor died.
+Quiet kills and headshots prefer the silent death sound; flamethrower kills use
+the flame death sound; everything else uses the normal death sound.
 ============
 */
-void AIChar_Death( gentity_t *ent, gentity_t *attacker, int damage, int mod ) { //----(SA)	added mod
-	// need this check otherwise sound will overwrite gib message
-	if ( ent->health > GIB_HEALTH  ) {
-		if ( ent->client->ps.eFlags & EF_HEADSHOT ) {
-			G_AddEvent( ent, EV_GENERAL_SOUND, G_SoundIndex( aiDefaults[ent->aiCharacter].soundScripts[QUIETDEATHSOUNDSCRIPT] ) );
-		} else {
-			switch ( mod ) {               //----(SA)	modified to add 'quiet' deaths
-			case MOD_KNIFE_STEALTH:
-			case MOD_SNIPERRIFLE:
-			case MOD_SNOOPERSCOPE:
-				G_AddEvent( ent, EV_GENERAL_SOUND, G_SoundIndex( aiDefaults[ent->aiCharacter].soundScripts[QUIETDEATHSOUNDSCRIPT] ) );
-				break;
-			case MOD_FLAMETHROWER:
-				G_AddEvent( ent, EV_GENERAL_SOUND, G_SoundIndex( aiDefaults[ent->aiCharacter].soundScripts[FLAMEDEATHSOUNDSCRIPT] ) );      //----(SA)	added
-				break;
-			default:
-				G_AddEvent( ent, EV_GENERAL_SOUND, G_SoundIndex( aiDefaults[ent->aiCharacter].soundScripts[DEATHSOUNDSCRIPT] ) );
-				break;
-			}
-		}
+void AIChar_Death(gentity_t* ent, gentity_t* attacker, int damage, int mod) {
+	if (ent->health <= GIB_HEALTH) {
+		return;
+	}
+
+	if (ent->client->ps.eFlags & EF_HEADSHOT) {
+		G_AddEvent(
+			ent,
+			EV_GENERAL_SOUND,
+			G_SoundIndex(aiDefaults[ent->aiCharacter].soundScripts[QUIETDEATHSOUNDSCRIPT])
+		);
+		return;
+	}
+
+	switch (mod) {
+	case MOD_KNIFE_STEALTH:
+	case MOD_SNIPERRIFLE:
+	case MOD_SNOOPERSCOPE:
+		G_AddEvent(
+			ent,
+			EV_GENERAL_SOUND,
+			G_SoundIndex(aiDefaults[ent->aiCharacter].soundScripts[QUIETDEATHSOUNDSCRIPT])
+		);
+		break;
+
+	case MOD_FLAMETHROWER:
+		G_AddEvent(
+			ent,
+			EV_GENERAL_SOUND,
+			G_SoundIndex(aiDefaults[ent->aiCharacter].soundScripts[FLAMEDEATHSOUNDSCRIPT])
+		);
+		break;
+
+	default:
+		G_AddEvent(
+			ent,
+			EV_GENERAL_SOUND,
+			G_SoundIndex(aiDefaults[ent->aiCharacter].soundScripts[DEATHSOUNDSCRIPT])
+		);
+		break;
 	}
 }
 
 /*
 =============
 AIChar_GetPainLocation
+
+Returns the closest pain tag index + 1, or 0 if no valid tag could be resolved.
+The return value matches the anim-script condition value expected by the game.
 =============
 */
-int AIChar_GetPainLocation( gentity_t *ent, vec3_t point ) {
-	static char *painTagNames[] = {
+int AIChar_GetPainLocation(gentity_t* ent, vec3_t point) {
+	static char* painTagNames[] = {
 		"tag_head",
 		"tag_chest",
 		"tag_torso",
@@ -1042,459 +1435,334 @@ int AIChar_GetPainLocation( gentity_t *ent, vec3_t point ) {
 		NULL,
 	};
 
-	int tagIndex, bestTag;
-	float bestDist, dist;
-	orientation_t or;
+	int tagIndex;
+	int bestTag;
+	float bestDist;
+	orientation_t or ;
 
-	// first make sure the client is able to retrieve tag information
-	if ( !sys->GetTag( ent->s.number, painTagNames[0], &or ) ) {
+	if (!sys->GetTag(ent->s.number, painTagNames[0], &or )) {
 		return 0;
 	}
 
-	// find a correct animation to play, based on the body orientation at previous frame
-	for ( tagIndex = 0, bestDist = 0, bestTag = -1; painTagNames[tagIndex]; tagIndex++ ) {
-		// grab the tag with this name
-		if ( sys->GetTag( ent->s.number, painTagNames[tagIndex], &or ) ) {
-			dist = VectorDistance( or.origin, point );
-			if ( !bestDist || dist < bestDist ) {
-				bestTag = tagIndex;
-				bestDist = dist;
-			}
+	bestTag = -1;
+	bestDist = 0.0f;
+
+	for (tagIndex = 0; painTagNames[tagIndex]; ++tagIndex) {
+		float dist;
+
+		if (!sys->GetTag(ent->s.number, painTagNames[tagIndex], &or )) {
+			continue;
+		}
+
+		dist = VectorDistance(or .origin, point);
+		if (bestTag < 0 || dist < bestDist) {
+			bestTag = tagIndex;
+			bestDist = dist;
 		}
 	}
 
-	if ( bestTag >= 0 ) {
-		return bestTag + 1;
-	}
-
-	return 0;
+	return (bestTag >= 0) ? (bestTag + 1) : 0;
 }
 
 /*
 ============
 AIChar_Pain
+
+Accumulates damage into a short-term quota and triggers a pain animation once
+that quota crosses the threshold. This prevents small hits from constantly
+interrupting the AI while still letting strong hits or special weapons stagger.
 ============
 */
-void AIChar_Pain( gentity_t *ent, gentity_t *attacker, int damage, vec3_t point ) {
-	#define PAIN_THRESHOLD      25
-	#define STUNNED_THRESHOLD   30
-	cast_state_t    *cs;
-	float dist;
-	qboolean forceStun = qfalse;
-	float painThreshold, stunnedThreshold;
+void AIChar_Pain(gentity_t* ent, gentity_t* attacker, int damage, vec3_t point) {
+#define PAIN_THRESHOLD      25
+#define STUNNED_THRESHOLD   30
+	cast_state_t* cs;
+	qboolean forceStun;
+	float painThreshold;
+	float stunnedThreshold;
 
-	cs = AICast_GetCastState( ent->s.number );
+	cs = AICast_GetCastState(ent->s.number);
+	forceStun = qfalse;
 
-	if ( g_testPain.integer == 1 ) {
-		ent->health = ent->client->pers.maxHealth;  // debugging
+	if (g_testPain.integer == 1) {
+		ent->health = ent->client->pers.maxHealth;
 	}
 
-	if ( g_testPain.integer != 2 ) {
-		if ( level.time < cs->painSoundTime ) {
-			return;
-		}
+	if (g_testPain.integer != 2 && level.time < cs->painSoundTime) {
+		return;
 	}
 
 	painThreshold = PAIN_THRESHOLD * cs->attributes[PAIN_THRESHOLD_SCALE];
 	stunnedThreshold = STUNNED_THRESHOLD * cs->attributes[PAIN_THRESHOLD_SCALE];
 
-	// if they are already playing another animation, we might get confused and cut it off, so don't play a pain
-	if ( ent->client->ps.torsoTimer || ent->client->ps.legsTimer ) {
+	// Avoid cutting off another animation or grenade-release sequence.
+	if (ent->client->ps.torsoTimer || ent->client->ps.legsTimer) {
+		return;
+	}
+	if (ent->client->ps.weaponDelay) {
 		return;
 	}
 
-	// if we are waiting for our weapon to fire (throwing a grenade)
-	if ( ent->client->ps.weaponDelay ) {
-		return;
+	// Flames should almost always register pain on vulnerable actors.
+	if (attacker->s.weapon == WP_FLAMETHROWER && !(cs->aiFlags & AIFL_NO_FLAME_DAMAGE)) {
+		painThreshold = 1.0f;
+		stunnedThreshold = 99999.0f;
 	}
 
-	if ( attacker->s.weapon == WP_FLAMETHROWER && !( cs->aiFlags & AIFL_NO_FLAME_DAMAGE ) ) {   // flames should be recognized more often, since they stay onfire until they're dead anyway
-		painThreshold = 1;
-		stunnedThreshold = 99999;   // dont be stunned
-	}
-
-	// HACK: if the attacker is using the flamethrower, don't do any special pain anim or sound
-	// FIXME: we should pass in the MOD here, since they could have fired a grenade, then switched weapons
-	//if (attacker->s.weapon == WP_FLAMETHROWER) {
-	//	return;
-	//}
-
-	if ( !Q_stricmp( attacker->classname, "props_statue" ) ) {
-		damage = 99999; // try and force a stun
+	// Legacy statue hits are meant to force a strong reaction.
+	if (!Q_stricmp(attacker->classname, "props_statue")) {
+		damage = 99999;
 		forceStun = qtrue;
 	}
 
-	if ( attacker->s.weapon == WP_TESLA ) {
+	// Tesla is extra disruptive, especially for actors without boosted thresholds.
+	if (attacker->s.weapon == WP_TESLA) {
 		damage *= 2;
-		if ( cs->attributes[PAIN_THRESHOLD_SCALE] <= 1.0 ) {
+		if (cs->attributes[PAIN_THRESHOLD_SCALE] <= 1.0f) {
 			damage = 99999;
 		}
 	}
 
-	// now check the damageQuota to see if we should play a pain animation
-	// first reduce the current damageQuota with time
-	if ( cs->damageQuotaTime && cs->damageQuota > 0 ) {
-		cs->damageQuota -= (int)( ( 1.0 + ( g_gameskill.value / GSKILL_MAX ) ) * ( (float)( level.time - cs->damageQuotaTime ) / 1000 ) * ( 7.5 + cs->attributes[ATTACK_SKILL] * 10.0 ) );
-		if ( cs->damageQuota < 0 ) {
-			cs->damageQuota = 0;
-		}
-	}
+	AIChar_ResetQuotaOverTime(cs);
+	damage = AIChar_ScalePainDamageByDelay(cs, damage);
+	damage = AIChar_ScalePainDamageByDistance(ent, attacker, damage);
 
-	// if it's been a long time since our last pain, scale it up
-	if ( cs->painSoundTime < level.time - 1000 ) {
-		float scale;
-		scale = (float)( level.time - cs->painSoundTime - 1000 ) / 1000.0;
-		if ( scale > 4.0 ) {
-			scale = 4.0;
-		}
-		damage = (int)( (float)damage * ( 1.0 + ( scale * ( 1.0 - 0.5 * g_gameskill.value / GSKILL_MAX ) ) ) );
-	}
-
-	// adjust the new damage with distance, if they are really close, scale it down, to make it
-	// harder to get through the game by continually rushing the enemies
-	if ( ( attacker->s.weapon != WP_TESLA ) && ( ( dist = VectorDistance( ent->r.currentOrigin, attacker->r.currentAngles ) ) < 384 ) ) {
-		damage -= (int)( (float)damage * ( 1.0 - ( dist / 384.0 ) ) * ( 0.5 + 0.5 * g_gameskill.value / GSKILL_MAX ) );
-	}
-
-	// add the new damage
 	cs->damageQuota += damage;
 	cs->damageQuotaTime = level.time;
 
-	if ( forceStun ) {
-		damage = 99999; // try and force a stun
+	if (forceStun) {
+		damage = 99999;
 		cs->damageQuota = painThreshold + 1;
 	}
 
-	// if it's over the threshold, play a pain
-
-	// don't do this if crouching, or we might clip through the world
-
-	if ( g_testPain.integer == 2 || ( cs->damageQuota > painThreshold ) ) {
+	if (g_testPain.integer == 2 || cs->damageQuota > painThreshold) {
 		int delay;
 
-		// stunned?
-		if ( damage > stunnedThreshold && ( forceStun || ( rand() % 2 ) ) ) {   // stunned
-			BG_UpdateConditionValue( ent->s.number, ANIM_COND_STUNNED, qtrue, qfalse );
-		}
-		// enemy weapon
-		if ( attacker->client ) {
-			BG_UpdateConditionValue( ent->s.number, ANIM_COND_ENEMY_WEAPON, attacker->s.weapon, qtrue );
-		}
-		if ( point ) {
-			// location
-			BG_UpdateConditionValue( ent->s.number, ANIM_COND_IMPACT_POINT, AIChar_GetPainLocation( ent, point ), qtrue );
-		} else {
-			BG_UpdateConditionValue( ent->s.number, ANIM_COND_IMPACT_POINT, 0, qfalse );
+		if (damage > stunnedThreshold && (forceStun || (rand() % 2))) {
+			BG_UpdateConditionValue(ent->s.number, ANIM_COND_STUNNED, qtrue, qfalse);
 		}
 
-		// pause while we play a pain
-		delay = BG_AnimScriptEvent( &ent->client->ps, ANIM_ET_PAIN, qfalse, qtrue );
+		if (attacker->client) {
+			BG_UpdateConditionValue(ent->s.number, ANIM_COND_ENEMY_WEAPON, attacker->s.weapon, qtrue);
+		}
 
-		// turn off temporary conditions
-		BG_UpdateConditionValue( ent->s.number, ANIM_COND_STUNNED, 0, qfalse );
-		BG_UpdateConditionValue( ent->s.number, ANIM_COND_ENEMY_WEAPON, 0, qfalse );
-		BG_UpdateConditionValue( ent->s.number, ANIM_COND_IMPACT_POINT, 0, qfalse );
+		if (point) {
+			BG_UpdateConditionValue(
+				ent->s.number,
+				ANIM_COND_IMPACT_POINT,
+				AIChar_GetPainLocation(ent, point),
+				qtrue
+			);
+		}
+		else {
+			BG_UpdateConditionValue(ent->s.number, ANIM_COND_IMPACT_POINT, 0, qfalse);
+		}
 
-		if ( delay >= 0 ) {
-			// setup game stuff to handle the character movements, etc
+		delay = BG_AnimScriptEvent(&ent->client->ps, ANIM_ET_PAIN, qfalse, qtrue);
+
+		BG_UpdateConditionValue(ent->s.number, ANIM_COND_STUNNED, 0, qfalse);
+		BG_UpdateConditionValue(ent->s.number, ANIM_COND_ENEMY_WEAPON, 0, qfalse);
+		BG_UpdateConditionValue(ent->s.number, ANIM_COND_IMPACT_POINT, 0, qfalse);
+
+		if (delay >= 0) {
 			cs->pauseTime = level.time + delay + 250;
 			cs->lockViewAnglesTime = cs->pauseTime;
-			// make sure we stop crouching
 			cs->attackcrouch_time = 0;
-			// don't fire while in pain?
 			cs->triggerReleaseTime = cs->pauseTime;
-			// stay crouching if we were before the pain
-			if ( cs->bs->cur_ps.viewheight == cs->bs->cur_ps.crouchViewHeight ) {
-				cs->attackcrouch_time = level.time + (float)( cs->pauseTime - level.time ) + 500;
+
+			if (cs->bs->cur_ps.viewheight == cs->bs->cur_ps.crouchViewHeight) {
+				cs->attackcrouch_time =
+					level.time + (float)(cs->pauseTime - level.time) + 500.0f;
 			}
 		}
 
-		// if we didnt just play a scripted sound, then play one of the default sounds
-		if ( cs->lastScriptSound < level.time ) {
-			G_AddEvent( ent, EV_GENERAL_SOUND, G_SoundIndex( aiDefaults[ent->aiCharacter].soundScripts[PAINSOUNDSCRIPT] ) );
+		if (cs->lastScriptSound < level.time) {
+			G_AddEvent(
+				ent,
+				EV_GENERAL_SOUND,
+				G_SoundIndex(aiDefaults[ent->aiCharacter].soundScripts[PAINSOUNDSCRIPT])
+			);
 		}
 
-		// reset the quota
 		cs->damageQuota = 0;
 		cs->damageQuotaTime = 0;
-		//
-		cs->painSoundTime = cs->pauseTime + (int)( 1000 * ( g_gameskill.value / GSKILL_MAX ) );     // add a bit more of a buffer before the next one
+		cs->painSoundTime =
+			cs->pauseTime + (int)(1000.0f * (g_gameskill.value / GSKILL_MAX));
 	}
-
+#undef PAIN_THRESHOLD
+#undef STUNNED_THRESHOLD
 }
 
 /*
 ============
 AIChar_Sight
+
+Records the first sighting time for hostile contacts, unless sight reactions are
+currently suppressed by scripting or no-attack windows.
 ============
 */
-void AIChar_Sight( gentity_t *ent, gentity_t *other, int lastSight ) {
-	cast_state_t    *cs;
+void AIChar_Sight(gentity_t* ent, gentity_t* other, int lastSight) {
+	cast_state_t* cs;
 
-	cs = AICast_GetCastState( ent->s.number );
+	cs = AICast_GetCastState(ent->s.number);
 
-	// if we are in noattack mode, don't make sounds
-	if ( cs->castScriptStatus.scriptNoAttackTime >= level.time ) {
-		return;
-	}
-	if ( cs->noAttackTime >= level.time ) {
+	if (AIChar_IsAttackSoundBlocked(cs)) {
 		return;
 	}
 
-	// if they have recently played a script sound, then ignore this
-	if ( cs->lastScriptSound > level.time - 4000 ) {
+	if (cs->lastScriptSound > level.time - 4000) {
 		return;
 	}
 
-	if ( !AICast_SameTeam( cs, other->s.number ) ) {
-		if ( !cs->firstSightTime || cs->firstSightTime < ( level.time - 15000 ) ) {
-			//G_AddEvent( ent, EV_GENERAL_SOUND, G_SoundIndex( aiDefaults[ent->aiCharacter].sightSoundScript ) );
+	if (!AICast_SameTeam(cs, other->s.number)) {
+		if (!cs->firstSightTime || cs->firstSightTime < (level.time - 15000)) {
+			// Reserved for future sight bark playback.
+			// G_AddEvent( ent, EV_GENERAL_SOUND,
+			//	G_SoundIndex( aiDefaults[ent->aiCharacter].sightSoundScript ) );
 		}
 		cs->firstSightTime = level.time;
 	}
-
 }
 
 /*
 =====================
-AIChar_AttackSND
+AIChar_AttackSound
 
-  NOTE: this should just lookup a sound script for this character/weapon combo
+Plays a bark when the actor enters an attack moment.
+Grenade throws are intentionally throttled so AI do not shout every single time.
 =====================
 */
-void AIChar_AttackSound( cast_state_t *cs ) {
+void AIChar_AttackSound(cast_state_t* cs) {
+	gentity_t* ent;
 
-	gentity_t *ent;
+	ent = &g_entities[cs->entityNum];
 
-	ent = &g_entities [cs->entityNum];
-
-	if ( cs->attackSNDtime > level.time ) {
+	if (cs->attackSNDtime > level.time) {
 		return;
 	}
 
-	// if we are in noattack mode, don't make sounds
-	if ( cs->castScriptStatus.scriptNoAttackTime >= level.time ) {
-		return;
-	}
-	if ( cs->noAttackTime >= level.time ) {
+	if (AIChar_IsAttackSoundBlocked(cs)) {
 		return;
 	}
 
-	// Ridah, only yell when throwing grenades every now and then, since it's not very "stealthy"
-	if ( cs->weaponNum == WP_GRENADE_LAUNCHER && rand() % 5 ) {
+	if (cs->weaponNum == WP_GRENADE_LAUNCHER && rand() % 5) {
 		return;
 	}
 
-	cs->attackSNDtime = level.time + 5000 + ( 1000 * rand() % 10 );
+	cs->attackSNDtime = level.time + 5000 + (1000 * rand() % 10);
 
-	AICast_ScriptEvent( cs, "attacksound", ent->aiName );
-	if ( cs->aiFlags & AIFL_DENYACTION ) {
+	AICast_ScriptEvent(cs, "attacksound", ent->aiName);
+	if (cs->aiFlags & AIFL_DENYACTION) {
 		return;
 	}
 
-	if ( cs->weaponNum == WP_LUGER ) {
-		G_AddEvent( ent, EV_GENERAL_SOUND, G_SoundIndex( aiDefaults[ent->aiCharacter].soundScripts[ORDERSSOUNDSCRIPT] ) );
-	} else {
-		G_AddEvent( ent, EV_GENERAL_SOUND, G_SoundIndex( aiDefaults[ent->aiCharacter].soundScripts[ATTACKSOUNDSCRIPT] ) );
+	if (cs->weaponNum == WP_LUGER) {
+		G_AddEvent(
+			ent,
+			EV_GENERAL_SOUND,
+			G_SoundIndex(aiDefaults[ent->aiCharacter].soundScripts[ORDERSSOUNDSCRIPT])
+		);
 	}
-
+	else {
+		G_AddEvent(
+			ent,
+			EV_GENERAL_SOUND,
+			G_SoundIndex(aiDefaults[ent->aiCharacter].soundScripts[ATTACKSOUNDSCRIPT])
+		);
+	}
 }
 
 /*
 ============
 AIChar_spawn
+
+Converts the placeholder map entity into a full AICast-controlled character.
+This function throttles spawns per frame, builds the starting loadout, creates
+the runtime actor, then wires up sounds, callbacks, animation flags, and script
+state.
 ============
 */
-void AIChar_spawn( gentity_t *ent ) {
-	gentity_t       *newent;
-	cast_state_t    *cs;
-	AICharacterDefaults_t *aiCharDefaults;
+void AIChar_spawn(gentity_t* ent) {
+	gentity_t* newent;
+	cast_state_t* cs;
+	AICharacterDefaults_t* aiCharDefaults;
 	int i;
 	static int lastCall;
 	static int numCalls;
 
-	// if there are other cast's waiting to spawn before us, wait for them
-	for ( i = MAX_CLIENTS, newent = &g_entities[MAX_CLIENTS]; i < MAX_GENTITIES; i++, newent++ ) {
-		if ( !newent->inuse ) {
+	// Preserve original spawn ordering so multiple queued casts come online
+	// deterministically and do not step on each other.
+	for (i = MAX_CLIENTS, newent = &g_entities[MAX_CLIENTS]; i < MAX_GENTITIES; ++i, ++newent) {
+		if (!newent->inuse) {
 			continue;
 		}
-		if ( newent->think != AIChar_spawn ) {
+		if (newent->think != AIChar_spawn) {
 			continue;
 		}
-		if ( newent == ent ) {
-			break;      // we are the first in line
+		if (newent == ent) {
+			break;
 		}
-		// still waiting for someone else
+
 		ent->nextthink = level.time + FRAMETIME;
 		return;
 	}
 
-	// if the client hasn't connected yet, wait around
-	if ( !AICast_FindEntityForName( "player" ) ) {
+	// Delay until the player entity exists so cast setup can resolve scripting.
+	if (!AICast_FindEntityForName("player")) {
 		ent->nextthink = level.time + FRAMETIME;
 		return;
 	}
 
-	if ( lastCall == level.time ) {
-		if ( numCalls++ > 2 ) {
+	// Rate-limit heavy cast creation work.
+	if (lastCall == level.time) {
+		if (numCalls++ > 2) {
 			ent->nextthink = level.time + FRAMETIME;
-			return;     // spawned enough this frame already
+			return;
 		}
-	} else {
+	}
+	else {
 		numCalls = 0;
 	}
 	lastCall = level.time;
 
 	aiCharDefaults = &aiDefaults[ent->aiCharacter];
 
-	// ............................
-	// setup weapon info
-	//
-	// starting weapons/ammo
-	memset( &weaponInfo, 0, sizeof( weaponInfo ) );
-	for ( i = 0; aiCharDefaults->weapons[i]; i++ ) {
-		//weaponInfo.startingWeapons[(aiCharDefaults->weapons[i] / 32)] |= ( 1 << aiCharDefaults->weapons[i] );
-		//weaponInfo.startingWeapons[0] |= ( 1 << aiCharDefaults->weapons[i] );
+	AIChar_SetSpawnWeapons(aiCharDefaults);
+	AIChar_SetupSpawnSkin(ent, aiCharDefaults);
 
-		COM_BitSet( weaponInfo.startingWeapons, aiCharDefaults->weapons[i] );
-		if ( aiCharDefaults->weapons[i] == WP_GRENADE_LAUNCHER ) { // give them a bunch of grenades, but not an unlimited supply
-			weaponInfo.startingAmmo[BG_FindAmmoForWeapon( (weapon_t) aiCharDefaults->weapons[i] )] = 6;
-		} else {
-			weaponInfo.startingAmmo[BG_FindAmmoForWeapon((weapon_t)aiCharDefaults->weapons[i] )] = 999;
-		}
-	}
-	//
-	// use the default skin if nothing specified
-	if ( !ent->aiSkin || !strlen( ent->aiSkin ) ) {
-		ent->aiSkin = aiCharDefaults->skin;
-	}
-	// ............................
-	//
-	// create the character
+	newent = AICast_CreateCharacter(
+		ent,
+		aiCharDefaults->attributes,
+		&weaponInfo,
+		aiCharDefaults->name,
+		ent->aiSkin,
+		ent->aihSkin,
+		"m",
+		"7",
+		"100"
+	);
 
-	// (there will always be an ent->aiSkin (SA))
-	newent = AICast_CreateCharacter( ent, aiCharDefaults->attributes, &weaponInfo, aiCharDefaults->name, ent->aiSkin, ent->aihSkin, "m", "7", "100" );
-
-	if ( !newent ) {
-		G_FreeEntity( ent );
+	if (!newent) {
+		G_FreeEntity(ent);
 		return;
 	}
-	// copy any character-specific information to the new entity (like editor fields, etc)
-	//
-	// copy this across so killing ai can trigger a target
-	newent->target = ent->target;
-	//
-	newent->classname = ent->classname;
-	newent->r.svFlags |= ( ent->r.svFlags & SVF_NOFOOTSTEPS );
-	newent->aiCharacter = ent->aiCharacter;
-	newent->client->ps.aiChar = ent->aiCharacter;
-	newent->spawnflags = ent->spawnflags;
-	newent->aiTeam = ent->aiTeam;
-	if ( newent->aiTeam < 0 ) {
-		newent->aiTeam = aiCharDefaults->aiTeam;
-	}
-	newent->client->ps.teamNum = newent->aiTeam;
-	//
-	// kill the old entity
-	G_FreeEntity( ent );
-	// attach to the new entity
-	ent = newent;
-	//
-	// precache any specific sounds
-	//
-	// ...
-	//
-	// get the cast state
-	cs = AICast_GetCastState( ent->s.number );
-	//
-	// setup any character specific cast_state variables
-	cs->deathfunc = AIChar_Death;
-	cs->painfunc = AIChar_Pain;
-	cs->aiFlags |= aiCharDefaults->aiFlags;
-	cs->aiState = aiCharDefaults->aiState;
-	//
-	cs->queryCountValidTime = -1;
-	//
-	// randomly choose idle animation
-	if ( cs->aiFlags & AIFL_STAND_IDLE2 ) {
-		newent->client->ps.eFlags |= EF_STAND_IDLE2;
-	}
-	//
-	// attach any event specific functions (pain, death, etc)
-	//
-	//cs->getDeathAnim = AIChar_getDeathAnim;
-	cs->sightfunc = AIChar_Sight;
-	if ( ent->aiTeam == AITEAM_ALLIES || ent->aiTeam == AITEAM_NEUTRAL ) { // friendly
-		cs->activate = AICast_ProcessActivate;
-	} else {
-		cs->activate = NULL;
-	}
-	cs->aifuncAttack1 = aiCharDefaults->aifuncAttack1;
-	cs->aifuncAttack2 = aiCharDefaults->aifuncAttack2;
-	cs->aifuncAttack3 = aiCharDefaults->aifuncAttack3;
-	//
-	// looping sound?
-	if ( aiCharDefaults->loopingSound ) {
-		ent->s.loopSound = G_SoundIndex( aiCharDefaults->loopingSound );
-	}
-	//
-	// precache sounds for this character
-	for ( i = 0; i < MAX_AI_EVENT_SOUNDS; i++ ) {
-		if ( aiDefaults[ent->aiCharacter].soundScripts[i] ) {
-			G_SoundIndex( aiDefaults[ent->aiCharacter].soundScripts[i] );
-		}
-	}
-	//
-	if ( ent->aiCharacter == AICHAR_HEINRICH ) {
-		AICast_Heinrich_SoundPrecache();
-	}
-	//
-	// special spawnflag stuff
-	if ( ent->spawnflags & 2 ) {
-		cs->secondDeadTime = qtrue;
-	}
-	//
-	// init scripting
-	cs->castScriptStatus.castScriptEventIndex = -1;
-	cs->castScriptStatus.scriptAttackEnt = -1;
-	//
-	// set crouch move speed
-	ent->client->ps.crouchSpeedScale = cs->attributes[CROUCHING_SPEED] / cs->attributes[RUNNING_SPEED];
-	//
-	// check for some anims which we can use for special behaviours
-	if ( BG_GetAnimScriptEvent( &ent->client->ps, ANIM_ET_ROLL ) >= 0 ) {
-		cs->aiFlags |= AIFL_ROLL_ANIM;
-	}
-	if ( BG_GetAnimScriptEvent( &ent->client->ps, ANIM_ET_FLIP ) >= 0 ) {
-		cs->aiFlags |= AIFL_FLIP_ANIM;
-	}
-	if ( BG_GetAnimScriptEvent( &ent->client->ps, ANIM_ET_DIVE ) >= 0 ) {
-		cs->aiFlags |= AIFL_DIVE_ANIM;
-	}
-	// HACK
-	if ( ent->aiName && !Q_stricmp( ent->aiName, "deathshead" ) ) {
-		cs->aiFlags |= AIFL_NO_FLAME_DAMAGE;
-	}
-	//
-	// check for no headshot damage
-	if ( cs->aiFlags & AIFL_NO_HEADSHOT_DMG ) {
-		ent->headshotDamageScale = 0.0;
-	}
-	// set these values now so scripting system isn't relying on a Think having been run prior to running a script
-	//origin of the cast
-	VectorCopy( ent->client->ps.origin, cs->bs->origin );
-	//velocity of the cast
-	VectorCopy( ent->client->ps.velocity, cs->bs->velocity );
-	//playerstate
-	cs->bs->cur_ps = ent->client->ps;
-	//
-	if ( !ent->aiInactive ) {
-		// trigger a spawn script event
-		AICast_ScriptEvent( cs, "spawn", "" );
-	} else {
-		sys->UnlinkEntity( ent );
-	}
 
+	AIChar_CopySpawnFields(ent, newent, aiCharDefaults);
+
+	G_FreeEntity(ent);
+	ent = newent;
+
+	cs = AICast_GetCastState(ent->s.number);
+
+	AIChar_InitSpawnState(ent, cs, aiCharDefaults);
+	AIChar_PreCacheSounds(ent, aiCharDefaults);
+
+	if (!ent->aiInactive) {
+		AICast_ScriptEvent(cs, "spawn", "");
+	}
+	else {
+		sys->UnlinkEntity(ent);
+	}
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1513,8 +1781,9 @@ model="models\mapobjects\characters\test\nazi.md3"
 SP_ai_soldier
 ============
 */
-void SP_ai_soldier( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_SOLDIER );
+void SP_ai_soldier(gentity_t* ent) {
+	// Standard Axis infantry.
+	AICast_DelayedSpawnCast(ent, AICHAR_SOLDIER);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1530,8 +1799,8 @@ american entity
 SP_ai_american
 ============
 */
-void SP_ai_american( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_AMERICAN );
+void SP_ai_american(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_AMERICAN);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1547,11 +1816,11 @@ zombie entity
 SP_ai_zombie
 ============
 */
-void SP_ai_zombie( gentity_t *ent ) {
+void SP_ai_zombie(gentity_t* ent) {
+	// Zombie footsteps are intentionally suppressed.
 	ent->r.svFlags |= SVF_NOFOOTSTEPS;
-	AICast_DelayedSpawnCast( ent, AICHAR_ZOMBIE );
+	AICast_DelayedSpawnCast(ent, AICHAR_ZOMBIE);
 }
-
 
 //----------------------------------------------------------------------------------------------------------------------------
 /*QUAKED ai_warzombie (1 0.25 0) (-16 -16 -24) (16 16 64) TriggerSpawn NoRevive PortalZombie
@@ -1566,10 +1835,9 @@ warrior zombie entity
 SP_ai_warzombie
 ============
 */
-void SP_ai_warzombie( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_WARZOMBIE );
+void SP_ai_warzombie(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_WARZOMBIE);
 }
-
 
 //----------------------------------------------------------------------------------------------------------------------------
 /*QUAKED ai_venom (1 0.25 0) (-16 -16 -24) (16 16 64) TriggerSpawn NoRevive
@@ -1584,11 +1852,10 @@ venom entity
 SP_ai_venom
 ============
 */
-void SP_ai_venom( gentity_t *ent ) {
+void SP_ai_venom(gentity_t* ent) {
 	ent->r.svFlags |= SVF_NOFOOTSTEPS;
-	AICast_DelayedSpawnCast( ent, AICHAR_VENOM );
+	AICast_DelayedSpawnCast(ent, AICHAR_VENOM);
 }
-
 
 //----------------------------------------------------------------------------------------------------------------------------
 /*QUAKED ai_loper (1 0.25 0) (-32 -32 -24) (32 32 48) TriggerSpawn NoRevive
@@ -1603,11 +1870,12 @@ loper entity
 SP_ai_loper
 ============
 */
-void SP_ai_loper( gentity_t *ent ) {
+void SP_ai_loper(gentity_t* ent) {
 	ent->r.svFlags |= SVF_NOFOOTSTEPS;
-	AICast_DelayedSpawnCast( ent, AICHAR_LOPER );
-	//
-	level.loperZapSound = G_SoundIndex( "loperZap" );
+	AICast_DelayedSpawnCast(ent, AICHAR_LOPER);
+
+	// Cache loper-specific zap sound early.
+	level.loperZapSound = G_SoundIndex("loperZap");
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1623,8 +1891,8 @@ helga entity
 SP_ai_boss_helga
 ============
 */
-void SP_ai_boss_helga( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_HELGA );
+void SP_ai_boss_helga(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_HELGA);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1640,8 +1908,8 @@ heinrich entity
 SP_ai_boss_heinrich
 ============
 */
-void SP_ai_boss_heinrich( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_HEINRICH );
+void SP_ai_boss_heinrich(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_HEINRICH);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1656,8 +1924,8 @@ void SP_ai_boss_heinrich( gentity_t *ent ) {
 SP_ai_partisan
 ============
 */
-void SP_ai_partisan( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_PARTISAN );
+void SP_ai_partisan(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_PARTISAN);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1672,8 +1940,8 @@ void SP_ai_partisan( gentity_t *ent ) {
 SP_ai_civilian
 ============
 */
-void SP_ai_civilian( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_CIVILIAN );
+void SP_ai_civilian(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_CIVILIAN);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1689,10 +1957,9 @@ elite guard entity
 SP_ai_eliteguard
 ============
 */
-void SP_ai_eliteguard( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_ELITEGUARD );
+void SP_ai_eliteguard(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_ELITEGUARD);
 }
-
 
 //----------------------------------------------------------------------------------------------------------------------------
 /*QUAKED ai_frogman (1 0.25 0) (-16 -16 -24) (16 16 64) TriggerSpawn NoRevive
@@ -1707,11 +1974,10 @@ elite guard entity
 SP_ai_frogman
 ============
 */
-void SP_ai_frogman( gentity_t *ent ) {
+void SP_ai_frogman(gentity_t* ent) {
 	ent->r.svFlags |= SVF_NOFOOTSTEPS;
-	AICast_DelayedSpawnCast( ent, AICHAR_FROGMAN );
+	AICast_DelayedSpawnCast(ent, AICHAR_FROGMAN);
 }
-
 
 //----------------------------------------------------------------------------------------------------------------------------
 /*QUAKED ai_stimsoldier_dual (1 0.25 0) (-32 -32 -24) (32 32 64) TriggerSpawn NoRevive
@@ -1726,10 +1992,9 @@ stim soldier entity
 SP_ai_stimsoldier_dual
 ============
 */
-void SP_ai_stimsoldier_dual( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_STIMSOLDIER1 );
-	//
-	level.stimSoldierFlySound = G_SoundIndex( "sound/stimsoldier/flyloop.wav" );
+void SP_ai_stimsoldier_dual(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_STIMSOLDIER1);
+	level.stimSoldierFlySound = G_SoundIndex("sound/stimsoldier/flyloop.wav");
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1745,10 +2010,9 @@ stim soldier entity
 SP_ai_stimsoldier_rocket
 ============
 */
-void SP_ai_stimsoldier_rocket( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_STIMSOLDIER2 );
-	//
-	level.stimSoldierFlySound = G_SoundIndex( "sound/stimsoldier/flyloop.wav" );
+void SP_ai_stimsoldier_rocket(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_STIMSOLDIER2);
+	level.stimSoldierFlySound = G_SoundIndex("sound/stimsoldier/flyloop.wav");
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1764,10 +2028,9 @@ stim soldier entity
 SP_ai_stimsoldier_tesla
 ============
 */
-void SP_ai_stimsoldier_tesla( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_STIMSOLDIER3 );
-	//
-	level.stimSoldierFlySound = G_SoundIndex( "sound/stimsoldier/flyloop.wav" );
+void SP_ai_stimsoldier_tesla(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_STIMSOLDIER3);
+	level.stimSoldierFlySound = G_SoundIndex("sound/stimsoldier/flyloop.wav");
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1783,8 +2046,8 @@ supersoldier entity
 SP_ai_supersoldier
 ============
 */
-void SP_ai_supersoldier( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_SUPERSOLDIER );
+void SP_ai_supersoldier(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_SUPERSOLDIER);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1800,8 +2063,8 @@ protosoldier entity
 SP_ai_protosoldier
 ============
 */
-void SP_ai_protosoldier( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_PROTOSOLDIER );
+void SP_ai_protosoldier(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_PROTOSOLDIER);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1817,6 +2080,6 @@ black guard entity
 SP_ai_blackguard
 ============
 */
-void SP_ai_blackguard( gentity_t *ent ) {
-	AICast_DelayedSpawnCast( ent, AICHAR_BLACKGUARD );
+void SP_ai_blackguard(gentity_t* ent) {
+	AICast_DelayedSpawnCast(ent, AICHAR_BLACKGUARD);
 }

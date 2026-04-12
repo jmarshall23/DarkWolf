@@ -1020,6 +1020,9 @@ extern "C" {
     void glScalef(GLfloat x, GLfloat y, GLfloat z);
     void glOrtho(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar);
 
+    void glUpdateBottomAccelStructure(bool opaque, uint32_t& meshHandle);
+    void glUpdateTopLevelAceelStructure(uint32_t mesh, float* transform, uint32_t& topLevelHandle);
+
     void glBegin(GLenum mode);
     void glEnd(void);
     void glVertex2f(GLfloat x, GLfloat y);
@@ -1103,13 +1106,56 @@ extern "C" {
     // ============================================================
 // Scene types
 // ============================================================
+	struct GLVertex
+	{
+		float px, py, pz;
+		float nx, ny, nz;
+		float u0, v0;
+		float u1, v1;
+		float r, g, b, a;
+	};
 
-    typedef struct glRaytracingVertex_s
+    struct glRaytracingVertex_t
     {
         float xyz[3];
         float normal[3];
         float st[2];
-    } glRaytracingVertex_t;
+
+		// Default constructor
+		glRaytracingVertex_t() = default;
+
+		// Conversion constructor
+		glRaytracingVertex_t(const GLVertex& v)
+		{
+			xyz[0] = v.px;
+			xyz[1] = v.py;
+			xyz[2] = v.pz;
+
+			normal[0] = v.nx;
+			normal[1] = v.ny;
+			normal[2] = v.nz;
+
+			st[0] = v.u0;
+			st[1] = v.v0;
+		}
+
+		// Copy assignment from GLVertex
+		glRaytracingVertex_t& operator=(const GLVertex& v)
+		{
+			xyz[0] = v.px;
+			xyz[1] = v.py;
+			xyz[2] = v.pz;
+
+			normal[0] = v.nx;
+			normal[1] = v.ny;
+			normal[2] = v.nz;
+
+			st[0] = v.u0;
+			st[1] = v.v0;
+
+			return *this;
+		}
+    } ;
 
     typedef struct glRaytracingMeshDesc_s
     {
@@ -1303,14 +1349,5 @@ static void glRaytracingCross3(
 
 static const int GL_RAYTRACING_LIGHT_TYPE_POINT = 0;
 static const int GL_RAYTRACING_LIGHT_TYPE_RECT = 1;
-
-struct GLVertex
-{
-	float px, py, pz;
-	float nx, ny, nz;
-	float u0, v0;
-	float u1, v1;
-	float r, g, b, a;
-};
 
 void TessellatePolygon(const std::vector<GLVertex>& src, std::vector<GLVertex>& out);

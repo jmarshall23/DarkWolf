@@ -40,6 +40,9 @@ extern void DrawPathLines();
 int g_nAngleSpeed = 300;
 int g_nMoveSpeed = 400;
 
+// F2 toggle: hide/show non-BSP brushes in camera view only.
+bool g_bCamHideNonBspBrushes = false;
+bool g_bCamRealtimePreview = false;
 
 /////////////////////////////////////////////////////////////////////////////
 // CCamWnd
@@ -143,9 +146,44 @@ BOOL CCamWnd::PreCreateWindow(CREATESTRUCT& cs)
 }
 
 
-void CCamWnd::OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags) 
+void CCamWnd::OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags)
 {
-  g_pParentWnd->HandleKey(nChar, nRepCnt, nFlags);
+	if (nChar == VK_F3)
+	{
+		g_bCamRealtimePreview = !g_bCamRealtimePreview;
+		return;
+	}
+	if (nChar == VK_F2)
+	{
+		g_bCamHideNonBspBrushes = !g_bCamHideNonBspBrushes;
+		if (g_bCamHideNonBspBrushes)
+		{
+			g_qeglobals.d_savedinfo.exclude |=
+				EXCLUDE_CAULK |
+				EXCLUDE_HINT |
+				EXCLUDE_CLIP |
+				EXCLUDE_DETAIL |
+				EXCLUDE_CURVES |
+				EXCLUDE_ENT |
+				EXCLUDE_PATHS;
+		}
+		else
+		{
+			g_qeglobals.d_savedinfo.exclude &= ~(
+				EXCLUDE_CAULK |
+				EXCLUDE_HINT |
+				EXCLUDE_CLIP |
+				EXCLUDE_DETAIL |
+				EXCLUDE_CURVES |
+				EXCLUDE_ENT |
+				EXCLUDE_PATHS
+				);
+		}
+		Sys_UpdateWindows(W_CAMERA);
+		return;
+	}
+
+	g_pParentWnd->HandleKey(nChar, nRepCnt, nFlags);
 }
 
 
@@ -256,6 +294,16 @@ int CCamWnd::OnCreate(LPCREATESTRUCT lpCreateStruct)
 {
   if (CWnd::OnCreate(lpCreateStruct) == -1)
 		return -1;
+
+  g_qeglobals.d_savedinfo.exclude &= ~(
+	  EXCLUDE_CAULK |
+	  EXCLUDE_HINT |
+	  EXCLUDE_CLIP |
+	  EXCLUDE_DETAIL |
+	  EXCLUDE_CURVES |
+	  EXCLUDE_ENT |
+	  EXCLUDE_PATHS
+	  );
 
 	g_qeglobals.d_hdcBase = GetDC()->m_hDC;
 	QEW_SetupPixelFormat(g_qeglobals.d_hdcBase, true);
@@ -936,15 +984,17 @@ void CCamWnd::Cam_Draw()
 			//--      if (brush->patchBrush)
 			//--			  m_TransBrushes [ m_nNumTransBrushes++ ] = brush;
 			//--      else
-			Brush_Draw(brush);
+			Brush_Draw(brush, g_bCamRealtimePreview);
 		}
 		
 		
 	}
-	
-	if (g_PrefsDlg.m_bGLLighting)
+
+	if (g_bCamRealtimePreview)
 	{
-		glDisable (GL_LIGHTING);
+		glFinish();
+		glLightScene();
+		glRaytracingLightingClearLights(true); // We clear every light every frame....because we can....
 	}
 	
 	//

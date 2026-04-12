@@ -80,7 +80,7 @@ void		Brush_BuildWindings( brush_t *b, bool bSnap = true );
 brush_t*	Brush_Clone (brush_t *b);
 brush_t*	Brush_FullClone(brush_t *b);
 brush_t*	Brush_Create (vec3_t mins, vec3_t maxs, texdef_t *texdef);
-void		Brush_Draw( brush_t *b );
+void		Brush_Draw( brush_t *b, bool updateDxr = false );
 void		Brush_DrawXY(brush_t *b, int nViewType);
 // set bRemoveNode to false to avoid trying to delete the item in group view tree control
 void		Brush_Free (brush_t *b, bool bRemoveNode = true);

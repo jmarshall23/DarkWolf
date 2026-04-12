@@ -349,6 +349,10 @@ typedef struct brush_s
 
 	struct entity_s *pUndoOwner;
 
+	uint32_t dxrBottomAccel = 0;
+	uint32_t dxrTopAccel = 0;
+	bool dxrIsDirty = false;
+
 	int undoId;						//undo ID
 	int redoId;						//redo ID
 	int ownerId;					//entityId of the owner entity for undo

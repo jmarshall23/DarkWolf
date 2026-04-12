@@ -3800,6 +3800,7 @@ void Brush_DrawFacingAngle (brush_t *b, entity_t *e)
 	glLineWidth (1);
 }
 
+extern bool g_bCamRealtimePreview;
 void DrawLight(brush_t *b)
 {
 	vec3_t vTriColor;
@@ -3821,6 +3822,12 @@ void DrawLight(brush_t *b)
     }
   }
   glColor3f(vTriColor[0], vTriColor[1], vTriColor[2]);
+
+  if (g_bCamRealtimePreview)
+  {
+	  glRaytracingLightingMakePointLight(b->owner->origin[0], b->owner->origin[1], b->owner->origin[2], 300, vTriColor[0], vTriColor[1], vTriColor[2], 1.0f);
+  }
+  
 
   vec3_t vCorners[4];
   float fMid = b->mins[2] + (b->maxs[2] - b->mins[2]) / 2;
@@ -3920,12 +3927,14 @@ void DrawLight(brush_t *b)
 
 }
 
-void Brush_Draw( brush_t *b )
+void Brush_Draw( brush_t *b, bool updateDxr)
 {
 	face_t			*face;
 	int				i, order;
 	qtexture_t		*prev = 0;
 	winding_t *w;
+
+	
 
 	if ( b->owner && ( b->owner->eclass->nShowFlags & ECLASS_PLUGINENTITY ) )
 	{
@@ -4083,6 +4092,15 @@ void Brush_Draw( brush_t *b )
 	if (batchOpen)
 	{
 		glEnd();
+	}
+
+	if (updateDxr)
+	{
+		if (b->dxrBottomAccel == 0 || b->dxrIsDirty)
+		{
+			glUpdateBottomAccelStructure(true, b->dxrBottomAccel);
+			glUpdateTopLevelAceelStructure(b->dxrBottomAccel, NULL, b->dxrTopAccel);
+		}
 	}
 	
 #if 0

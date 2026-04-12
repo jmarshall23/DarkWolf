@@ -398,6 +398,9 @@
       <Project>{aa96579b-0f16-4614-8453-0b03c8b39a46}</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
+    <ProjectReference Include="tools\radiant\Radiant.vcxproj">
+      <Project>{81b327f7-e010-ca80-d018-2ae11dbbe83e}</Project>
+    </ProjectReference>
     <ProjectReference Include="ui\ui.vcxproj">
       <Project>{9fc6663b-403b-4429-90c3-4ce12e5d0619}</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
