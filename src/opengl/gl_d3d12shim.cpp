@@ -578,7 +578,8 @@ struct GLState
 	QD3D12Window* frameOwner = nullptr;
 	QD3D12FramePhase framePhase = QD3D12_FRAME_LOW_RES;
 	bool sceneResolvedThisFrame = false;
-	float upscalerSharpness = 0.2f;
+	bool raytracedLightingReadyThisFrame = false;
+	float upscalerSharpness = 1.0f;
 
 	GLenum depthFunc = GL_LEQUAL;
 	UINT64 nextFenceValue = 1;
@@ -592,9 +593,9 @@ struct GLState
 	bool motionHistoryReset = true;
 
 	QD3D12UpscalerBackend upscalerBackend = QD3D12_UPSCALER_DLSS;
-	QD3D12UpscalerQuality upscalerQuality = QD3D12_QUALITY_BALANCED;
+	QD3D12UpscalerQuality upscalerQuality = QD3D12_QUALITY_QUALITY;
 	bool enableRayAIDenoise = false;
-	bool enableDLSSRayReconstruction = false;
+	bool enableDLSSRayReconstruction = true;
 	bool enableFSRRayRegeneration = false;
 
 	float jitterX = 0.0f;
@@ -2016,9 +2017,52 @@ static void QD3D12_StreamlineOnDeviceCreated()
 
 	g_qd3d12Sl.deviceBound = true;
 }
+
+static bool QD3D12_WantsDLSSRayReconstruction()
+{
+	return g_gl.enableDLSSRayReconstruction &&
+		g_gl.upscalerBackend == QD3D12_UPSCALER_DLSS &&
+		g_qd3d12Sl.deviceBound;
+}
+
+static bool QD3D12_UseLightingTextureAsUpscaleInput(const QD3D12Window&)
+{
+	return QD3D12_WantsDLSSRayReconstruction() &&
+		g_gl.raytracedLightingReadyThisFrame &&
+		g_lightingTexture &&
+		g_lightingTexture->texture;
+}
+
+static sl::Result QD3D12_SetStreamlineCommonConstants(sl::FrameToken& frameToken)
+{
+	sl::Constants consts{};
+	memcpy(&consts.cameraViewToClip, g_gl.cameraState.viewToClip.m, sizeof(float) * 16);
+	memcpy(&consts.clipToCameraView, g_gl.cameraState.clipToView.m, sizeof(float) * 16);
+	memcpy(&consts.clipToPrevClip, g_gl.cameraState.clipToPrevClip.m, sizeof(float) * 16);
+	memcpy(&consts.prevClipToClip, g_gl.cameraState.prevClipToClip.m, sizeof(float) * 16);
+	consts.jitterOffset = { g_gl.jitterX, g_gl.jitterY };
+	consts.mvecScale = { 1.0f, 1.0f }; // motion vectors are written in PreviousUV - CurrentUV
+	memcpy(&consts.cameraPos, g_gl.cameraState.cameraPos, sizeof(float) * 3);
+	memcpy(&consts.cameraRight, g_gl.cameraState.cameraRight, sizeof(float) * 3);
+	memcpy(&consts.cameraUp, g_gl.cameraState.cameraUp, sizeof(float) * 3);
+	memcpy(&consts.cameraFwd, g_gl.cameraState.cameraForward, sizeof(float) * 3);
+	consts.cameraNear = g_gl.cameraState.nearPlane;
+	consts.cameraFar = g_gl.cameraState.farPlane;
+	consts.cameraFOV = g_gl.cameraState.verticalFovRadians;
+	consts.cameraAspectRatio = g_gl.cameraState.aspectRatio;
+	consts.reset = g_gl.motionHistoryReset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	consts.depthInverted = sl::Boolean::eFalse;
+	consts.cameraMotionIncluded = sl::Boolean::eTrue;
+	consts.motionVectors3D = sl::Boolean::eFalse;
+	consts.motionVectorsDilated = sl::Boolean::eFalse;
+	consts.motionVectorsJittered = sl::Boolean::eFalse;
+	return slSetConstants(consts, frameToken, g_qd3d12Sl.viewport);
+}
 #else
 static void QD3D12_InitStreamlineEarly() {}
 static void QD3D12_StreamlineOnDeviceCreated() {}
+static bool QD3D12_WantsDLSSRayReconstruction() { return false; }
+static bool QD3D12_UseLightingTextureAsUpscaleInput(const QD3D12Window&) { return false; }
 #endif
 
 #if defined(QD3D12_ENABLE_FFX)
@@ -2103,6 +2147,30 @@ static void QD3D12_SelectRenderResolution(QD3D12Window& w, UINT outputWidth, UIN
 #if defined(QD3D12_ENABLE_STREAMLINE)
 	if (g_gl.upscalerBackend == QD3D12_UPSCALER_DLSS && g_qd3d12Sl.deviceBound)
 	{
+		if (QD3D12_WantsDLSSRayReconstruction())
+		{
+			sl::DLSSDOptions rrOptions{};
+			rrOptions.mode = QD3D12_MapDLSSMode(g_gl.upscalerQuality);
+			rrOptions.outputWidth = outputWidth;
+			rrOptions.outputHeight = outputHeight;
+			rrOptions.sharpness = g_gl.upscalerSharpness;
+			rrOptions.preExposure = 1.0f;
+			rrOptions.exposureScale = 1.0f;
+			rrOptions.colorBuffersHDR = sl::Boolean::eTrue;
+			rrOptions.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
+
+			sl::DLSSDOptimalSettings rrOptimal{};
+			const sl::Result rrOptimalResult = slDLSSDGetOptimalSettings(rrOptions, rrOptimal);
+			if (rrOptimalResult == sl::Result::eOk)
+			{
+				w.renderWidth = rrOptimal.optimalRenderWidth;
+				w.renderHeight = rrOptimal.optimalRenderHeight;
+				return;
+			}
+
+			QD3D12_Log("slDLSSDGetOptimalSettings failed (%d), falling back to DLSS SR sizing.", int(rrOptimalResult));
+		}
+
 		sl::DLSSOptions options{};
 		options.mode = QD3D12_MapDLSSMode(g_gl.upscalerQuality);
 		options.outputWidth = outputWidth;
@@ -2179,6 +2247,9 @@ static void QD3D12_RunRayAIDenoiseIfEnabled(ID3D12GraphicsCommandList* cl, QD3D1
 	if (!g_gl.enableRayAIDenoise)
 		return;
 
+	if (QD3D12_WantsDLSSRayReconstruction())
+		return;
+
 }
 
 static void QD3D12_RunUpscalerOrBlit(QD3D12Window& w)
@@ -2188,6 +2259,16 @@ static void QD3D12_RunUpscalerOrBlit(QD3D12Window& w)
 		return;
 
 	const bool haveTemporalCameraInputs = g_gl.cameraState.valid;
+	const bool useLightingUpscaleInput = QD3D12_UseLightingTextureAsUpscaleInput(w);
+
+	ID3D12Resource* upscaleInputResource = w.sceneColorBuffers[w.frameIndex].Get();
+	D3D12_GPU_DESCRIPTOR_HANDLE upscaleInputSrv = w.sceneColorSrvGpu[w.frameIndex];
+
+	if (useLightingUpscaleInput && g_lightingTexture && g_lightingTexture->texture)
+	{
+		upscaleInputResource = g_lightingTexture->texture.Get();
+		upscaleInputSrv = g_lightingTexture->srvGpu;
+	}
 
 	D3D12_VIEWPORT outputViewport{};
 	outputViewport.TopLeftX = 0.0f;
@@ -2204,6 +2285,111 @@ static void QD3D12_RunUpscalerOrBlit(QD3D12Window& w)
 	outputScissor.bottom = (LONG)w.height;
 
 #if defined(QD3D12_ENABLE_STREAMLINE)
+	if (haveTemporalCameraInputs && useLightingUpscaleInput && g_gl.upscalerBackend == QD3D12_UPSCALER_DLSS && g_qd3d12Sl.deviceBound)
+	{
+		sl::FrameToken* frameToken = nullptr;
+		uint32_t frameIndex = (uint32_t)g_gl.frameSerial;
+		const sl::Result frameResult = slGetNewFrameToken(frameToken, &frameIndex);
+		if (frameResult == sl::Result::eOk && frameToken)
+		{
+			sl::Extent renderExtent{};
+			renderExtent.left = 0;
+			renderExtent.top = 0;
+			renderExtent.width = w.renderWidth;
+			renderExtent.height = w.renderHeight;
+
+			sl::Extent outputExtent{};
+			outputExtent.left = 0;
+			outputExtent.top = 0;
+			outputExtent.width = w.width;
+			outputExtent.height = w.height;
+
+			sl::Resource colorIn = { sl::ResourceType::eTex2d, upscaleInputResource, nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+			sl::Resource colorOut = { sl::ResourceType::eTex2d, w.backBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_RENDER_TARGET) };
+			sl::Resource depth = { sl::ResourceType::eTex2d, w.depthBuffer.Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+			sl::Resource mvec = { sl::ResourceType::eTex2d, w.velocityBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+			sl::Resource specularMvec = { sl::ResourceType::eTex2d, w.velocityBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+			sl::Resource diffuseAlbedo = { sl::ResourceType::eTex2d, w.sceneColorBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+			sl::Resource specularAlbedo = { sl::ResourceType::eTex2d, w.sceneColorBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+			sl::Resource normalRoughness = { sl::ResourceType::eTex2d, w.normalBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+
+			sl::ResourceTag tags[] =
+			{
+				sl::ResourceTag{ &colorIn, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent },
+				sl::ResourceTag{ &colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow, &outputExtent },
+				sl::ResourceTag{ &depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &renderExtent },
+				sl::ResourceTag{ &mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent },
+				sl::ResourceTag{ &specularMvec, sl::kBufferTypeSpecularMotionVectors, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent },
+				sl::ResourceTag{ &diffuseAlbedo, sl::kBufferTypeAlbedo, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent },
+				sl::ResourceTag{ &specularAlbedo, sl::kBufferTypeSpecularAlbedo, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent },
+				sl::ResourceTag{ &normalRoughness, sl::kBufferTypeNormalRoughness, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent }
+			};
+
+			slSetTagForFrame(*frameToken, g_qd3d12Sl.viewport, tags, _countof(tags), cl);
+
+			sl::DLSSOptions dlssOptions{};
+			dlssOptions.mode = QD3D12_MapDLSSMode(g_gl.upscalerQuality);
+			dlssOptions.outputWidth = w.width;
+			dlssOptions.outputHeight = w.height;
+			dlssOptions.sharpness = g_gl.upscalerSharpness;
+			dlssOptions.colorBuffersHDR = sl::Boolean::eTrue;
+			dlssOptions.useAutoExposure = sl::Boolean::eFalse;
+			dlssOptions.alphaUpscalingEnabled = sl::Boolean::eFalse;
+
+			const sl::Result dlssOptionsResult = slDLSSSetOptions(g_qd3d12Sl.viewport, dlssOptions);
+			if (dlssOptionsResult != sl::Result::eOk)
+			{
+				QD3D12_Log("slDLSSSetOptions for DLSS_RR failed (%d), falling back.", int(dlssOptionsResult));
+			}
+			else
+			{
+				sl::DLSSDOptions rrOptions{};
+				rrOptions.mode = QD3D12_MapDLSSMode(g_gl.upscalerQuality);
+				rrOptions.outputWidth = w.width;
+				rrOptions.outputHeight = w.height;
+				rrOptions.sharpness = g_gl.upscalerSharpness;
+				rrOptions.preExposure = 1.0f;
+				rrOptions.exposureScale = 1.0f;
+				rrOptions.colorBuffersHDR = sl::Boolean::eTrue;
+				rrOptions.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
+				rrOptions.alphaUpscalingEnabled = sl::Boolean::eFalse;
+
+				Mat4 identity = Mat4::Identity();
+				memcpy(&rrOptions.worldToCameraView, identity.m, sizeof(float) * 16);
+				memcpy(&rrOptions.cameraViewToWorld, identity.m, sizeof(float) * 16);
+
+				const sl::Result rrOptionsResult = slDLSSDSetOptions(g_qd3d12Sl.viewport, rrOptions);
+				if (rrOptionsResult != sl::Result::eOk)
+				{
+					QD3D12_Log("slDLSSDSetOptions failed (%d), falling back.", int(rrOptionsResult));
+				}
+				else
+				{
+					const sl::Result constResult = QD3D12_SetStreamlineCommonConstants(*frameToken);
+					if (constResult != sl::Result::eOk)
+					{
+						QD3D12_Log("slSetConstants for DLSS_RR failed (%d), falling back.", int(constResult));
+					}
+					else
+					{
+						const sl::BaseStructure* inputs[] = { &g_qd3d12Sl.viewport };
+						const sl::Result evalResult = slEvaluateFeature(sl::kFeatureDLSS_RR, *frameToken, inputs, _countof(inputs), cl);
+						if (evalResult == sl::Result::eOk)
+						{
+							return;
+						}
+
+						QD3D12_Log("slEvaluateFeature(DLSS_RR) failed (%d), falling back.", int(evalResult));
+					}
+				}
+			}
+		}
+		else if (frameResult != sl::Result::eOk)
+		{
+			QD3D12_Log("slGetNewFrameToken for DLSS_RR failed (%d), falling back.", int(frameResult));
+		}
+	}
+
 	if (haveTemporalCameraInputs && g_gl.upscalerBackend == QD3D12_UPSCALER_DLSS && g_qd3d12Sl.deviceBound)
 	{
 		sl::FrameToken* frameToken = nullptr;
@@ -2223,7 +2409,7 @@ static void QD3D12_RunUpscalerOrBlit(QD3D12Window& w)
 			outputExtent.width = w.width;
 			outputExtent.height = w.height;
 
-			sl::Resource colorIn = { sl::ResourceType::eTex2d, w.sceneColorBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+			sl::Resource colorIn = { sl::ResourceType::eTex2d, upscaleInputResource, nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
 			sl::Resource colorOut = { sl::ResourceType::eTex2d, w.backBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_RENDER_TARGET) };
 			sl::Resource depth = { sl::ResourceType::eTex2d, w.depthBuffer.Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
 			sl::Resource mvec = { sl::ResourceType::eTex2d, w.velocityBuffers[w.frameIndex].Get(), nullptr, nullptr, uint32_t(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
@@ -2243,40 +2429,26 @@ static void QD3D12_RunUpscalerOrBlit(QD3D12Window& w)
 			options.outputWidth = w.width;
 			options.outputHeight = w.height;
 			options.sharpness = g_gl.upscalerSharpness;
-			options.colorBuffersHDR = sl::Boolean::eFalse;
-			options.useAutoExposure = sl::Boolean::eTrue;
+			options.colorBuffersHDR = useLightingUpscaleInput ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+			options.useAutoExposure = useLightingUpscaleInput ? sl::Boolean::eFalse : sl::Boolean::eTrue;
 			options.alphaUpscalingEnabled = sl::Boolean::eFalse;
 			slDLSSSetOptions(g_qd3d12Sl.viewport, options);
 
-			sl::Constants consts{};
-			memcpy(&consts.cameraViewToClip, g_gl.cameraState.viewToClip.m, sizeof(float) * 16);
-			memcpy(&consts.clipToCameraView, g_gl.cameraState.clipToView.m, sizeof(float) * 16);
-			memcpy(&consts.clipToPrevClip, g_gl.cameraState.clipToPrevClip.m, sizeof(float) * 16);
-			memcpy(&consts.prevClipToClip, g_gl.cameraState.prevClipToClip.m, sizeof(float) * 16);
-			consts.jitterOffset = { g_gl.jitterX, g_gl.jitterY };
-			consts.mvecScale = { 1.0f, 1.0f }; // motion vectors are written in PreviousUV - CurrentUV
-			memcpy(&consts.cameraPos, g_gl.cameraState.cameraPos, sizeof(float) * 3);
-			memcpy(&consts.cameraRight, g_gl.cameraState.cameraRight, sizeof(float) * 3);
-			memcpy(&consts.cameraUp, g_gl.cameraState.cameraUp, sizeof(float) * 3);
-			memcpy(&consts.cameraFwd, g_gl.cameraState.cameraForward, sizeof(float) * 3);
-			consts.cameraNear = g_gl.cameraState.nearPlane;
-			consts.cameraFar = g_gl.cameraState.farPlane;
-			consts.cameraFOV = g_gl.cameraState.verticalFovRadians;
-			consts.cameraAspectRatio = g_gl.cameraState.aspectRatio;
-			consts.reset = g_gl.motionHistoryReset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-			//consts renderingGameFrames = sl::Boolean::eTrue;
-			consts.depthInverted = sl::Boolean::eFalse;
-			consts.cameraMotionIncluded = sl::Boolean::eTrue;
-			consts.motionVectors3D = sl::Boolean::eFalse;
-			consts.motionVectorsDilated = sl::Boolean::eFalse;
-			consts.motionVectorsJittered = sl::Boolean::eFalse;
-			slSetConstants(consts, *frameToken, g_qd3d12Sl.viewport);
-
-			const sl::BaseStructure* inputs[] = { &g_qd3d12Sl.viewport };
-			const sl::Result evalResult = slEvaluateFeature(sl::kFeatureDLSS, *frameToken, inputs, _countof(inputs), cl);
-			if (evalResult == sl::Result::eOk)
+			const sl::Result constResult = QD3D12_SetStreamlineCommonConstants(*frameToken);
+			if (constResult != sl::Result::eOk)
 			{
-				return;
+				QD3D12_Log("slSetConstants for DLSS failed (%d), falling back.", int(constResult));
+			}
+			else
+			{
+				const sl::BaseStructure* inputs[] = { &g_qd3d12Sl.viewport };
+				const sl::Result evalResult = slEvaluateFeature(sl::kFeatureDLSS, *frameToken, inputs, _countof(inputs), cl);
+				if (evalResult == sl::Result::eOk)
+				{
+					return;
+				}
+
+				QD3D12_Log("slEvaluateFeature(DLSS) failed (%d), falling back.", int(evalResult));
 			}
 		}
 	}
@@ -2322,7 +2494,7 @@ static void QD3D12_RunUpscalerOrBlit(QD3D12Window& w)
 
 	const float clearColor[4] = { 0, 0, 0, 1 };
 	cl->ClearRenderTargetView(CurrentBackBufferRTV(), clearColor, 0, nullptr);
-	QD3D12_PostFullscreenPass(cl, g_gl.postCopyPSO.Get(), w.sceneColorSrvGpu[w.frameIndex], CurrentBackBufferRTV(), outputViewport, outputScissor);
+	QD3D12_PostFullscreenPass(cl, g_gl.postCopyPSO.Get(), upscaleInputSrv, CurrentBackBufferRTV(), outputViewport, outputScissor);
 }
 
 static void QD3D12_CreateDevice()
@@ -3261,6 +3433,7 @@ void QD3D12_BeginFrame()
 
 	g_gl.framePhase = QD3D12_FRAME_LOW_RES;
 	g_gl.sceneResolvedThisFrame = false;
+	g_gl.raytracedLightingReadyThisFrame = false;
 	QD3D12_UpdateViewportState();
 
 	FrameResources& fr = w.frames[w.frameIndex];
@@ -3323,6 +3496,7 @@ void QD3D12_EndFrame()
 
 	g_gl.framePhase = QD3D12_FRAME_LOW_RES;
 	g_gl.sceneResolvedThisFrame = false;
+	g_gl.raytracedLightingReadyThisFrame = false;
 	QD3D12_UpdateViewportState();
 }
 
@@ -3458,6 +3632,8 @@ static void EnsureTextureResource(TextureResource& tex)
 
 static TextureResource* QD3D12_EnsureLightingTexture(int width, int height)
 {
+	const DXGI_FORMAT desiredFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
 	if (g_lightingTextureId == 0)
 	{
 		g_lightingTextureId = g_gl.nextTextureId++;
@@ -3467,7 +3643,7 @@ static TextureResource* QD3D12_EnsureLightingTexture(int width, int height)
 		tex.width = (int)width;
 		tex.height = (int)height;
 		tex.format = GL_RGBA;
-		tex.dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+		tex.dxgiFormat = desiredFormat;
 		tex.minFilter = GL_LINEAR;
 		tex.magFilter = GL_LINEAR;
 		tex.wrapS = GL_CLAMP;
@@ -3489,10 +3665,13 @@ static TextureResource* QD3D12_EnsureLightingTexture(int width, int height)
 		g_lightingTexture = &it->second;
 	}
 
+	g_lightingTexture->dxgiFormat = desiredFormat;
+
 	const bool needsCreate =
 		!g_lightingTexture->texture ||
 		g_lightingTexture->width != (int)width ||
 		g_lightingTexture->height != (int)height ||
+		g_lightingTexture->texture->GetDesc().Format != desiredFormat ||
 		((g_lightingTexture->texture->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0);
 
 	if (!needsCreate)
@@ -3514,7 +3693,7 @@ static TextureResource* QD3D12_EnsureLightingTexture(int width, int height)
 	rd.Height = height;
 	rd.DepthOrArraySize = 1;
 	rd.MipLevels = 1;
-	rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	rd.Format = desiredFormat;
 	rd.SampleDesc.Count = 1;
 	rd.SampleDesc.Quality = 0;
 	rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -5403,6 +5582,7 @@ void QD3D12_Resize()
 	g_psoCache.clear();
 	g_gl.framePhase = QD3D12_FRAME_LOW_RES;
 	g_gl.sceneResolvedThisFrame = false;
+	g_gl.raytracedLightingReadyThisFrame = false;
 	QD3D12_UpdateViewportState();
 }
 
@@ -5450,6 +5630,7 @@ static void QD3D12_ReconfigureCurrentWindowForUpscalerChange()
 	g_psoCache.clear();
 	g_gl.framePhase = QD3D12_FRAME_LOW_RES;
 	g_gl.sceneResolvedThisFrame = false;
+	g_gl.raytracedLightingReadyThisFrame = false;
 	QD3D12_UpdateViewportState();
 }
 
@@ -5955,9 +6136,22 @@ static void QD3D12_ResolveSceneToOutputAndEnterNativePhase(QD3D12Window& w)
 	if (!cl)
 		return;
 
+	const bool useLightingUpscaleInput = QD3D12_UseLightingTextureAsUpscaleInput(w);
+
 	QD3D12_TransitionResource(cl, w.sceneColorBuffers[w.frameIndex].Get(), w.sceneColorState[w.frameIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 	QD3D12_TransitionResource(cl, w.velocityBuffers[w.frameIndex].Get(), w.velocityBufferState[w.frameIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 	QD3D12_TransitionResource(cl, w.depthBuffer.Get(), w.depthState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+	if (useLightingUpscaleInput)
+	{
+		QD3D12_TransitionResource(cl, w.normalBuffers[w.frameIndex].Get(), w.normalBufferState[w.frameIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+		if (g_lightingTexture && g_lightingTexture->texture)
+		{
+			QD3D12_TransitionResource(cl, g_lightingTexture->texture.Get(), g_lightingTextureState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+		}
+	}
+
 	QD3D12_TransitionResource(cl, w.backBuffers[w.frameIndex].Get(), w.backBufferState[w.frameIndex], D3D12_RESOURCE_STATE_RENDER_TARGET);
 
 	QD3D12_RunUpscalerOrBlit(w);
@@ -6097,37 +6291,46 @@ extern "C" void glLightScene(void)
 		g_lightingTextureState,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-	QD3D12_TransitionResource(
-		cl,
-		sceneColor,
-		g_currentWindow->sceneColorState[g_currentWindow->frameIndex],
-		D3D12_RESOURCE_STATE_RENDER_TARGET);
+	g_gl.raytracedLightingReadyThisFrame = true;
 
-	D3D12_VIEWPORT viewport{};
-	viewport.TopLeftX = 0.0f;
-	viewport.TopLeftY = 0.0f;
-	viewport.Width = (float)g_currentWindow->renderWidth;
-	viewport.Height = (float)g_currentWindow->renderHeight;
-	viewport.MinDepth = 0.0f;
-	viewport.MaxDepth = 1.0f;
+	if (!QD3D12_UseLightingTextureAsUpscaleInput(*g_currentWindow))
+	{
+		QD3D12_TransitionResource(
+			cl,
+			sceneColor,
+			g_currentWindow->sceneColorState[g_currentWindow->frameIndex],
+			D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-	D3D12_RECT scissor{};
-	scissor.left = 0;
-	scissor.top = 0;
-	scissor.right = (LONG)g_currentWindow->renderWidth;
-	scissor.bottom = (LONG)g_currentWindow->renderHeight;
+		D3D12_VIEWPORT viewport{};
+		viewport.TopLeftX = 0.0f;
+		viewport.TopLeftY = 0.0f;
+		viewport.Width = (float)g_currentWindow->renderWidth;
+		viewport.Height = (float)g_currentWindow->renderHeight;
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
 
-	// glLightScene is invoked after the opaque pass and the DXR shader already
-	// outputs the lit opaque scene color, not a light-only buffer. Composite by
-	// replacing the opaque scene color here; the later transparent passes then
-	// blend over the lit result as expected.
-	QD3D12_PostFullscreenPass(
-		cl,
-		g_gl.postCopyPSO.Get(),
-		g_lightingTexture->srvGpu,
-		CurrentRTV(),
-		viewport,
-		scissor);
+		D3D12_RECT scissor{};
+		scissor.left = 0;
+		scissor.top = 0;
+		scissor.right = (LONG)g_currentWindow->renderWidth;
+		scissor.bottom = (LONG)g_currentWindow->renderHeight;
+
+		// Non-RR path: replace the low-resolution scene color with the lit result,
+		// then upscale that scene color into the backbuffer.
+		QD3D12_PostFullscreenPass(
+			cl,
+			g_gl.postCopyPSO.Get(),
+			g_lightingTexture->srvGpu,
+			CurrentRTV(),
+			viewport,
+			scissor);
+	}
+	else
+	{
+		// DLSS Ray Reconstruction consumes the noisy ray-traced lighting texture
+		// directly as the scaling input, so keep sceneColor intact as the albedo
+		// guide instead of overwriting it here.
+	}
 
 	QD3D12_ResolveSceneToOutputAndEnterNativePhase(*g_currentWindow);
 }
@@ -6215,7 +6418,14 @@ extern "C" void QD3D12_EnableRayAIDenoise(int enabled)
 
 extern "C" void QD3D12_EnableDLSSRayReconstruction(int enabled)
 {
-	g_gl.enableDLSSRayReconstruction = enabled ? true : false;
+	const bool newValue = enabled ? true : false;
+	if (g_gl.enableDLSSRayReconstruction == newValue)
+		return;
+
+	g_gl.enableDLSSRayReconstruction = newValue;
+	g_gl.enableRayAIDenoise = false;
+	g_gl.motionHistoryReset = true;
+	QD3D12_ReconfigureCurrentWindowForUpscalerChange();
 }
 
 extern "C" void QD3D12_EnableFSRRayRegeneration(int enabled)

@@ -348,7 +348,7 @@ static qboolean R_ShouldFaceEmitRectLight(const msurface_t* surf)
 	if (!surf || !surf->shader)
 		return qfalse;
 
-	if (surf->shader->stages[0]->bundle[0].light > 0)
+	if (surf->shader->stages[0] && surf->shader->stages[0]->bundle[0].light > 0)
 		return qtrue;
 
 	return qfalse;
