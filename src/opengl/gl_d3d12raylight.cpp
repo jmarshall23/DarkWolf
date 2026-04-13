@@ -521,7 +521,7 @@ struct glRaytracingSceneState_t
 
 static glRaytracingSceneState_t g_glRaytracingScene;
 
-extern "C" void glRaytracingClear(void);
+void glRaytracingClear(void);
 
 static void glRaytracingEnsureMeshHandleTable(uint32_t handle)
 {
@@ -1247,7 +1247,7 @@ static int glRaytracingBuildSceneInternal(void)
 // Scene public API
 // ============================================================
 
-extern "C" int glRaytracingInit(void)
+int glRaytracingInit(void)
 {
 	if (g_glRaytracingScene.initialized)
 		return 1;
@@ -1260,7 +1260,7 @@ extern "C" int glRaytracingInit(void)
 	return 1;
 }
 
-extern "C" void glRaytracingShutdown(void)
+void glRaytracingShutdown(void)
 {
 	if (!g_glRaytracingScene.initialized)
 		return;
@@ -1270,7 +1270,7 @@ extern "C" void glRaytracingShutdown(void)
 	glRaytracingShutdownCmdContext();
 }
 
-extern "C" void glRaytracingClear(void)
+void glRaytracingClear(void)
 {
 	g_glRaytracingScene.meshes.clear();
 	g_glRaytracingScene.instances.clear();
@@ -1299,7 +1299,7 @@ extern "C" void glRaytracingClear(void)
 	g_glRaytracingScene.currentTLASIndex = 0;
 }
 
-extern "C" glRaytracingMeshHandle_t glRaytracingCreateMesh(const glRaytracingMeshDesc_t* desc)
+glRaytracingMeshHandle_t glRaytracingCreateMesh(const glRaytracingMeshDesc_t* desc)
 {
 	if (!g_glRaytracingScene.initialized || !desc)
 		return 0;
@@ -1325,7 +1325,7 @@ extern "C" glRaytracingMeshHandle_t glRaytracingCreateMesh(const glRaytracingMes
 	return mesh.handle;
 }
 
-extern "C" int glRaytracingUpdateMesh(glRaytracingMeshHandle_t meshHandle, const glRaytracingMeshDesc_t* desc)
+int glRaytracingUpdateMesh(glRaytracingMeshHandle_t meshHandle, const glRaytracingMeshDesc_t* desc)
 {
 	if (!g_glRaytracingScene.initialized || !desc)
 		return 0;
@@ -1367,7 +1367,7 @@ extern "C" int glRaytracingUpdateMesh(glRaytracingMeshHandle_t meshHandle, const
 	return 1;
 }
 
-extern "C" void glRaytracingDeleteMesh(glRaytracingMeshHandle_t meshHandle)
+void glRaytracingDeleteMesh(glRaytracingMeshHandle_t meshHandle)
 {
 	glRaytracingMeshRecord_t* mesh = glRaytracingFindMesh(meshHandle);
 	if (!mesh)
@@ -1393,7 +1393,7 @@ extern "C" void glRaytracingDeleteMesh(glRaytracingMeshHandle_t meshHandle)
 	g_glRaytracingScene.tlasNeedsRebuild = 1;
 }
 
-extern "C" glRaytracingInstanceHandle_t glRaytracingCreateInstance(const glRaytracingInstanceDesc_t* desc)
+glRaytracingInstanceHandle_t glRaytracingCreateInstance(const glRaytracingInstanceDesc_t* desc)
 {
 	if (!g_glRaytracingScene.initialized || !desc)
 		return 0;
@@ -1415,7 +1415,7 @@ extern "C" glRaytracingInstanceHandle_t glRaytracingCreateInstance(const glRaytr
 	return inst.handle;
 }
 
-extern "C" int glRaytracingUpdateInstance(glRaytracingInstanceHandle_t instanceHandle, const glRaytracingInstanceDesc_t* desc)
+int glRaytracingUpdateInstance(glRaytracingInstanceHandle_t instanceHandle, const glRaytracingInstanceDesc_t* desc)
 {
 	if (!g_glRaytracingScene.initialized || !desc)
 		return 0;
@@ -1445,7 +1445,7 @@ extern "C" int glRaytracingUpdateInstance(glRaytracingInstanceHandle_t instanceH
 	return 1;
 }
 
-extern "C" void glRaytracingDeleteInstance(glRaytracingInstanceHandle_t instanceHandle)
+void glRaytracingDeleteInstance(glRaytracingInstanceHandle_t instanceHandle)
 {
 	glRaytracingInstanceRecord_t* inst = glRaytracingFindInstance(instanceHandle);
 	if (!inst)
@@ -1459,7 +1459,7 @@ extern "C" void glRaytracingDeleteInstance(glRaytracingInstanceHandle_t instance
 	g_glRaytracingScene.tlasNeedsUpdate = 0;
 }
 
-extern "C" int glRaytracingBuildMesh(glRaytracingMeshHandle_t meshHandle)
+int glRaytracingBuildMesh(glRaytracingMeshHandle_t meshHandle)
 {
 	if (!g_glRaytracingScene.initialized)
 		return 0;
@@ -1471,7 +1471,7 @@ extern "C" int glRaytracingBuildMesh(glRaytracingMeshHandle_t meshHandle)
 	return glRaytracingBuildMeshInternal(mesh);
 }
 
-extern "C" int glRaytracingBuildAllMeshes(void)
+int glRaytracingBuildAllMeshes(void)
 {
 	if (!g_glRaytracingScene.initialized)
 		return 0;
@@ -1479,7 +1479,7 @@ extern "C" int glRaytracingBuildAllMeshes(void)
 	return glRaytracingBuildDirtyMeshesInternal();
 }
 
-extern "C" int glRaytracingBuildScene(void)
+int glRaytracingBuildScene(void)
 {
 	if (!g_glRaytracingScene.initialized)
 		return 0;
@@ -1490,12 +1490,12 @@ extern "C" int glRaytracingBuildScene(void)
 	return glRaytracingBuildSceneInternal();
 }
 
-extern "C" ID3D12Resource* glRaytracingGetTopLevelAS(void)
+ID3D12Resource* glRaytracingGetTopLevelAS(void)
 {
 	return glRaytracingGetCurrentTLASBuffer()->resource.Get();
 }
 
-extern "C" uint32_t glRaytracingGetMeshCount(void)
+uint32_t glRaytracingGetMeshCount(void)
 {
 	uint32_t count = 0;
 	for (size_t i = 0; i < g_glRaytracingScene.meshes.size(); ++i)
@@ -1506,7 +1506,7 @@ extern "C" uint32_t glRaytracingGetMeshCount(void)
 	return count;
 }
 
-extern "C" uint32_t glRaytracingGetInstanceCount(void)
+uint32_t glRaytracingGetInstanceCount(void)
 {
 	uint32_t count = 0;
 	for (size_t i = 0; i < g_glRaytracingScene.instances.size(); ++i)
@@ -2572,7 +2572,7 @@ static void glRaytracingLightingCreatePerPassDescriptors(const glRaytracingLight
 // Lighting public API
 // ============================================================
 
-extern "C" bool glRaytracingLightingInit(void)
+bool glRaytracingLightingInit(void)
 {
 	if (g_glRaytracingLighting.initialized)
 		return true;
@@ -2614,7 +2614,7 @@ extern "C" bool glRaytracingLightingInit(void)
 	return true;
 }
 
-extern "C" void glRaytracingLightingShutdown(void)
+void glRaytracingLightingShutdown(void)
 {
 	if (!g_glRaytracingLighting.initialized)
 		return;
@@ -2622,12 +2622,12 @@ extern "C" void glRaytracingLightingShutdown(void)
 	g_glRaytracingLighting = glRaytracingLightingState_t();
 }
 
-extern "C" bool glRaytracingLightingIsInitialized(void)
+bool glRaytracingLightingIsInitialized(void)
 {
 	return g_glRaytracingLighting.initialized;
 }
 
-extern "C" void glRaytracingLightingClearLights(bool clearPersistant)
+void glRaytracingLightingClearLights(bool clearPersistant)
 {
 	if (clearPersistant)
 	{
@@ -2658,7 +2658,7 @@ extern "C" void glRaytracingLightingClearLights(bool clearPersistant)
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" bool glRaytracingLightingAddLight(const glRaytracingLight_t* light)
+bool glRaytracingLightingAddLight(const glRaytracingLight_t* light)
 {
 	if (!g_glRaytracingLighting.initialized || !light)
 		return false;
@@ -2674,7 +2674,7 @@ extern "C" bool glRaytracingLightingAddLight(const glRaytracingLight_t* light)
 	return true;
 }
 
-extern "C" void glRaytracingLightingSetAmbient(float r, float g, float b, float intensity)
+void glRaytracingLightingSetAmbient(float r, float g, float b, float intensity)
 {
 	g_glRaytracingLighting.constants.ambientColor[0] = r;
 	g_glRaytracingLighting.constants.ambientColor[1] = g;
@@ -2683,7 +2683,7 @@ extern "C" void glRaytracingLightingSetAmbient(float r, float g, float b, float 
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" void glRaytracingLightingSetCameraPosition(float x, float y, float z)
+void glRaytracingLightingSetCameraPosition(float x, float y, float z)
 {
 	g_glRaytracingLighting.constants.cameraPos[0] = x;
 	g_glRaytracingLighting.constants.cameraPos[1] = y;
@@ -2692,7 +2692,7 @@ extern "C" void glRaytracingLightingSetCameraPosition(float x, float y, float z)
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" void glRaytracingLightingSetInvViewProjMatrix(const float* m16)
+void glRaytracingLightingSetInvViewProjMatrix(const float* m16)
 {
 	if (!m16)
 		return;
@@ -2701,7 +2701,7 @@ extern "C" void glRaytracingLightingSetInvViewProjMatrix(const float* m16)
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" void glRaytracingLightingSetInvViewMatrix(const float* m16)
+void glRaytracingLightingSetInvViewMatrix(const float* m16)
 {
 	if (!m16)
 		return;
@@ -2710,31 +2710,31 @@ extern "C" void glRaytracingLightingSetInvViewMatrix(const float* m16)
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" void glRaytracingLightingSetNormalReconstructSign(float signValue)
+void glRaytracingLightingSetNormalReconstructSign(float signValue)
 {
 	g_glRaytracingLighting.constants.normalReconstructZ = signValue;
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" void glRaytracingLightingEnableSpecular(int enable)
+void glRaytracingLightingEnableSpecular(int enable)
 {
 	g_glRaytracingLighting.constants.enableSpecular = enable ? 1u : 0u;
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" void glRaytracingLightingEnableHalfLambert(int enable)
+void glRaytracingLightingEnableHalfLambert(int enable)
 {
 	g_glRaytracingLighting.constants.enableHalfLambert = enable ? 1u : 0u;
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" void glRaytracingLightingSetShadowBias(float bias)
+void glRaytracingLightingSetShadowBias(float bias)
 {
 	g_glRaytracingLighting.constants.shadowBias = bias;
 	glRaytracingLightingUpdateConstants();
 }
 
-extern "C" bool glRaytracingLightingExecute(const glRaytracingLightingPassDesc_t* pass)
+bool glRaytracingLightingExecute(const glRaytracingLightingPassDesc_t* pass)
 {
 	if (!g_glRaytracingLighting.initialized || !pass)
 		return false;
@@ -2862,7 +2862,7 @@ extern "C" bool glRaytracingLightingExecute(const glRaytracingLightingPassDesc_t
 	return true;
 }
 
-extern "C" glRaytracingLight_t glRaytracingLightingMakePointLight(
+glRaytracingLight_t glRaytracingLightingMakePointLight(
 	float px, float py, float pz,
 	float radius,
 	float r, float g, float b,
@@ -2901,7 +2901,7 @@ extern "C" glRaytracingLight_t glRaytracingLightingMakePointLight(
 	return l;
 }
 
-extern "C" glRaytracingLight_t glRaytracingLightingMakeRectLight(
+glRaytracingLight_t glRaytracingLightingMakeRectLight(
 	float px, float py, float pz,
 	float nx, float ny, float nz,
 	float ux, float uy, float uz,
@@ -2961,7 +2961,7 @@ extern "C" glRaytracingLight_t glRaytracingLightingMakeRectLight(
 	return l;
 }
 
-extern "C" uint32_t glRaytracingLightingGetLightCount(void)
+uint32_t glRaytracingLightingGetLightCount(void)
 {
 	return (uint32_t)g_glRaytracingLighting.cpuLights.size();
 }

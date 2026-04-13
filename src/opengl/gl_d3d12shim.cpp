@@ -1615,7 +1615,7 @@ static void QD3D12_CommitMotionHistoryForFrame()
 	++g_gl.frameSerial;
 }
 
-extern "C" void APIENTRY glSelectTextureSGIS(GLenum texture)
+void APIENTRY glSelectTextureSGIS(GLenum texture)
 {
 	switch (texture)
 	{
@@ -1625,7 +1625,7 @@ extern "C" void APIENTRY glSelectTextureSGIS(GLenum texture)
 	}
 }
 
-extern "C" void APIENTRY glMTexCoord2fSGIS(GLenum texture, GLfloat s, GLfloat t)
+void APIENTRY glMTexCoord2fSGIS(GLenum texture, GLfloat s, GLfloat t)
 {
 	GLuint oldUnit = g_gl.activeTextureUnit;
 
@@ -1642,7 +1642,7 @@ extern "C" void APIENTRY glMTexCoord2fSGIS(GLenum texture, GLfloat s, GLfloat t)
 	g_gl.activeTextureUnit = oldUnit;
 }
 
-extern "C" void APIENTRY glActiveTextureARB(GLenum texture)
+void APIENTRY glActiveTextureARB(GLenum texture)
 {
 	if (texture >= GL_TEXTURE0_ARB)
 		g_gl.activeTextureUnit = ClampValue<GLuint>((GLuint)(texture - GL_TEXTURE0_ARB), 0, QD3D12_MaxTextureUnits - 1);
@@ -1650,7 +1650,7 @@ extern "C" void APIENTRY glActiveTextureARB(GLenum texture)
 		g_gl.activeTextureUnit = 0;
 }
 
-extern "C" void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t)
+void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t)
 {
 	GLuint unit = 0;
 	if (texture >= GL_TEXTURE0_ARB)
@@ -1690,6 +1690,7 @@ static int BytesPerPixel(GLenum format, GLenum type)
 	{
 	case GL_ALPHA:
 	case GL_LUMINANCE:
+	case GL_INTENSITY:
 		return 1;
 	case GL_RGB:
 		return 3;
@@ -4170,6 +4171,233 @@ static void UploadTexture(TextureResource& tex)
 }
 
 
+
+static GLenum QD3D12_NormalizeCopyTextureFormat(GLenum format)
+{
+	switch (format)
+	{
+	case 1:
+		return GL_LUMINANCE;
+	case 3:
+		return GL_RGB;
+	case 4:
+		return GL_RGBA;
+	case GL_ALPHA:
+	case GL_LUMINANCE:
+	case GL_INTENSITY:
+	case GL_RGB:
+	case GL_RGBA:
+		return format;
+	default:
+		return GL_RGBA;
+	}
+}
+
+static void QD3D12_PackRGBA8ToTextureFormat(const uint8_t* srcRGBA, int pixelCount, GLenum dstFormat, std::vector<uint8_t>& out)
+{
+	dstFormat = QD3D12_NormalizeCopyTextureFormat(dstFormat);
+
+	switch (dstFormat)
+	{
+	case GL_RGB:
+		out.resize((size_t)pixelCount * 3);
+		for (int i = 0; i < pixelCount; ++i)
+		{
+			out[(size_t)i * 3 + 0] = srcRGBA[(size_t)i * 4 + 0];
+			out[(size_t)i * 3 + 1] = srcRGBA[(size_t)i * 4 + 1];
+			out[(size_t)i * 3 + 2] = srcRGBA[(size_t)i * 4 + 2];
+		}
+		break;
+
+	case GL_ALPHA:
+		out.resize((size_t)pixelCount);
+		for (int i = 0; i < pixelCount; ++i)
+		{
+			out[(size_t)i] = srcRGBA[(size_t)i * 4 + 3];
+		}
+		break;
+
+	case GL_LUMINANCE:
+	case GL_INTENSITY:
+		out.resize((size_t)pixelCount);
+		for (int i = 0; i < pixelCount; ++i)
+		{
+			const uint8_t r = srcRGBA[(size_t)i * 4 + 0];
+			const uint8_t g = srcRGBA[(size_t)i * 4 + 1];
+			const uint8_t b = srcRGBA[(size_t)i * 4 + 2];
+			out[(size_t)i] = (uint8_t)((77u * r + 150u * g + 29u * b + 128u) >> 8);
+		}
+		break;
+
+	case GL_RGBA:
+	default:
+		out.assign(srcRGBA, srcRGBA + (size_t)pixelCount * 4);
+		break;
+	}
+}
+
+static bool QD3D12_ReadFramebufferRegionRGBA8(GLint x, GLint y, GLsizei width, GLsizei height, std::vector<uint8_t>& outRGBA)
+{
+	outRGBA.clear();
+
+	if (!g_currentWindow || !g_gl.device || !g_gl.queue || !g_gl.cmdList)
+		return false;
+
+	if (width <= 0 || height <= 0)
+		return false;
+
+	QD3D12_EnsureFrameOpen();
+	QD3D12_FlushQueuedBatches();
+
+	QD3D12Window& w = *g_currentWindow;
+
+	ID3D12Resource* srcResource = nullptr;
+	D3D12_RESOURCE_STATES* trackedState = nullptr;
+	UINT srcWidth = 0;
+	UINT srcHeight = 0;
+
+	const bool wantNativeBuffer =
+		(g_gl.readBuffer == GL_FRONT) ||
+		(g_gl.framePhase == QD3D12_FRAME_NATIVE_POST_UPSCALE) ||
+		g_gl.sceneResolvedThisFrame;
+
+	if (wantNativeBuffer)
+	{
+		srcResource = w.backBuffers[w.frameIndex].Get();
+		trackedState = &w.backBufferState[w.frameIndex];
+		srcWidth = w.width;
+		srcHeight = w.height;
+	}
+	else
+	{
+		srcResource = w.sceneColorBuffers[w.frameIndex].Get();
+		trackedState = &w.sceneColorState[w.frameIndex];
+		srcWidth = w.renderWidth;
+		srcHeight = w.renderHeight;
+	}
+
+	if (!srcResource || !trackedState || srcWidth == 0 || srcHeight == 0)
+		return false;
+
+	if (x < 0 || y < 0 || (UINT)(x + width) > srcWidth || (UINT)(y + height) > srcHeight)
+		return false;
+
+	const UINT srcLeft = (UINT)x;
+	const UINT srcTop = srcHeight - (UINT)(y + height);
+	const UINT copyWidth = (UINT)width;
+	const UINT copyHeight = (UINT)height;
+	const UINT rowPitch = (copyWidth * 4u + 255u) & ~255u;
+	const UINT64 readbackBytes = (UINT64)rowPitch * (UINT64)copyHeight;
+
+	ComPtr<ID3D12Resource> readback;
+	D3D12_HEAP_PROPERTIES hp{};
+	hp.Type = D3D12_HEAP_TYPE_READBACK;
+
+	D3D12_RESOURCE_DESC rd{};
+	rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	rd.Width = readbackBytes;
+	rd.Height = 1;
+	rd.DepthOrArraySize = 1;
+	rd.MipLevels = 1;
+	rd.SampleDesc.Count = 1;
+	rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+	QD3D12_CHECK(g_gl.device->CreateCommittedResource(
+		&hp,
+		D3D12_HEAP_FLAG_NONE,
+		&rd,
+		D3D12_RESOURCE_STATE_COPY_DEST,
+		nullptr,
+		IID_PPV_ARGS(&readback)));
+
+	const D3D12_RESOURCE_STATES originalState = *trackedState;
+	QD3D12_TransitionResource(g_gl.cmdList.Get(), srcResource, *trackedState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+	D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+	srcLoc.pResource = srcResource;
+	srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	srcLoc.SubresourceIndex = 0;
+
+	D3D12_TEXTURE_COPY_LOCATION dstLoc{};
+	dstLoc.pResource = readback.Get();
+	dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	dstLoc.PlacedFootprint.Offset = 0;
+	dstLoc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	dstLoc.PlacedFootprint.Footprint.Width = copyWidth;
+	dstLoc.PlacedFootprint.Footprint.Height = copyHeight;
+	dstLoc.PlacedFootprint.Footprint.Depth = 1;
+	dstLoc.PlacedFootprint.Footprint.RowPitch = rowPitch;
+
+	D3D12_BOX srcBox{};
+	srcBox.left = srcLeft;
+	srcBox.top = srcTop;
+	srcBox.front = 0;
+	srcBox.right = srcLeft + copyWidth;
+	srcBox.bottom = srcTop + copyHeight;
+	srcBox.back = 1;
+
+	g_gl.cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, &srcBox);
+	QD3D12_TransitionResource(g_gl.cmdList.Get(), srcResource, *trackedState, originalState);
+
+	QD3D12_CHECK(g_gl.cmdList->Close());
+	ID3D12CommandList* lists[] = { g_gl.cmdList.Get() };
+	g_gl.queue->ExecuteCommandLists(1, lists);
+
+	const UINT64 signalValue = g_gl.nextFenceValue++;
+	QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
+	if (g_gl.fence->GetCompletedValue() < signalValue)
+	{
+		QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(signalValue, g_gl.fenceEvent));
+		WaitForSingleObject(g_gl.fenceEvent, INFINITE);
+	}
+
+	outRGBA.resize((size_t)copyWidth * (size_t)copyHeight * 4);
+	void* mapped = nullptr;
+	QD3D12_CHECK(readback->Map(0, nullptr, &mapped));
+	const uint8_t* srcBytes = (const uint8_t*)mapped;
+	for (UINT row = 0; row < copyHeight; ++row)
+	{
+		memcpy(outRGBA.data() + (size_t)row * (size_t)copyWidth * 4,
+			srcBytes + (size_t)row * rowPitch,
+			(size_t)copyWidth * 4);
+	}
+	readback->Unmap(0, nullptr);
+
+	FrameResources& fr = w.frames[w.frameIndex];
+	QD3D12_CHECK(fr.cmdAlloc->Reset());
+	QD3D12_CHECK(g_gl.cmdList->Reset(fr.cmdAlloc.Get(), nullptr));
+	QD3D12_BindTargetsForCurrentPhase(w);
+
+	return true;
+}
+
+static void QD3D12_CopyRGBARegionIntoTexture(TextureResource& tex, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, const uint8_t* rgbaBytes)
+{
+	if (width <= 0 || height <= 0 || !rgbaBytes)
+		return;
+
+	tex.format = QD3D12_NormalizeCopyTextureFormat(tex.format);
+	const int bpp = BytesPerPixel(tex.format, GL_UNSIGNED_BYTE);
+	if (bpp <= 0 || tex.width <= 0 || tex.height <= 0)
+		return;
+
+	const size_t needed = (size_t)tex.width * (size_t)tex.height * (size_t)bpp;
+	if (tex.sysmem.size() != needed)
+		tex.sysmem.resize(needed, 0);
+
+	std::vector<uint8_t> packed;
+	QD3D12_PackRGBA8ToTextureFormat(rgbaBytes, width * height, tex.format, packed);
+
+	for (int row = 0; row < height; ++row)
+	{
+		const size_t dstOff = ((size_t)(yoffset + row) * (size_t)tex.width + (size_t)xoffset) * (size_t)bpp;
+		const size_t srcOff = (size_t)row * (size_t)width * (size_t)bpp;
+		memcpy(tex.sysmem.data() + dstOff, packed.data() + srcOff, (size_t)width * (size_t)bpp);
+	}
+
+	tex.gpuValid = false;
+}
+
 static PipelineMode PickPipeline(bool useTex0, bool useTex1)
 {
 	const bool textured = useTex0 || useTex1;
@@ -4209,7 +4437,7 @@ void glLoadModelMatrixf(const float* m16)
 	memcpy(g_gl.modelMatrix.m, m.m, sizeof(g_gl.modelMatrix.m));
 }
 
-extern "C" void APIENTRY glMultMatrixf(const GLfloat* m)
+void APIENTRY glMultMatrixf(const GLfloat* m)
 {
 	if (!m)
 		return;
@@ -4736,7 +4964,7 @@ static void QD3D12_FlushQueuedBatches()
 // SECTION 11: GL exports
 // ============================================================
 
-extern "C" const GLubyte* APIENTRY glGetString(GLenum name)
+const GLubyte* APIENTRY glGetString(GLenum name)
 {
 	switch (name)
 	{
@@ -4748,7 +4976,7 @@ extern "C" const GLubyte* APIENTRY glGetString(GLenum name)
 	}
 }
 
-extern "C" void APIENTRY glClearColor(GLclampf r, GLclampf g, GLclampf b, GLclampf a)
+void APIENTRY glClearColor(GLclampf r, GLclampf g, GLclampf b, GLclampf a)
 {
 	g_gl.clearColor[0] = r;
 	g_gl.clearColor[1] = g;
@@ -4805,7 +5033,7 @@ static void QD3D12_EnsureFrameOpen()
 	QD3D12_BeginFrame();
 }
 
-extern "C" void APIENTRY glClear(GLbitfield mask)
+void APIENTRY glClear(GLbitfield mask)
 {
 	if (mask == 0)
 		return;
@@ -4875,7 +5103,7 @@ extern "C" void APIENTRY glClear(GLbitfield mask)
 }
 
 
-extern "C" void APIENTRY glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
+void APIENTRY glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
 {
 	g_gl.viewportX = x;
 	g_gl.viewportY = y;
@@ -4884,7 +5112,7 @@ extern "C" void APIENTRY glViewport(GLint x, GLint y, GLsizei width, GLsizei hei
 	QD3D12_UpdateViewportState();
 }
 
-extern "C" void APIENTRY glEnable(GLenum cap)
+void APIENTRY glEnable(GLenum cap)
 {
 	switch (cap)
 	{
@@ -4898,7 +5126,7 @@ extern "C" void APIENTRY glEnable(GLenum cap)
 	}
 }
 
-extern "C" void APIENTRY glDisable(GLenum cap)
+void APIENTRY glDisable(GLenum cap)
 {
 	switch (cap)
 	{
@@ -4912,51 +5140,51 @@ extern "C" void APIENTRY glDisable(GLenum cap)
 	}
 }
 
-extern "C" void APIENTRY glBlendFunc(GLenum sfactor, GLenum dfactor)
+void APIENTRY glBlendFunc(GLenum sfactor, GLenum dfactor)
 {
 	g_gl.blendSrc = sfactor;
 	g_gl.blendDst = dfactor;
 }
 
-extern "C" void APIENTRY glAlphaFunc(GLenum func, GLclampf ref)
+void APIENTRY glAlphaFunc(GLenum func, GLclampf ref)
 {
 	g_gl.alphaFunc = func;
 	g_gl.alphaRef = ref;
 }
 
-extern "C" void APIENTRY glDepthMask(GLboolean flag)
+void APIENTRY glDepthMask(GLboolean flag)
 {
 	g_gl.depthWrite = (flag != 0);
 }
 
-extern "C" void APIENTRY glDepthRange(GLclampd zNear, GLclampd zFar)
+void APIENTRY glDepthRange(GLclampd zNear, GLclampd zFar)
 {
 	g_gl.depthRangeNear = ClampValue<GLclampd>(zNear, 0.0, 1.0);
 	g_gl.depthRangeFar = ClampValue<GLclampd>(zFar, 0.0, 1.0);
 	QD3D12_UpdateViewportState();
 }
 
-extern "C" void APIENTRY glCullFace(GLenum mode)
+void APIENTRY glCullFace(GLenum mode)
 {
 	g_gl.cullMode = mode;
 }
 
-extern "C" void APIENTRY glPolygonMode(GLenum, GLenum)
+void APIENTRY glPolygonMode(GLenum, GLenum)
 {
 }
 
-extern "C" void APIENTRY glShadeModel(GLenum mode)
+void APIENTRY glShadeModel(GLenum mode)
 {
 	g_gl.shadeModel = mode;
 }
 
-extern "C" void APIENTRY glHint(GLenum target, GLenum mode)
+void APIENTRY glHint(GLenum target, GLenum mode)
 {
 	if (target == GL_FOG_HINT)
 		g_gl.fogHint = mode;
 }
 
-extern "C" void APIENTRY glFinish(void)
+void APIENTRY glFinish(void)
 {
 	if (!g_gl.device || !g_gl.queue || !g_gl.cmdList)
 		return;
@@ -4996,54 +5224,54 @@ extern "C" void APIENTRY glFinish(void)
 	g_gl.frameOwner = g_currentWindow;
 }
 
-extern "C" void APIENTRY glMatrixMode(GLenum mode)
+void APIENTRY glMatrixMode(GLenum mode)
 {
 	g_gl.matrixMode = mode;
 }
 
-extern "C" void APIENTRY glLoadIdentity(void)
+void APIENTRY glLoadIdentity(void)
 {
 	QD3D12_CurrentMatrixStack().back() = Mat4::Identity();
 }
 
-extern "C" void APIENTRY glPushMatrix(void)
+void APIENTRY glPushMatrix(void)
 {
 	auto& s = QD3D12_CurrentMatrixStack();
 	s.push_back(s.back());
 }
 
-extern "C" void APIENTRY glPopMatrix(void)
+void APIENTRY glPopMatrix(void)
 {
 	auto& s = QD3D12_CurrentMatrixStack();
 	if (s.size() > 1)
 		s.pop_back();
 }
 
-extern "C" void APIENTRY glTranslatef(GLfloat x, GLfloat y, GLfloat z)
+void APIENTRY glTranslatef(GLfloat x, GLfloat y, GLfloat z)
 {
 	auto& t = QD3D12_CurrentMatrixStack().back();
 	t = Mat4::Multiply(t, Mat4::Translation(x, y, z));
 }
 
-extern "C" void APIENTRY glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
+void APIENTRY glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
 {
 	auto& t = QD3D12_CurrentMatrixStack().back();
 	t = Mat4::Multiply(t, Mat4::RotationAxisDeg(angle, x, y, z));
 }
 
-extern "C" void APIENTRY glScalef(GLfloat x, GLfloat y, GLfloat z)
+void APIENTRY glScalef(GLfloat x, GLfloat y, GLfloat z)
 {
 	auto& t = QD3D12_CurrentMatrixStack().back();
 	t = Mat4::Multiply(t, Mat4::Scale(x, y, z));
 }
 
-extern "C" void APIENTRY glOrtho(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar)
+void APIENTRY glOrtho(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar)
 {
 	auto& t = QD3D12_CurrentMatrixStack().back();
 	t = Mat4::Multiply(t, Mat4::Ortho(left, right, bottom, top, zNear, zFar));
 }
 
-extern "C" void APIENTRY glBegin(GLenum mode)
+void APIENTRY glBegin(GLenum mode)
 {
 	assert(!g_gl.inBeginEnd);
 	g_gl.inBeginEnd = true;
@@ -5051,19 +5279,19 @@ extern "C" void APIENTRY glBegin(GLenum mode)
 	g_gl.immediateVerts.Clear();
 }
 
-extern "C" void APIENTRY glEnd(void)
+void APIENTRY glEnd(void)
 {
 	assert(g_gl.inBeginEnd);
 	g_gl.inBeginEnd = false;
 	FlushImmediate(g_gl.currentPrim, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
 }
 
-extern "C" void APIENTRY glVertex2f(GLfloat x, GLfloat y)
+void APIENTRY glVertex2f(GLfloat x, GLfloat y)
 {
 	glVertex3f(x, y, 0.0f);
 }
 
-extern "C" void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z)
+void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z)
 {
 	GLVertex& v = g_gl.immediateVerts.Push();
 
@@ -5082,18 +5310,18 @@ extern "C" void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z)
 	v.a = g_gl.curColor[3];
 }
 
-extern "C" void APIENTRY glVertex3fv(const GLfloat* v)
+void APIENTRY glVertex3fv(const GLfloat* v)
 {
 	glVertex3f(v[0], v[1], v[2]);
 }
 
-extern "C" void APIENTRY glTexCoord2f(GLfloat s, GLfloat t)
+void APIENTRY glTexCoord2f(GLfloat s, GLfloat t)
 {
 	g_gl.curU[g_gl.activeTextureUnit] = s;
 	g_gl.curV[g_gl.activeTextureUnit] = t;
 }
 
-extern "C" void APIENTRY glColor3f(GLfloat r, GLfloat g, GLfloat b)
+void APIENTRY glColor3f(GLfloat r, GLfloat g, GLfloat b)
 {
 	g_gl.curColor[0] = r;
 	g_gl.curColor[1] = g;
@@ -5101,7 +5329,7 @@ extern "C" void APIENTRY glColor3f(GLfloat r, GLfloat g, GLfloat b)
 	g_gl.curColor[3] = 1.0f;
 }
 
-extern "C" void APIENTRY glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
+void APIENTRY glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
 {
 	g_gl.curColor[0] = r;
 	g_gl.curColor[1] = g;
@@ -5109,7 +5337,7 @@ extern "C" void APIENTRY glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
 	g_gl.curColor[3] = a;
 }
 
-extern "C" void APIENTRY glGenTextures(GLsizei n, GLuint* textures)
+void APIENTRY glGenTextures(GLsizei n, GLuint* textures)
 {
 	for (GLsizei i = 0; i < n; ++i)
 	{
@@ -5127,7 +5355,7 @@ extern "C" void APIENTRY glGenTextures(GLsizei n, GLuint* textures)
 	}
 }
 
-extern "C" void APIENTRY glDeleteTextures(GLsizei n, const GLuint* textures)
+void APIENTRY glDeleteTextures(GLsizei n, const GLuint* textures)
 {
 	for (GLsizei i = 0; i < n; ++i)
 	{
@@ -5152,7 +5380,7 @@ extern "C" void APIENTRY glDeleteTextures(GLsizei n, const GLuint* textures)
 #ifdef _DEBUG
 #pragma optimize off
 #endif
-extern "C" void APIENTRY glBindTexture(GLenum, GLuint texture)
+void APIENTRY glBindTexture(GLenum, GLuint texture)
 {
 	g_gl.boundTexture[g_gl.activeTextureUnit] = texture;
 
@@ -5177,7 +5405,7 @@ extern "C" void APIENTRY glBindTexture(GLenum, GLuint texture)
 #pragma optimize on
 #endif
 
-extern "C" void APIENTRY glLoadMatrixf(const GLfloat* m)
+void APIENTRY glLoadMatrixf(const GLfloat* m)
 {
 	if (!m)
 		return;
@@ -5186,7 +5414,7 @@ extern "C" void APIENTRY glLoadMatrixf(const GLfloat* m)
 	memcpy(top.m, m, sizeof(top.m));
 }
 
-extern "C" void APIENTRY glGetIntegerv(GLenum pname, GLint* params)
+void APIENTRY glGetIntegerv(GLenum pname, GLint* params)
 {
 	if (!params)
 		return;
@@ -5228,13 +5456,20 @@ extern "C" void APIENTRY glGetIntegerv(GLenum pname, GLint* params)
 		*params = 4096;
 		break;
 
+	case GL_CURRENT_COLOR:
+		params[0] = (GLint)g_gl.curColor[0];
+		params[1] = (GLint)g_gl.curColor[1];
+		params[2] = (GLint)g_gl.curColor[2];
+		params[3] = (GLint)g_gl.curColor[3];
+		break;
+
 	default:
 		*params = 0;
 		break;
 	}
 }
 
-extern "C" void APIENTRY glGetFloatv(GLenum pname, GLfloat* params)
+void APIENTRY glGetFloatv(GLenum pname, GLfloat* params)
 {
 	if (!params)
 		return;
@@ -5262,13 +5497,19 @@ extern "C" void APIENTRY glGetFloatv(GLenum pname, GLfloat* params)
 	case GL_PROJECTION_MATRIX:
 		memcpy(params, g_gl.projStack.back().m, sizeof(GLfloat) * 16);
 		break;
+	case GL_CURRENT_COLOR:
+		params[0] = g_gl.curColor[0];
+		params[1] = g_gl.curColor[1];
+		params[2] = g_gl.curColor[2];
+		params[3] = g_gl.curColor[3];
+		break;
 	default:
 		memset(params, 0, sizeof(GLfloat) * 16);
 		break;
 	}
 }
 
-extern "C" void APIENTRY glGetDoublev(GLenum pname, GLdouble* params)
+void APIENTRY glGetDoublev(GLenum pname, GLdouble* params)
 {
 	if (!params)
 		return;
@@ -5285,6 +5526,13 @@ extern "C" void APIENTRY glGetDoublev(GLenum pname, GLdouble* params)
 			params[i] = (GLdouble)g_gl.projStack.back().m[i];
 		break;
 
+	case GL_CURRENT_COLOR:
+		params[0] = (GLdouble)g_gl.curColor[0];
+		params[1] = (GLdouble)g_gl.curColor[1];
+		params[2] = (GLdouble)g_gl.curColor[2];
+		params[3] = (GLdouble)g_gl.curColor[3];
+		break;
+
 	default:
 		for (int i = 0; i < 16; ++i)
 			params[i] = 0.0;
@@ -5292,7 +5540,7 @@ extern "C" void APIENTRY glGetDoublev(GLenum pname, GLdouble* params)
 	}
 }
 
-extern "C" void APIENTRY glFrustum(GLdouble left, GLdouble right,
+void APIENTRY glFrustum(GLdouble left, GLdouble right,
 	GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar)
 {
 	auto Quantize = [](float v, float steps) -> float
@@ -5350,12 +5598,12 @@ extern "C" void APIENTRY glFrustum(GLdouble left, GLdouble right,
 	topMat = Mat4::Multiply(topMat, proj);
 }
 
-extern "C" void APIENTRY glDepthFunc(GLenum func)
+void APIENTRY glDepthFunc(GLenum func)
 {
 	g_gl.depthFunc = func;
 }
 
-extern "C" void APIENTRY glColor4fv(const GLfloat* v)
+void APIENTRY glColor4fv(const GLfloat* v)
 {
 	if (!v)
 		return;
@@ -5366,7 +5614,7 @@ extern "C" void APIENTRY glColor4fv(const GLfloat* v)
 	g_gl.curColor[3] = v[3];
 }
 
-extern "C" void APIENTRY glTexParameterf(GLenum, GLenum pname, GLfloat param)
+void APIENTRY glTexParameterf(GLenum, GLenum pname, GLfloat param)
 {
 	GLenum value = (GLenum)param;
 	GLuint bound = g_gl.boundTexture[g_gl.activeTextureUnit];
@@ -5399,9 +5647,21 @@ extern "C" void APIENTRY glTexParameterf(GLenum, GLenum pname, GLfloat param)
 	}
 }
 
-extern "C" void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param)
+void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param)
 {
-#if 0
+	glTexParameterf(target, pname, (GLfloat)param);
+}
+
+void APIENTRY glTexParameteriv(GLenum target, GLenum pname, const GLint* params)
+{
+	if (!params)
+		return;
+
+	glTexParameteri(target, pname, params[0]);
+}
+
+void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param)
+{
 	if (target != GL_TEXTURE_ENV)
 		return;
 
@@ -5421,14 +5681,33 @@ extern "C" void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param)
 		break;
 
 	default:
-		// Quake mostly uses MODULATE; fall back safely.
 		g_gl.texEnvMode[g_gl.activeTextureUnit] = GL_MODULATE;
 		break;
 	}
-#endif
 }
 
-extern "C" void APIENTRY glTexImage2D(GLenum, GLint, GLint internalFormat,
+void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param)
+{
+	glTexEnvf(target, pname, (GLfloat)param);
+}
+
+void APIENTRY glTexEnvfv(GLenum target, GLenum pname, const GLfloat* params)
+{
+	if (!params)
+		return;
+
+	glTexEnvf(target, pname, params[0]);
+}
+
+void APIENTRY glTexEnviv(GLenum target, GLenum pname, const GLint* params)
+{
+	if (!params)
+		return;
+
+	glTexEnvi(target, pname, params[0]);
+}
+
+void APIENTRY glTexImage2D(GLenum, GLint, GLint internalFormat,
 	GLsizei width, GLsizei height, GLint, GLenum format, GLenum type, const GLvoid* pixels)
 {
 	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
@@ -5452,7 +5731,7 @@ extern "C" void APIENTRY glTexImage2D(GLenum, GLint, GLint internalFormat,
 	tex.gpuValid = false;
 }
 
-extern "C" void APIENTRY glTexSubImage2D(GLenum, GLint, GLint xoffset, GLint yoffset,
+void APIENTRY glTexSubImage2D(GLenum, GLint, GLint xoffset, GLint yoffset,
 	GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* pixels)
 {
 	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
@@ -5478,19 +5757,90 @@ extern "C" void APIENTRY glTexSubImage2D(GLenum, GLint, GLint xoffset, GLint yof
 	tex.gpuValid = false;
 }
 
-extern "C" void APIENTRY glReadPixels(GLint, GLint, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid* data)
+
+void APIENTRY glCopyTexImage2D(GLenum, GLint, GLenum internalFormat,
+	GLint x, GLint y, GLsizei width, GLsizei height, GLint)
+{
+	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
+	if (it == g_gl.textures.end() || width <= 0 || height <= 0)
+		return;
+
+	std::vector<uint8_t> rgba;
+	if (!QD3D12_ReadFramebufferRegionRGBA8(x, y, width, height, rgba) || rgba.empty())
+		return;
+
+	TextureResource& tex = it->second;
+	tex.width = width;
+	tex.height = height;
+	tex.format = QD3D12_NormalizeCopyTextureFormat(internalFormat);
+
+	QD3D12_PackRGBA8ToTextureFormat(rgba.data(), width * height, tex.format, tex.sysmem);
+
+	EnsureTextureResource(tex);
+	tex.gpuValid = false;
+}
+
+void APIENTRY glCopyTexSubImage2D(GLenum, GLint,
+	GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
+{
+	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
+	if (it == g_gl.textures.end() || width <= 0 || height <= 0)
+		return;
+
+	TextureResource& tex = it->second;
+	if (tex.width <= 0 || tex.height <= 0)
+		return;
+
+	if (xoffset < 0 || yoffset < 0 || xoffset + width > tex.width || yoffset + height > tex.height)
+		return;
+
+	std::vector<uint8_t> rgba;
+	if (!QD3D12_ReadFramebufferRegionRGBA8(x, y, width, height, rgba) || rgba.empty())
+		return;
+
+	QD3D12_CopyRGBARegionIntoTexture(tex, xoffset, yoffset, width, height, rgba.data());
+}
+
+void APIENTRY glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid* data)
 {
 	if (!data)
 		return;
-	memset(data, 0, (size_t)width * (size_t)height * (size_t)BytesPerPixel(format, type));
+
+	const size_t dstBytes = (size_t)width * (size_t)height * (size_t)BytesPerPixel(format, type);
+	if (dstBytes == 0)
+		return;
+
+	if (type != GL_UNSIGNED_BYTE)
+	{
+		memset(data, 0, dstBytes);
+		return;
+	}
+
+	std::vector<uint8_t> rgba;
+	if (!QD3D12_ReadFramebufferRegionRGBA8(x, y, width, height, rgba) || rgba.empty())
+	{
+		memset(data, 0, dstBytes);
+		return;
+	}
+
+	std::vector<uint8_t> packed;
+	QD3D12_PackRGBA8ToTextureFormat(rgba.data(), width * height, format, packed);
+	if (packed.size() < dstBytes)
+	{
+		memset(data, 0, dstBytes);
+		memcpy(data, packed.data(), packed.size());
+		return;
+	}
+
+	memcpy(data, packed.data(), dstBytes);
 }
 
-extern "C" void APIENTRY glDrawBuffer(GLenum mode)
+void APIENTRY glDrawBuffer(GLenum mode)
 {
 	g_gl.drawBuffer = mode;
 }
 
-extern "C" void APIENTRY glReadBuffer(GLenum mode)
+void APIENTRY glReadBuffer(GLenum mode)
 {
 	g_gl.readBuffer = mode;
 }
@@ -5634,40 +5984,40 @@ static void QD3D12_ReconfigureCurrentWindowForUpscalerChange()
 	QD3D12_UpdateViewportState();
 }
 
-extern "C" GLenum APIENTRY glGetError(void) {
+GLenum APIENTRY glGetError(void) {
 	GLenum e = g_gl.lastError;
 	g_gl.lastError = GL_NO_ERROR;
 	return e;
 }
 
-extern "C" void APIENTRY glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
+void APIENTRY glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
 	g_gl.scissorX = x;
 	g_gl.scissorY = y;
 	g_gl.scissorW = width;
 	g_gl.scissorH = height;
 }
 
-extern "C" void APIENTRY glClearDepth(GLclampd depth) {
+void APIENTRY glClearDepth(GLclampd depth) {
 	g_gl.clearDepthValue = depth;
 }
 
-extern "C" void APIENTRY glClipPlane(GLenum plane, const GLdouble* equation) {
+void APIENTRY glClipPlane(GLenum plane, const GLdouble* equation) {
 	if (plane == GL_CLIP_PLANE0 && equation) {
 		memcpy(g_gl.clipPlane0, equation, sizeof(g_gl.clipPlane0));
 	}
 }
 
-extern "C" void APIENTRY glPolygonOffset(GLfloat factor, GLfloat units) {
+void APIENTRY glPolygonOffset(GLfloat factor, GLfloat units) {
 	g_gl.polygonOffsetFactor = factor;
 	g_gl.polygonOffsetUnits = units;
 }
 
-extern "C" void APIENTRY glTexCoord2fv(const GLfloat* v) {
+void APIENTRY glTexCoord2fv(const GLfloat* v) {
 	if (!v) return;
 	glTexCoord2f(v[0], v[1]);
 }
 
-extern "C" void APIENTRY glColor4ubv(const GLubyte* v) {
+void APIENTRY glColor4ubv(const GLubyte* v) {
 	if (!v) return;
 	g_gl.curColor[0] = v[0] / 255.0f;
 	g_gl.curColor[1] = v[1] / 255.0f;
@@ -5675,54 +6025,54 @@ extern "C" void APIENTRY glColor4ubv(const GLubyte* v) {
 	g_gl.curColor[3] = v[3] / 255.0f;
 }
 
-extern "C" void APIENTRY glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {
+void APIENTRY glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {
 	if (!params) return;
 	glTexParameterf(target, pname, params[0]);
 }
 
-extern "C" void APIENTRY glStencilMask(GLuint mask) {
+void APIENTRY glStencilMask(GLuint mask) {
 	g_gl.stencilMask = mask;
 }
 
-extern "C" void APIENTRY glClearStencil(GLint s) {
+void APIENTRY glClearStencil(GLint s) {
 	g_gl.clearStencilValue = s;
 }
 
-extern "C" void APIENTRY glStencilFunc(GLenum func, GLint ref, GLuint mask) {
+void APIENTRY glStencilFunc(GLenum func, GLint ref, GLuint mask) {
 	g_gl.stencilFunc = func;
 	g_gl.stencilRef = ref;
 	g_gl.stencilFuncMask = mask;
 }
 
-extern "C" void APIENTRY glStencilOp(GLenum sfail, GLenum dpfail, GLenum dppass) {
+void APIENTRY glStencilOp(GLenum sfail, GLenum dpfail, GLenum dppass) {
 	g_gl.stencilSFail = sfail;
 	g_gl.stencilDPFail = dpfail;
 	g_gl.stencilDPPass = dppass;
 }
 
-extern "C" void APIENTRY glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
+void APIENTRY glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
 	g_gl.colorMaskR = r;
 	g_gl.colorMaskG = g;
 	g_gl.colorMaskB = b;
 	g_gl.colorMaskA = a;
 }
 
-extern "C" void APIENTRY glClientActiveTextureARB(GLenum texture) {
+void APIENTRY glClientActiveTextureARB(GLenum texture) {
 	if (texture >= GL_TEXTURE0_ARB)
 		g_gl.clientActiveTextureUnit = ClampValue<GLuint>((GLuint)(texture - GL_TEXTURE0_ARB), 0, QD3D12_MaxTextureUnits - 1);
 	else
 		g_gl.clientActiveTextureUnit = 0;
 }
 
-extern "C" void APIENTRY glLockArraysEXT(GLint first, GLsizei count) {
+void APIENTRY glLockArraysEXT(GLint first, GLsizei count) {
 	(void)first;
 	(void)count;
 }
 
-extern "C" void APIENTRY glUnlockArraysEXT(void) {
+void APIENTRY glUnlockArraysEXT(void) {
 }
 
-extern "C" void APIENTRY glNormalPointer(GLenum type, GLsizei stride, const void* pointer)
+void APIENTRY glNormalPointer(GLenum type, GLsizei stride, const void* pointer)
 {
 	g_gl.normalArray.size = 3;
 	g_gl.normalArray.type = type;
@@ -5730,7 +6080,7 @@ extern "C" void APIENTRY glNormalPointer(GLenum type, GLsizei stride, const void
 	g_gl.normalArray.ptr = QD3D12_ResolveArrayPointer(pointer);
 }
 
-extern "C" void APIENTRY glEnableClientState(GLenum array)
+void APIENTRY glEnableClientState(GLenum array)
 {
 	switch (array)
 	{
@@ -5751,7 +6101,7 @@ extern "C" void APIENTRY glEnableClientState(GLenum array)
 	}
 }
 
-extern "C" void APIENTRY glDisableClientState(GLenum array)
+void APIENTRY glDisableClientState(GLenum array)
 {
 	switch (array)
 	{
@@ -5772,7 +6122,7 @@ extern "C" void APIENTRY glDisableClientState(GLenum array)
 	}
 }
 
-extern "C" void APIENTRY glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
+void APIENTRY glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
 {
 	g_gl.vertexArray.size = size;
 	g_gl.vertexArray.type = type;
@@ -5780,7 +6130,7 @@ extern "C" void APIENTRY glVertexPointer(GLint size, GLenum type, GLsizei stride
 	g_gl.vertexArray.ptr = QD3D12_ResolveArrayPointer(ptr);
 }
 
-extern "C" void APIENTRY glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
+void APIENTRY glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
 {
 	g_gl.colorArray.size = size;
 	g_gl.colorArray.type = type;
@@ -5788,7 +6138,7 @@ extern "C" void APIENTRY glColorPointer(GLint size, GLenum type, GLsizei stride,
 	g_gl.colorArray.ptr = QD3D12_ResolveArrayPointer(ptr);
 }
 
-extern "C" void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
+void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* ptr)
 {
 	auto& tc = g_gl.texCoordArray[g_gl.clientActiveTextureUnit];
 	tc.size = size;
@@ -5797,13 +6147,13 @@ extern "C" void APIENTRY glTexCoordPointer(GLint size, GLenum type, GLsizei stri
 	tc.ptr = QD3D12_ResolveArrayPointer(ptr);
 }
 
-extern "C" void APIENTRY glArrayElement(GLint i)
+void APIENTRY glArrayElement(GLint i)
 {
 	GLVertex& v = g_gl.immediateVerts.Push();
 	QD3D12_FetchArrayVertex(i, v);
 }
 
-extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices)
+void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices)
 {
 	if (count <= 0)
 		return;
@@ -5860,7 +6210,324 @@ extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type,
 	FlushImmediate(mode, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
 }
 
-extern "C" PROC WINAPI qd3d12_wglGetProcAddress(LPCSTR name) {
+
+
+static inline int QD3D12_CompatAttribTexUnit(GLuint index)
+{
+	switch (index)
+	{
+	case 8:  return 0; // conventional primary texcoord slot in many ARB-program era paths
+	case 9:  return 1; // best-effort secondary slot; tangent/binormal data is otherwise unused here
+	default: return -1;
+	}
+}
+
+static inline bool QD3D12_CompatAttribIsNormal(GLuint index)
+{
+	return (index == 2 || index == 11);
+}
+
+void APIENTRY glVertexAttribPointerARB(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid* pointer)
+{
+	(void)normalized;
+
+	if (index == 0)
+	{
+		glVertexPointer(size, type, stride, pointer);
+		return;
+	}
+
+	if (index == 3)
+	{
+		glColorPointer(size, type, stride, pointer);
+		return;
+	}
+
+	if (QD3D12_CompatAttribIsNormal(index))
+	{
+		glNormalPointer(type, stride, pointer);
+		return;
+	}
+
+	const int texUnit = QD3D12_CompatAttribTexUnit(index);
+	if (texUnit >= 0 && texUnit < (int)QD3D12_MaxTextureUnits)
+	{
+		const GLuint oldUnit = g_gl.clientActiveTextureUnit;
+		glClientActiveTextureARB(GL_TEXTURE0_ARB + (GLenum)texUnit);
+		glTexCoordPointer(size, type, stride, pointer);
+		glClientActiveTextureARB(GL_TEXTURE0_ARB + oldUnit);
+		return;
+	}
+
+	// Best-effort compatibility only: unsupported generic attributes are intentionally ignored.
+}
+
+void APIENTRY glEnableVertexAttribArrayARB(GLuint index)
+{
+	if (index == 0)
+	{
+		glEnableClientState(GL_VERTEX_ARRAY);
+		return;
+	}
+
+	if (index == 3)
+	{
+		glEnableClientState(GL_COLOR_ARRAY);
+		return;
+	}
+
+	if (QD3D12_CompatAttribIsNormal(index))
+	{
+		glEnableClientState(GL_NORMAL_ARRAY);
+		return;
+	}
+
+	const int texUnit = QD3D12_CompatAttribTexUnit(index);
+	if (texUnit >= 0 && texUnit < (int)QD3D12_MaxTextureUnits)
+	{
+		const GLuint oldUnit = g_gl.clientActiveTextureUnit;
+		glClientActiveTextureARB(GL_TEXTURE0_ARB + (GLenum)texUnit);
+		glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+		glClientActiveTextureARB(GL_TEXTURE0_ARB + oldUnit);
+		return;
+	}
+}
+
+void APIENTRY glDisableVertexAttribArrayARB(GLuint index)
+{
+	if (index == 0)
+	{
+		glDisableClientState(GL_VERTEX_ARRAY);
+		return;
+	}
+
+	if (index == 3)
+	{
+		glDisableClientState(GL_COLOR_ARRAY);
+		return;
+	}
+
+	if (QD3D12_CompatAttribIsNormal(index))
+	{
+		glDisableClientState(GL_NORMAL_ARRAY);
+		return;
+	}
+
+	const int texUnit = QD3D12_CompatAttribTexUnit(index);
+	if (texUnit >= 0 && texUnit < (int)QD3D12_MaxTextureUnits)
+	{
+		const GLuint oldUnit = g_gl.clientActiveTextureUnit;
+		glClientActiveTextureARB(GL_TEXTURE0_ARB + (GLenum)texUnit);
+		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+		glClientActiveTextureARB(GL_TEXTURE0_ARB + oldUnit);
+		return;
+	}
+}
+
+
+static inline GLenum QD3D12_MapCompatBufferTarget(GLenum target)
+{
+	switch (target)
+	{
+	case GL_ARRAY_BUFFER_ARB:         return GL_ARRAY_BUFFER;
+	case GL_ELEMENT_ARRAY_BUFFER_ARB: return GL_ELEMENT_ARRAY_BUFFER;
+	default:                          return target;
+	}
+}
+
+static inline GLenum QD3D12_MapCompatTextureTarget(GLenum target)
+{
+	switch (target)
+	{
+	case GL_TEXTURE_3D:
+	case GL_TEXTURE_CUBE_MAP_EXT:
+	case GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT:
+	case GL_TEXTURE_CUBE_MAP_NEGATIVE_X_EXT:
+	case GL_TEXTURE_CUBE_MAP_POSITIVE_Y_EXT:
+	case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y_EXT:
+	case GL_TEXTURE_CUBE_MAP_POSITIVE_Z_EXT:
+	case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z_EXT:
+		return GL_TEXTURE_2D;
+	default:
+		return target;
+	}
+}
+
+BOOL WINAPI wglSwapBuffers(HDC hdc)
+{
+	QD3D12_SwapBuffers(hdc);
+	return TRUE;
+}
+
+void APIENTRY glFlush(void)
+{
+	glFinish();
+}
+
+void APIENTRY glFrontFace(GLenum mode)
+{
+	(void)mode;
+}
+
+void APIENTRY glMaterialfv(GLenum face, GLenum pname, const GLfloat* params)
+{
+	(void)face;
+	(void)pname;
+	(void)params;
+}
+
+void APIENTRY glMaterialf(GLenum face, GLenum pname, GLfloat param)
+{
+	(void)face;
+	(void)pname;
+	(void)param;
+}
+
+void APIENTRY glLightfv(GLenum light, GLenum pname, const GLfloat* params)
+{
+	(void)light;
+	(void)pname;
+	(void)params;
+}
+
+void APIENTRY glLightf(GLenum light, GLenum pname, GLfloat param)
+{
+	(void)light;
+	(void)pname;
+	(void)param;
+}
+
+void APIENTRY glActiveTexture(GLenum texture)
+{
+	glActiveTextureARB(texture);
+}
+
+void APIENTRY glClientActiveTexture(GLenum texture)
+{
+	glClientActiveTextureARB(texture);
+}
+
+void APIENTRY glMultiTexCoord2f(GLenum texture, GLfloat s, GLfloat t)
+{
+	glMultiTexCoord2fARB(texture, s, t);
+}
+
+void APIENTRY glGenBuffersARB(GLsizei n, GLuint* buffers)
+{
+	glGenBuffers(n, buffers);
+}
+
+void APIENTRY glDeleteBuffersARB(GLsizei n, const GLuint* buffers)
+{
+	glDeleteBuffers(n, buffers);
+}
+
+void APIENTRY glBindBufferARB(GLenum target, GLuint buffer)
+{
+	glBindBuffer(QD3D12_MapCompatBufferTarget(target), buffer);
+}
+
+void APIENTRY glBufferDataARB(GLenum target, GLsizeiptrARB size, const void* data, GLenum usage)
+{
+	glBufferData(QD3D12_MapCompatBufferTarget(target), (GLsizeiptr)size, data, usage);
+}
+
+void APIENTRY glBufferSubDataARB(GLenum target, GLintptrARB offset, GLsizeiptrARB size, const void* data)
+{
+	glBufferSubData(QD3D12_MapCompatBufferTarget(target), (GLintptr)offset, (GLsizeiptr)size, data);
+}
+
+void* APIENTRY glMapBufferARB(GLenum target, GLenum access)
+{
+	target = QD3D12_MapCompatBufferTarget(target);
+
+	GLuint bound = 0;
+	switch (target)
+	{
+	case GL_ARRAY_BUFFER:
+		bound = g_gl.boundArrayBuffer;
+		break;
+	case GL_ELEMENT_ARRAY_BUFFER:
+		bound = g_gl.boundElementArrayBuffer;
+		break;
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		return nullptr;
+	}
+
+	GLBufferObject* bo = QD3D12_GetBuffer(bound);
+	if (!bo)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return nullptr;
+	}
+
+	GLbitfield flags = 0;
+	switch (access)
+	{
+	case GL_READ_ONLY:
+		flags = GL_MAP_READ_BIT;
+		break;
+	case GL_WRITE_ONLY:
+		flags = GL_MAP_WRITE_BIT;
+		break;
+	case GL_READ_WRITE:
+	default:
+		flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;
+		break;
+	}
+
+	return glMapBufferRange(target, 0, (GLsizeiptr)bo->data.size(), flags);
+}
+
+GLboolean APIENTRY glUnmapBufferARB(GLenum target)
+{
+	return glUnmapBuffer(QD3D12_MapCompatBufferTarget(target));
+}
+
+void APIENTRY glTexImage3D(GLenum target, GLint level, GLint internalFormat,
+	GLsizei width, GLsizei height, GLsizei depth, GLint border,
+	GLenum format, GLenum type, const GLvoid* pixels)
+{
+	if (depth <= 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	glTexImage2D(QD3D12_MapCompatTextureTarget(target), level, internalFormat,
+		width, height, border, format, type, pixels);
+}
+
+void APIENTRY glTexSubImage3D(GLenum target, GLint level,
+	GLint xoffset, GLint yoffset, GLint zoffset,
+	GLsizei width, GLsizei height, GLsizei depth,
+	GLenum format, GLenum type, const GLvoid* pixels)
+{
+	(void)zoffset;
+
+	if (depth <= 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	glTexSubImage2D(QD3D12_MapCompatTextureTarget(target), level,
+		xoffset, yoffset, width, height, format, type, pixels);
+}
+
+void APIENTRY glColorTableEXT(GLenum target, GLenum internalformat, GLsizei width,
+	GLenum format, GLenum type, const GLvoid* data)
+{
+	(void)target;
+	(void)internalformat;
+	(void)width;
+	(void)format;
+	(void)type;
+	(void)data;
+}
+
+PROC WINAPI qd3d12_wglGetProcAddress(LPCSTR name) {
 	if (!name) return nullptr;
 
 	struct ProcMap { const char* name; PROC proc; };
@@ -5885,7 +6552,7 @@ extern "C" PROC WINAPI qd3d12_wglGetProcAddress(LPCSTR name) {
 	return nullptr;
 }
 
-extern "C" void APIENTRY glFogf(GLenum pname, GLfloat param)
+void APIENTRY glFogf(GLenum pname, GLfloat param)
 {
 	switch (pname)
 	{
@@ -5907,12 +6574,12 @@ extern "C" void APIENTRY glFogf(GLenum pname, GLfloat param)
 	}
 }
 
-extern "C" void APIENTRY glFogi(GLenum pname, GLint param)
+void APIENTRY glFogi(GLenum pname, GLint param)
 {
 	glFogf(pname, (GLfloat)param);
 }
 
-extern "C" void APIENTRY glFogfv(GLenum pname, const GLfloat* params)
+void APIENTRY glFogfv(GLenum pname, const GLfloat* params)
 {
 	if (!params)
 		return;
@@ -5943,7 +6610,7 @@ extern "C" void APIENTRY glFogfv(GLenum pname, const GLfloat* params)
 	}
 }
 
-extern "C" void APIENTRY glFogiv(GLenum pname, const GLint* params)
+void APIENTRY glFogiv(GLenum pname, const GLint* params)
 {
 	if (!params)
 		return;
@@ -5974,32 +6641,32 @@ extern "C" void APIENTRY glFogiv(GLenum pname, const GLint* params)
 	}
 }
 
-extern "C" ID3D12Device* QD3D12_GetDevice(void)
+ID3D12Device* QD3D12_GetDevice(void)
 {
 	return g_gl.device.Get();
 }
 
-extern "C" ID3D12CommandQueue* QD3D12_GetQueue(void)
+ID3D12CommandQueue* QD3D12_GetQueue(void)
 {
 	return g_gl.queue.Get();
 }
 
-extern "C" ID3D12GraphicsCommandList* QD3D12_GetCommandList(void)
+ID3D12GraphicsCommandList* QD3D12_GetCommandList(void)
 {
 	return g_gl.cmdList.Get();
 }
 
-extern "C" ID3D12CommandAllocator* QD3D12_GetFrameCommandAllocator(void)
+ID3D12CommandAllocator* QD3D12_GetFrameCommandAllocator(void)
 {
 	return g_currentWindow->frames[g_currentWindow->frameIndex].cmdAlloc.Get();
 }
 
-extern "C" UINT QD3D12_GetFrameIndex(void)
+UINT QD3D12_GetFrameIndex(void)
 {
 	return g_currentWindow->frameIndex;
 }
 
-extern "C" void QD3D12_WaitForGPU_External(void)
+void QD3D12_WaitForGPU_External(void)
 {
 	if (g_gl.frameOpen || !g_gl.queuedBatches.empty())
 		QD3D12_SubmitOpenFrameNoPresentAndWait();
@@ -6007,7 +6674,7 @@ extern "C" void QD3D12_WaitForGPU_External(void)
 	QD3D12_WaitForGPU();
 }
 
-extern "C" ID3D12Resource* glRaytracingGetTopLevelAS(void);
+ID3D12Resource* glRaytracingGetTopLevelAS(void);
 
 static void QD3D12_TransitionResource(
 	ID3D12GraphicsCommandList* cl,
@@ -6163,7 +6830,7 @@ static void QD3D12_ResolveSceneToOutputAndEnterNativePhase(QD3D12Window& w)
 	QD3D12_BindTargetsForCurrentPhase(w);
 }
 
-extern "C" void glLightScene(void)
+void glLightScene(void)
 {
 	const int width = (int)g_currentWindow->renderWidth;
 	const int height = (int)g_currentWindow->renderHeight;
@@ -6347,27 +7014,27 @@ ID3D12Resource* QD3D12_GetCurrentBackBuffer()
 	return g_currentWindow->backBuffers[index].Get();
 }
 
-extern "C" void APIENTRY glGeometryFlagf(GLfloat flag)
+void APIENTRY glGeometryFlagf(GLfloat flag)
 {
 	g_gl.currentGeometryFlag = flag;
 }
 
-extern "C" void APIENTRY glMotionObjectIdui(GLuint objectId)
+void APIENTRY glMotionObjectIdui(GLuint objectId)
 {
 	g_gl.currentMotionObjectId = objectId;
 }
 
-extern "C" void APIENTRY glSurfaceRoughnessf(GLfloat roughness)
+void APIENTRY glSurfaceRoughnessf(GLfloat roughness)
 {
 	g_gl.currentSurfaceRoughness = ClampValue<float>(roughness, 0.0f, 1.0f);
 }
 
-extern "C" void APIENTRY glMaterialTypef(GLfloat materialType)
+void APIENTRY glMaterialTypef(GLfloat materialType)
 {
 	g_gl.currentMaterialType = materialType;
 }
 
-extern "C" void QD3D12_SetUpscalerBackend(int backend)
+void QD3D12_SetUpscalerBackend(int backend)
 {
 	switch (backend)
 	{
@@ -6386,7 +7053,7 @@ extern "C" void QD3D12_SetUpscalerBackend(int backend)
 	QD3D12_ReconfigureCurrentWindowForUpscalerChange();
 }
 
-extern "C" void QD3D12_SetUpscalerQuality(int quality)
+void QD3D12_SetUpscalerQuality(int quality)
 {
 	switch (quality)
 	{
@@ -6406,17 +7073,17 @@ extern "C" void QD3D12_SetUpscalerQuality(int quality)
 	QD3D12_ReconfigureCurrentWindowForUpscalerChange();
 }
 
-extern "C" void QD3D12_SetUpscalerSharpness(float sharpness)
+void QD3D12_SetUpscalerSharpness(float sharpness)
 {
 	g_gl.upscalerSharpness = ClampValue<float>(sharpness, 0.0f, 1.0f);
 }
 
-extern "C" void QD3D12_EnableRayAIDenoise(int enabled)
+void QD3D12_EnableRayAIDenoise(int enabled)
 {
 	g_gl.enableRayAIDenoise = enabled ? true : false;
 }
 
-extern "C" void QD3D12_EnableDLSSRayReconstruction(int enabled)
+void QD3D12_EnableDLSSRayReconstruction(int enabled)
 {
 	const bool newValue = enabled ? true : false;
 	if (g_gl.enableDLSSRayReconstruction == newValue)
@@ -6428,12 +7095,12 @@ extern "C" void QD3D12_EnableDLSSRayReconstruction(int enabled)
 	QD3D12_ReconfigureCurrentWindowForUpscalerChange();
 }
 
-extern "C" void QD3D12_EnableFSRRayRegeneration(int enabled)
+void QD3D12_EnableFSRRayRegeneration(int enabled)
 {
 	g_gl.enableFSRRayRegeneration = enabled ? true : false;
 }
 
-extern "C" void QD3D12_ResetTemporalHistory(void)
+void QD3D12_ResetTemporalHistory(void)
 {
 	g_gl.motionHistoryReset = true;
 	g_gl.prevObjectMVPs.clear();
@@ -6442,13 +7109,13 @@ extern "C" void QD3D12_ResetTemporalHistory(void)
 	g_gl.prevJitterY = 0.0f;
 }
 
-extern "C" void QD3D12_SetProjectionJitterPixels(float jitterX, float jitterY)
+void QD3D12_SetProjectionJitterPixels(float jitterX, float jitterY)
 {
 	g_gl.jitterX = jitterX;
 	g_gl.jitterY = jitterY;
 }
 
-extern "C" void QD3D12_SetCameraInfo(
+void QD3D12_SetCameraInfo(
 	const float* viewToClip,
 	const float* clipToView,
 	const float* clipToPrevClip,
@@ -6509,7 +7176,7 @@ extern "C" void QD3D12_SetCameraInfo(
 	g_gl.cameraState.valid = true;
 }
 
-extern "C" void APIENTRY glGenBuffers(GLsizei n, GLuint* buffers)
+void APIENTRY glGenBuffers(GLsizei n, GLuint* buffers)
 {
 	if (n < 0)
 	{
@@ -6530,7 +7197,7 @@ extern "C" void APIENTRY glGenBuffers(GLsizei n, GLuint* buffers)
 	}
 }
 
-extern "C" void APIENTRY glDeleteBuffers(GLsizei n, const GLuint* buffers)
+void APIENTRY glDeleteBuffers(GLsizei n, const GLuint* buffers)
 {
 	if (n < 0)
 	{
@@ -6557,9 +7224,9 @@ extern "C" void APIENTRY glDeleteBuffers(GLsizei n, const GLuint* buffers)
 	}
 }
 
-extern "C" GLboolean APIENTRY glIsBuffer(GLuint buffer) { return g_gl.buffers.find(buffer) != g_gl.buffers.end() ? GL_TRUE : GL_FALSE; }
+GLboolean APIENTRY glIsBuffer(GLuint buffer) { return g_gl.buffers.find(buffer) != g_gl.buffers.end() ? GL_TRUE : GL_FALSE; }
 
-extern "C" void APIENTRY glBindBuffer(GLenum target, GLuint buffer)
+void APIENTRY glBindBuffer(GLenum target, GLuint buffer)
 {
 	switch (target)
 	{
@@ -6593,7 +7260,7 @@ extern "C" void APIENTRY glBindBuffer(GLenum target, GLuint buffer)
 	}
 }
 
-extern "C" void APIENTRY glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags)
+void APIENTRY glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags)
 {
 	GLuint bound = 0;
 
@@ -6644,13 +7311,13 @@ extern "C" void APIENTRY glBufferStorage(GLenum target, GLsizeiptr size, const v
 	}
 }
 
-extern "C" void APIENTRY glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage)
+void APIENTRY glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage)
 {
 	(void)usage;
 	glBufferStorage(target, size, data, 0);
 }
 
-extern "C" void APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data)
+void APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data)
 {
 	GLuint bound = 0;
 
@@ -6691,7 +7358,7 @@ extern "C" void APIENTRY glBufferSubData(GLenum target, GLintptr offset, GLsizei
 	memcpy(bo->data.data() + (size_t)offset, data, (size_t)size);
 }
 
-extern "C" void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
+void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
 	if (count <= 0)
 		return;
@@ -6713,7 +7380,7 @@ extern "C" void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 	FlushImmediate(mode, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
 }
 
-extern "C" void* APIENTRY glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
+void* APIENTRY glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
 {
 	GLuint bound = 0;
 
@@ -6787,7 +7454,7 @@ extern "C" void* APIENTRY glMapBufferRange(GLenum target, GLintptr offset, GLsiz
 	return bo->data.data() + offset;
 }
 
-extern "C" GLboolean APIENTRY glUnmapBuffer(GLenum target)
+GLboolean APIENTRY glUnmapBuffer(GLenum target)
 {
 	GLuint bound = 0;
 
@@ -6827,7 +7494,7 @@ extern "C" GLboolean APIENTRY glUnmapBuffer(GLenum target)
 	return GL_TRUE;
 }
 
-extern "C" void APIENTRY glGenQueries(GLsizei n, GLuint* ids)
+void APIENTRY glGenQueries(GLsizei n, GLuint* ids)
 {
 	if (n < 0)
 	{
@@ -6849,7 +7516,7 @@ extern "C" void APIENTRY glGenQueries(GLsizei n, GLuint* ids)
 	}
 }
 
-extern "C" void APIENTRY glDeleteQueries(GLsizei n, const GLuint* ids)
+void APIENTRY glDeleteQueries(GLsizei n, const GLuint* ids)
 {
 	if (n < 0)
 	{
@@ -6876,9 +7543,9 @@ extern "C" void APIENTRY glDeleteQueries(GLsizei n, const GLuint* ids)
 	}
 }
 
-extern "C" GLboolean APIENTRY glIsQuery(GLuint id) { return g_gl.queries.find(id) != g_gl.queries.end() ? GL_TRUE : GL_FALSE; }
+GLboolean APIENTRY glIsQuery(GLuint id) { return g_gl.queries.find(id) != g_gl.queries.end() ? GL_TRUE : GL_FALSE; }
 
-extern "C" void APIENTRY glBeginQuery(GLenum target, GLuint id)
+void APIENTRY glBeginQuery(GLenum target, GLuint id)
 {
 	if (target != GL_SAMPLES_PASSED)
 	{
@@ -6916,7 +7583,7 @@ extern "C" void APIENTRY glBeginQuery(GLenum target, GLuint id)
 		g_gl.queuedBatches.back().markerEnd = g_gl.queryMarkers.size();
 }
 
-extern "C" void APIENTRY glEndQuery(GLenum target)
+void APIENTRY glEndQuery(GLenum target)
 {
 	if (target != GL_SAMPLES_PASSED)
 	{
@@ -6968,7 +7635,7 @@ static void QD3D12_UpdateQueryResult(GLOcclusionQuery& q)
 	q.pending = false;
 }
 
-extern "C" void APIENTRY glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* params)
+void APIENTRY glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* params)
 {
 	if (!params)
 		return;
@@ -7004,7 +7671,7 @@ extern "C" void APIENTRY glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* pa
 	}
 }
 
-extern "C" void APIENTRY glGetQueryObjectiv(GLuint id, GLenum pname, GLint* params)
+void APIENTRY glGetQueryObjectiv(GLuint id, GLenum pname, GLint* params)
 {
 	if (!params)
 		return;
@@ -7014,7 +7681,7 @@ extern "C" void APIENTRY glGetQueryObjectiv(GLuint id, GLenum pname, GLint* para
 	*params = (GLint)u;
 }
 
-extern "C" void APIENTRY glPointSize(GLfloat size)
+void APIENTRY glPointSize(GLfloat size)
 {
 	if (size <= 0.0f)
 	{
@@ -7025,7 +7692,7 @@ extern "C" void APIENTRY glPointSize(GLfloat size)
 	g_gl.pointSize = size;
 }
 
-extern "C" void APIENTRY glPointParameterfEXT(GLenum pname, GLfloat param)
+void APIENTRY glPointParameterfEXT(GLenum pname, GLfloat param)
 {
 	switch (pname)
 	{
@@ -7062,7 +7729,7 @@ extern "C" void APIENTRY glPointParameterfEXT(GLenum pname, GLfloat param)
 	}
 }
 
-extern "C" void APIENTRY glPointParameterfvEXT(GLenum pname, const GLfloat* params)
+void APIENTRY glPointParameterfvEXT(GLenum pname, const GLfloat* params)
 {
 	if (!params)
 	{
@@ -7111,7 +7778,7 @@ extern "C" void APIENTRY glPointParameterfvEXT(GLenum pname, const GLfloat* para
 	}
 }
 
-extern "C" void APIENTRY glColor3fv(const GLfloat* v)
+void APIENTRY glColor3fv(const GLfloat* v)
 {
 	if (!v)
 		return;
@@ -7119,37 +7786,114 @@ extern "C" void APIENTRY glColor3fv(const GLfloat* v)
 	glColor3f(v[0], v[1], v[2]);
 }
 
-extern "C" void APIENTRY glRasterPos3fv(const GLfloat* v)
-{
+static GLuint g_qd3d12ListBaseCompat = 0;
+static GLfloat g_qd3d12CompatRasterPos[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+static GLboolean g_qd3d12CompatRasterPosValid = GL_TRUE;
 
+void APIENTRY glRasterPos3fv(const GLfloat* v)
+{
+	if (!v)
+		return;
+
+	glRasterPos3f(v[0], v[1], v[2]);
 }
 
-extern "C" void APIENTRY glCallLists(GLsizei n, GLenum type, const GLvoid* lists)
+void APIENTRY glCallLists(GLsizei n, GLenum type, const GLvoid* lists)
 {
+	if (n <= 0 || !lists)
+		return;
 
+	switch (type)
+	{
+	case GL_UNSIGNED_BYTE:
+	{
+		const GLubyte* p = static_cast<const GLubyte*>(lists);
+		for (GLsizei i = 0; i < n; ++i)
+			glCallList(g_qd3d12ListBaseCompat + (GLuint)p[i]);
+		break;
+	}
+	case GL_BYTE:
+	{
+		const GLbyte* p = static_cast<const GLbyte*>(lists);
+		for (GLsizei i = 0; i < n; ++i)
+			glCallList(g_qd3d12ListBaseCompat + (GLuint)(unsigned char)p[i]);
+		break;
+	}
+	case GL_UNSIGNED_SHORT:
+	{
+		const GLushort* p = static_cast<const GLushort*>(lists);
+		for (GLsizei i = 0; i < n; ++i)
+			glCallList(g_qd3d12ListBaseCompat + (GLuint)p[i]);
+		break;
+	}
+	case GL_SHORT:
+	{
+		const GLshort* p = static_cast<const GLshort*>(lists);
+		for (GLsizei i = 0; i < n; ++i)
+			glCallList(g_qd3d12ListBaseCompat + (GLuint)(unsigned short)p[i]);
+		break;
+	}
+	case GL_UNSIGNED_INT:
+	{
+		const GLuint* p = static_cast<const GLuint*>(lists);
+		for (GLsizei i = 0; i < n; ++i)
+			glCallList(g_qd3d12ListBaseCompat + p[i]);
+		break;
+	}
+	case GL_INT:
+	{
+		const GLint* p = static_cast<const GLint*>(lists);
+		for (GLsizei i = 0; i < n; ++i)
+			glCallList(g_qd3d12ListBaseCompat + (GLuint)p[i]);
+		break;
+	}
+	default:
+		g_gl.lastError = GL_INVALID_ENUM;
+		break;
+	}
 }
 
 // opengl.cpp
 
-extern "C" void APIENTRY glTranslated(GLdouble x, GLdouble y, GLdouble z)
+void APIENTRY glTranslated(GLdouble x, GLdouble y, GLdouble z)
 {
 	glTranslatef((GLfloat)x, (GLfloat)y, (GLfloat)z);
 }
 
-extern "C" void APIENTRY glRotated(GLdouble angle, GLdouble x, GLdouble y, GLdouble z)
+void APIENTRY glRotated(GLdouble angle, GLdouble x, GLdouble y, GLdouble z)
 {
 	glRotatef((GLfloat)angle, (GLfloat)x, (GLfloat)y, (GLfloat)z);
 }
 
-extern "C" void APIENTRY glTexGenf(GLenum coord, GLenum pname, GLfloat param)
+void APIENTRY glTexGenf(GLenum coord, GLenum pname, GLfloat param)
 {
-
-	// pname is usually GL_TEXTURE_GEN_MODE for glTexGenf usage.
-	// Ignore unsupported pname values for now.
+	(void)coord;
 	(void)pname;
+	(void)param;
 }
 
-extern "C" void APIENTRY glRectf(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2)
+void APIENTRY glTexGeni(GLenum coord, GLenum pname, GLint param)
+{
+	glTexGenf(coord, pname, (GLfloat)param);
+}
+
+void APIENTRY glTexGenfv(GLenum coord, GLenum pname, const GLfloat* params)
+{
+	if (!params)
+		return;
+
+	glTexGenf(coord, pname, params[0]);
+}
+
+void APIENTRY glTexGeniv(GLenum coord, GLenum pname, const GLint* params)
+{
+	if (!params)
+		return;
+
+	glTexGeni(coord, pname, params[0]);
+}
+
+void APIENTRY glRectf(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2)
 {
 	glBegin(GL_QUADS);
 	glVertex2f(x1, y1);
@@ -7159,9 +7903,13 @@ extern "C" void APIENTRY glRectf(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2)
 	glEnd();
 }
 
-extern "C" void APIENTRY glRasterPos3f(GLfloat x, GLfloat y, GLfloat z)
+void APIENTRY glRasterPos3f(GLfloat x, GLfloat y, GLfloat z)
 {
-
+	g_qd3d12CompatRasterPos[0] = x;
+	g_qd3d12CompatRasterPos[1] = y;
+	g_qd3d12CompatRasterPos[2] = z;
+	g_qd3d12CompatRasterPos[3] = 1.0f;
+	g_qd3d12CompatRasterPosValid = GL_TRUE;
 }
 
 // -----------------------------------------------------------------------------
@@ -7201,32 +7949,163 @@ static QD3D12AttribState g_glState =
 };
 
 static std::vector<QD3D12AttribState> g_attribStack;
+static GLfloat g_qd3d12PixelZoomX = 1.0f;
+static GLfloat g_qd3d12PixelZoomY = 1.0f;
+
+static bool QD3D12_ConvertPixelsToRGBA8(GLsizei width, GLsizei height, GLenum format, GLenum type,
+	const GLvoid* pixels, std::vector<uint8_t>& outRGBA)
+{
+	if (width <= 0 || height <= 0 || !pixels)
+		return false;
+
+	if (type != GL_UNSIGNED_BYTE)
+		return false;
+
+	const uint8_t* src = static_cast<const uint8_t*>(pixels);
+	outRGBA.resize((size_t)width * (size_t)height * 4);
+
+	for (GLsizei i = 0; i < width * height; ++i)
+	{
+		uint8_t r = 0, g = 0, b = 0, a = 255;
+		switch (format)
+		{
+		case GL_RGBA:
+			b = src[i * 4 + 2];
+			g = src[i * 4 + 1];
+			r = src[i * 4 + 0];
+			a = src[i * 4 + 3];
+			break;
+
+		case GL_BGRA_EXT:
+			r = src[i * 4 + 2];
+			g = src[i * 4 + 1];
+			b = src[i * 4 + 0];
+			a = src[i * 4 + 3];
+			break;
+
+		case GL_RGB:
+			r = src[i * 3 + 0];
+			g = src[i * 3 + 1];
+			b = src[i * 3 + 2];
+			break;
+
+		case GL_BGR_EXT:
+			r = src[i * 3 + 2];
+			g = src[i * 3 + 1];
+			b = src[i * 3 + 0];
+			break;
+
+		case GL_LUMINANCE:
+			r = g = b = src[i];
+			break;
+
+		case GL_ALPHA:
+			a = src[i];
+			r = g = b = 255;
+			break;
+
+		case GL_LUMINANCE_ALPHA:
+			r = g = b = src[i * 2 + 0];
+			a = src[i * 2 + 1];
+			break;
+
+		default:
+			return false;
+		}
+
+		outRGBA[(size_t)i * 4 + 0] = r;
+		outRGBA[(size_t)i * 4 + 1] = g;
+		outRGBA[(size_t)i * 4 + 2] = b;
+		outRGBA[(size_t)i * 4 + 3] = a;
+	}
+
+	return true;
+}
 
 // -----------------------------------------------------------------------------
 // Raster position
 // -----------------------------------------------------------------------------
 
-extern "C" void APIENTRY glRasterPos2f(GLfloat x, GLfloat y)
+void APIENTRY glRasterPos2f(GLfloat x, GLfloat y)
 {
-	g_glState.rasterPos[0] = x;
-	g_glState.rasterPos[1] = y;
-	g_glState.rasterPos[2] = 0.0f;
-	g_glState.rasterPos[3] = 1.0f;
-	g_glState.rasterPosValid = GL_TRUE;
+	g_qd3d12CompatRasterPos[0] = x;
+	g_qd3d12CompatRasterPos[1] = y;
+	g_qd3d12CompatRasterPos[2] = 0.0f;
+	g_qd3d12CompatRasterPos[3] = 1.0f;
+	g_qd3d12CompatRasterPosValid = GL_TRUE;
+}
+
+void APIENTRY glPixelZoom(GLfloat xfactor, GLfloat yfactor)
+{
+	g_qd3d12PixelZoomX = xfactor;
+	g_qd3d12PixelZoomY = yfactor;
+}
+
+void APIENTRY glDrawPixels(GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* pixels)
+{
+	if (!g_qd3d12CompatRasterPosValid || width <= 0 || height <= 0 || !pixels)
+		return;
+
+	std::vector<uint8_t> rgba;
+	if (!QD3D12_ConvertPixelsToRGBA8(width, height, format, type, pixels, rgba))
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	const GLuint unit = g_gl.activeTextureUnit;
+	const GLuint oldBound = g_gl.boundTexture[unit];
+	const bool oldTexture2D = g_gl.texture2D[unit];
+	const float oldColor[4] = {
+		g_gl.curColor[0], g_gl.curColor[1], g_gl.curColor[2], g_gl.curColor[3]
+	};
+
+	GLuint tempTexture = 0;
+	glGenTextures(1, &tempTexture);
+	glEnable(GL_TEXTURE_2D);
+	glBindTexture(GL_TEXTURE_2D, tempTexture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+
+	const GLfloat x1 = g_qd3d12CompatRasterPos[0];
+	const GLfloat y1 = g_qd3d12CompatRasterPos[1];
+	const GLfloat x2 = x1 + (GLfloat)width * g_qd3d12PixelZoomX;
+	const GLfloat y2 = y1 + (GLfloat)height * g_qd3d12PixelZoomY;
+
+	glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+	glBegin(GL_QUADS);
+	glTexCoord2f(0.0f, 0.0f); glVertex2f(x1, y1);
+	glTexCoord2f(1.0f, 0.0f); glVertex2f(x2, y1);
+	glTexCoord2f(1.0f, 1.0f); glVertex2f(x2, y2);
+	glTexCoord2f(0.0f, 1.0f); glVertex2f(x1, y2);
+	glEnd();
+
+	glDeleteTextures(1, &tempTexture);
+
+	if (oldTexture2D)
+		glEnable(GL_TEXTURE_2D);
+	else
+		glDisable(GL_TEXTURE_2D);
+
+	glBindTexture(GL_TEXTURE_2D, oldBound);
+	glColor4f(oldColor[0], oldColor[1], oldColor[2], oldColor[3]);
 }
 
 // -----------------------------------------------------------------------------
 // Current color / normal
 // -----------------------------------------------------------------------------
 
-extern "C" void APIENTRY glNormal3f(GLfloat x, GLfloat y, GLfloat z)
+void APIENTRY glNormal3f(GLfloat x, GLfloat y, GLfloat z)
 {
 	g_glState.currentNormal[0] = x;
 	g_glState.currentNormal[1] = y;
 	g_glState.currentNormal[2] = z;
 }
 
-extern "C" void APIENTRY glNormal3fv(const GLfloat* v)
+void APIENTRY glNormal3fv(const GLfloat* v)
 {
 	if (!v) return;
 	glNormal3f(v[0], v[1], v[2]);
@@ -7236,13 +8115,13 @@ extern "C" void APIENTRY glNormal3fv(const GLfloat* v)
 // Attribute stack
 // -----------------------------------------------------------------------------
 
-extern "C" void APIENTRY glPushAttrib(GLbitfield mask)
+void APIENTRY glPushAttrib(GLbitfield mask)
 {
 	(void)mask;
 	g_attribStack.push_back(g_glState);
 }
 
-extern "C" void APIENTRY glPopAttrib(void)
+void APIENTRY glPopAttrib(void)
 {
 	if (g_attribStack.empty())
 		return;
@@ -7255,7 +8134,7 @@ extern "C" void APIENTRY glPopAttrib(void)
 // Misc legacy state
 // -----------------------------------------------------------------------------
 
-extern "C" GLboolean APIENTRY glIsEnabled(GLenum cap)
+GLboolean APIENTRY glIsEnabled(GLenum cap)
 {
 	switch (cap)
 	{
@@ -7270,18 +8149,18 @@ extern "C" GLboolean APIENTRY glIsEnabled(GLenum cap)
 	}
 }
 
-extern "C" void APIENTRY glLineWidth(GLfloat width)
+void APIENTRY glLineWidth(GLfloat width)
 {
 	g_glState.lineWidth = (width > 0.0f) ? width : 1.0f;
 }
 
-extern "C" void APIENTRY glLineStipple(GLint factor, GLushort pattern)
+void APIENTRY glLineStipple(GLint factor, GLushort pattern)
 {
 	g_glState.lineStippleFactor = (factor > 0) ? factor : 1;
 	g_glState.lineStipplePattern = pattern;
 }
 
-extern "C" void APIENTRY glLightModelfv(GLenum pname, const GLfloat* params)
+void APIENTRY glLightModelfv(GLenum pname, const GLfloat* params)
 {
 	if (!params)
 		return;
@@ -7295,7 +8174,7 @@ extern "C" void APIENTRY glLightModelfv(GLenum pname, const GLfloat* params)
 	}
 }
 
-extern "C" void APIENTRY glPolygonStipple(const GLubyte* mask)
+void APIENTRY glPolygonStipple(const GLubyte* mask)
 {
 	(void)mask;
 	// Stub: keep for compatibility. Real implementation only matters
@@ -7310,7 +8189,7 @@ static GLuint g_nextListId = 1;
 static GLuint g_currentList = 0;
 static GLenum g_currentListMode = 0;
 
-extern "C" GLuint APIENTRY glGenLists(GLsizei range)
+GLuint APIENTRY glGenLists(GLsizei range)
 {
 	if (range <= 0)
 		return 0;
@@ -7320,38 +8199,39 @@ extern "C" GLuint APIENTRY glGenLists(GLsizei range)
 	return first;
 }
 
-extern "C" void APIENTRY glNewList(GLuint list, GLenum mode)
+void APIENTRY glNewList(GLuint list, GLenum mode)
 {
 	g_currentList = list;
 	g_currentListMode = mode;
 }
 
-extern "C" void APIENTRY glEndList(void)
+void APIENTRY glEndList(void)
 {
 	g_currentList = 0;
 	g_currentListMode = 0;
 }
 
-extern "C" void APIENTRY glCallList(GLuint list)
+void APIENTRY glCallList(GLuint list)
 {
 	(void)list;
 	// Stub. Needed for link/compile.
 	// Replace with recorded command playback if you add true list support.
 }
 
-extern "C" void APIENTRY glDeleteLists(GLuint list, GLsizei range)
+void APIENTRY glDeleteLists(GLuint list, GLsizei range)
 {
 	(void)list;
 	(void)range;
 }
 
-extern "C" void APIENTRY glListBase(GLuint base)
+void APIENTRY glListBase(GLuint base)
 {
 	g_glState.listBase = base;
+	g_qd3d12ListBaseCompat = base;
 }
 
 
-extern "C" void APIENTRY glCopyPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum type)
+void APIENTRY glCopyPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum type)
 {
 	(void)x;
 	(void)y;

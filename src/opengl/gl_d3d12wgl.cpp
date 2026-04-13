@@ -4,10 +4,10 @@
 extern bool QD3D12_InitForQuakeWindow(struct QD3D12Window* window, HWND hwnd, int width, int height, bool fastPath);
 extern void QD3D12_ShutdownForQuake(void);
 extern void QD3D12_BeginFrame();
-extern "C" void APIENTRY glSelectTextureSGIS(GLenum texture);
-extern "C" void APIENTRY glMTexCoord2fSGIS(GLenum texture, GLfloat s, GLfloat t);
-extern "C" void APIENTRY glActiveTextureARB(GLenum texture);
-extern "C" void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t);
+void APIENTRY glSelectTextureSGIS(GLenum texture);
+void APIENTRY glMTexCoord2fSGIS(GLenum texture, GLfloat s, GLfloat t);
+void APIENTRY glActiveTextureARB(GLenum texture);
+void APIENTRY glMultiTexCoord2fARB(GLenum texture, GLfloat s, GLfloat t);
 void QD3D12_Resize();
 
 void QD3D12_Present();
@@ -15,7 +15,7 @@ void QD3D12_EndFrame();
 void QD3D12_CollectRetiredResources();
 
 // Existing GL wrapper function from your compatibility layer
-extern "C" void APIENTRY glBindTexture(unsigned int target, unsigned int texture);
+void APIENTRY glBindTexture(unsigned int target, unsigned int texture);
 
 void QD3D12_SetCurrentWindow(struct QD3D12Window* window);
 
@@ -44,7 +44,7 @@ static void QD3D12_GetClientSize(HWND hwnd, int& w, int& h)
     if (h <= 0) h = 480;
 }
 
-extern "C" QD3D12_HGLRC WINAPI qd3d12_wglCreateContext(HDC hdc)
+QD3D12_HGLRC WINAPI qd3d12_wglCreateContext(HDC hdc)
 {
     if (!hdc)
         return nullptr;
@@ -61,7 +61,7 @@ extern "C" QD3D12_HGLRC WINAPI qd3d12_wglCreateContext(HDC hdc)
     return (QD3D12_HGLRC)ctx;
 }
 
-extern "C" BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
+BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
 {
     static bool basicInitDone = false;
 
@@ -120,17 +120,17 @@ extern "C" BOOL WINAPI qd3d12_wglMakeCurrent(HDC hdc, QD3D12_HGLRC hglrc)
     return TRUE;
 }
 
-extern "C" HDC WINAPI qd3d12_wglGetCurrentDC(void)
+HDC WINAPI qd3d12_wglGetCurrentDC(void)
 {
     return g_currentDC;
 }
 
-extern "C" QD3D12_HGLRC WINAPI qd3d12_wglGetCurrentContext(void)
+QD3D12_HGLRC WINAPI qd3d12_wglGetCurrentContext(void)
 {
     return (QD3D12_HGLRC)g_currentContext;
 }
 
-extern "C" BOOL WINAPI qd3d12_wglDeleteContext(QD3D12_HGLRC hglrc)
+BOOL WINAPI qd3d12_wglDeleteContext(QD3D12_HGLRC hglrc)
 {
     if (!hglrc)
         return FALSE;
@@ -152,32 +152,32 @@ extern "C" BOOL WINAPI qd3d12_wglDeleteContext(QD3D12_HGLRC hglrc)
     return TRUE;
 }
 
-extern "C" void APIENTRY glBindTextureEXT(unsigned int target, unsigned int texture)
+void APIENTRY glBindTextureEXT(unsigned int target, unsigned int texture)
 {
     glBindTexture(target, texture);
 }
 
-extern "C" int WINAPI qd3d12_wglDescribePixelFormat(HDC hdc, int iPixelFormat, UINT nBytes, LPPIXELFORMATDESCRIPTOR ppfd) {
+int WINAPI qd3d12_wglDescribePixelFormat(HDC hdc, int iPixelFormat, UINT nBytes, LPPIXELFORMATDESCRIPTOR ppfd) {
     return DescribePixelFormat(hdc, iPixelFormat, nBytes, ppfd);
 }
 
-extern "C" BOOL WINAPI qd3d12_wglSetPixelFormat(HDC hdc, int format, const PIXELFORMATDESCRIPTOR* ppfd) {
+BOOL WINAPI qd3d12_wglSetPixelFormat(HDC hdc, int format, const PIXELFORMATDESCRIPTOR* ppfd) {
     return 0;
 }
 
-extern "C" BOOL WINAPI qd3d12_wglSwapIntervalEXT(int interval) {
+BOOL WINAPI qd3d12_wglSwapIntervalEXT(int interval) {
     (void)interval;
     return TRUE;
 }
 
-extern "C" BOOL WINAPI qd3d12_wglGetDeviceGammaRamp3DFX(HDC hdc, LPVOID ramp) {
+BOOL WINAPI qd3d12_wglGetDeviceGammaRamp3DFX(HDC hdc, LPVOID ramp) {
     return FALSE;
 }
 
-extern "C" BOOL WINAPI qd3d12_wglSetDeviceGammaRamp3DFX(HDC hdc, LPVOID ramp) {
+BOOL WINAPI qd3d12_wglSetDeviceGammaRamp3DFX(HDC hdc, LPVOID ramp) {
     return FALSE;
 }
 
-extern "C" __declspec(dllexport) BOOL  WINAPI wglShareLists(HGLRC, HGLRC) { return FALSE; }
-extern "C" __declspec(dllexport) BOOL  WINAPI wglUseFontBitmapsA(HDC, DWORD, DWORD, DWORD) { return FALSE; }
-extern "C"  __declspec(dllexport) BOOL  WINAPI wglUseFontBitmapsW(HDC, DWORD, DWORD, DWORD) { return FALSE; }
+__declspec(dllexport) BOOL  WINAPI wglShareLists(HGLRC, HGLRC) { return FALSE; }
+__declspec(dllexport) BOOL  WINAPI wglUseFontBitmapsA(HDC, DWORD, DWORD, DWORD) { return FALSE; }
+ __declspec(dllexport) BOOL  WINAPI wglUseFontBitmapsW(HDC, DWORD, DWORD, DWORD) { return FALSE; }
