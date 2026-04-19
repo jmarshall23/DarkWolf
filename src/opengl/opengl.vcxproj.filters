@@ -41,6 +41,7 @@
     <ClCompile Include="tess\tessmono.c">
       <Filter>tess</Filter>
     </ClCompile>
+    <ClCompile Include="gl_d3d12arb.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="opengl.h" />
@@ -92,6 +93,7 @@
     <ClInclude Include="tess\tessmono.h">
       <Filter>tess</Filter>
     </ClInclude>
+    <ClInclude Include="gl_d3d12arb.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="tess">

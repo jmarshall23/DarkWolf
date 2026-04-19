@@ -19,6 +19,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="gl_d3d12arb.cpp" />
     <ClCompile Include="gl_d3d12raylight.cpp">
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Disabled</Optimization>
     </ClCompile>
@@ -87,6 +88,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="gl_d3d12arb.h" />
     <ClInclude Include="opengl.h" />
     <ClInclude Include="tess\dict-list.h" />
     <ClInclude Include="tess\dict.h" />

@@ -178,6 +178,5 @@ BOOL WINAPI qd3d12_wglSetDeviceGammaRamp3DFX(HDC hdc, LPVOID ramp) {
     return FALSE;
 }
 
-__declspec(dllexport) BOOL  WINAPI wglShareLists(HGLRC, HGLRC) { return FALSE; }
 __declspec(dllexport) BOOL  WINAPI wglUseFontBitmapsA(HDC, DWORD, DWORD, DWORD) { return FALSE; }
  __declspec(dllexport) BOOL  WINAPI wglUseFontBitmapsW(HDC, DWORD, DWORD, DWORD) { return FALSE; }

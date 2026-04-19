@@ -44,10 +44,16 @@
 using Microsoft::WRL::ComPtr;
 
 #include "opengl.h"
+#include "gl_d3d12arb.h"
 
 static constexpr size_t GL_FRAME_VERTEX_CAPACITY = 2000000; // we make retro games, this comes out to about 100mb or so. 
 
 struct QD3D12Window;
+struct QD3D12GLContext;
+struct QD3D12Pbuffer;
+
+static HDC   g_qd3d12CurrentDC = nullptr;
+static HGLRC g_qd3d12CurrentRC = nullptr;
 
 static D3D12_GPU_DESCRIPTOR_HANDLE QD3D12_SrvGpu(UINT index);
 static D3D12_CPU_DESCRIPTOR_HANDLE QD3D12_SrvCpu(UINT index);
@@ -63,6 +69,9 @@ static UINT QD3D12_ActiveRasterWidth(const QD3D12Window& w);
 static UINT QD3D12_ActiveRasterHeight(const QD3D12Window& w);
 static void QD3D12_BindTargetsForCurrentPhase(QD3D12Window& w);
 static void QD3D12_ResolveSceneToOutputAndEnterNativePhase(QD3D12Window& w);
+static void QD3D12_RegisterWindowDC(QD3D12Window* w);
+static void QD3D12_UnregisterWindowDC(HDC dc);
+static HGLRC QD3D12_CreateGLContextHandle(HDC dc, QD3D12Window* window);
 
 extern bool D3D12_SwapBufferMultWindows;
 
@@ -129,17 +138,17 @@ static const UINT QD3D12_MaxQueries = 2048;
 // SECTION 3: D3D12 renderer structs
 // ============================================================
 
-static const UINT QD3D12_MaxTextureUnits = 2;
+static const UINT QD3D12_MaxTextureUnits = 8;
 static const UINT QD3D12_FrameCount = 2;
 static const UINT QD3D12_MaxTextures = 4096;
 static const UINT QD3D12_UploadBufferSize = 64 * 1024 * 1024;
 
 static const DXGI_FORMAT QD3D12_SceneColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 static const DXGI_FORMAT QD3D12_VelocityFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
-static const DXGI_FORMAT QD3D12_DepthFormat = DXGI_FORMAT_D32_FLOAT;
-static const DXGI_FORMAT QD3D12_DepthResourceFormat = DXGI_FORMAT_R32_TYPELESS;
-static const DXGI_FORMAT QD3D12_DepthSrvFormat = DXGI_FORMAT_R32_FLOAT;
-static const DXGI_FORMAT QD3D12_DepthDsvFormat = DXGI_FORMAT_D32_FLOAT;
+static const DXGI_FORMAT QD3D12_DepthFormat = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+static const DXGI_FORMAT QD3D12_DepthResourceFormat = DXGI_FORMAT_R32G8X24_TYPELESS;
+static const DXGI_FORMAT QD3D12_DepthSrvFormat = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+static const DXGI_FORMAT QD3D12_DepthDsvFormat = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
 
 enum QD3D12UpscalerBackend
 {
@@ -274,6 +283,21 @@ struct DrawConstants
 	float jitterPixels[2];
 	float prevJitterPixels[2];
 	float _motionPad[4];
+
+	float texComb0RGB[4];
+	float texComb0Alpha[4];
+	float texComb0Operand[4];
+	float texEnvColor0[4];
+	float texComb1RGB[4];
+	float texComb1Alpha[4];
+	float texComb1Operand[4];
+	float texEnvColor1[4];
+
+	// Appended for translated ARBvp/ARBfp programs.  Fixed-function HLSL ignores
+	// these fields; ARB-generated HLSL uses them as program.env/local storage.
+	float arbEnv[QD3D12_ARB_MAX_PROGRAM_PARAMETERS][4];
+	float arbLocalVP[QD3D12_ARB_MAX_PROGRAM_PARAMETERS][4];
+	float arbLocalFP[QD3D12_ARB_MAX_PROGRAM_PARAMETERS][4];
 };
 
 struct GLBufferObject
@@ -292,7 +316,7 @@ struct GLBufferObject
 const char* vendor = "Justin Marshall";
 const char* renderer = "Quake D3D12 Wrapper";
 const char* version = "1.1-quake-d3d12";
-const char* extensions = "GL_SGIS_multitexture GL_ARB_multitexture GL_EXT_texture_env_add";
+const char* extensions = "GL_SGIS_multitexture GL_ARB_multitexture GL_EXT_texture_env_add GL_ARB_texture_env_combine GL_ARB_vertex_program GL_ARB_fragment_program GL_EXT_texture_cube_map GL_EXT_depth_bounds_test GL_EXT_stencil_two_side GL_ATI_separate_stencil";
 
 enum TexEnvModeShader
 {
@@ -300,7 +324,8 @@ enum TexEnvModeShader
 	TEXENV_REPLACE = 1,
 	TEXENV_DECAL = 2,
 	TEXENV_BLEND = 3,
-	TEXENV_ADD = 4
+	TEXENV_ADD = 4,
+	TEXENV_COMBINE = 5
 };
 
 static float MapTexEnvMode(GLenum mode)
@@ -309,6 +334,9 @@ static float MapTexEnvMode(GLenum mode)
 	{
 	case GL_REPLACE:  return (float)TEXENV_REPLACE;
 	case GL_BLEND:    return (float)TEXENV_BLEND;
+#ifdef GL_COMBINE_ARB
+	case GL_COMBINE_ARB: return (float)TEXENV_COMBINE;
+#endif
 #ifdef GL_ADD
 	case GL_ADD:      return (float)TEXENV_ADD;
 #endif
@@ -328,6 +356,47 @@ struct BatchKey
 
 	UINT tex0SrvIndex = 0;
 	UINT tex1SrvIndex = 0;
+	UINT textureSrvIndex[QD3D12_MaxTextureUnits] = {};
+
+	bool useARBPrograms = false;
+	GLuint arbVertexProgram = 0;
+	GLuint arbFragmentProgram = 0;
+	uint32_t arbVertexRevision = 0;
+	uint32_t arbFragmentRevision = 0;
+	ID3DBlob* arbVertexBlob = nullptr;
+	ID3DBlob* arbFragmentBlob = nullptr;
+	QD3D12ARBDrawConstantArrays arbConstants{};
+
+	float texComb0RGB[4] = {};
+	float texComb0Alpha[4] = {};
+	float texComb0Operand[4] = {};
+	float texEnvColor0[4] = {};
+	float texComb1RGB[4] = {};
+	float texComb1Alpha[4] = {};
+	float texComb1Operand[4] = {};
+	float texEnvColor1[4] = {};
+
+	UINT8 colorWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+	bool cullFaceEnabled = false;
+	GLenum cullMode = GL_BACK;
+	GLenum frontFace = GL_CCW;
+
+	bool stencilTest = false;
+	UINT8 stencilReadMask = 0xFF;
+	UINT8 stencilWriteMask = 0xFF;
+	UINT8 stencilRef = 0;
+	GLenum stencilFrontFunc = GL_ALWAYS;
+	GLenum stencilFrontSFail = GL_KEEP;
+	GLenum stencilFrontDPFail = GL_KEEP;
+	GLenum stencilFrontDPPass = GL_KEEP;
+	GLenum stencilBackFunc = GL_ALWAYS;
+	GLenum stencilBackSFail = GL_KEEP;
+	GLenum stencilBackDPFail = GL_KEEP;
+	GLenum stencilBackDPPass = GL_KEEP;
+
+	bool depthBoundsTest = false;
+	float depthBoundsMin = 0.0f;
+	float depthBoundsMax = 1.0f;
 
 	float alphaRef = 0.0f;
 	float useTex0 = 0.0f;
@@ -372,6 +441,16 @@ static bool RectEquals(const D3D12_RECT& a, const D3D12_RECT& b)
 		a.bottom == b.bottom;
 }
 
+static bool TextureSrvArrayEquals(const UINT* a, const UINT* b)
+{
+	for (UINT i = 0; i < QD3D12_MaxTextureUnits; ++i)
+	{
+		if (a[i] != b[i])
+			return false;
+	}
+	return true;
+}
+
 static bool BatchKeyEquals(const BatchKey& a, const BatchKey& b)
 {
 	return
@@ -387,6 +466,33 @@ static bool BatchKeyEquals(const BatchKey& a, const BatchKey& b)
 		a.tex1IsLightmap == b.tex1IsLightmap &&
 		a.texEnvMode0 == b.texEnvMode0 &&
 		a.texEnvMode1 == b.texEnvMode1 &&
+		a.colorWriteMask == b.colorWriteMask &&
+		a.cullFaceEnabled == b.cullFaceEnabled &&
+		a.cullMode == b.cullMode &&
+		a.frontFace == b.frontFace &&
+		a.stencilTest == b.stencilTest &&
+		a.stencilReadMask == b.stencilReadMask &&
+		a.stencilWriteMask == b.stencilWriteMask &&
+		a.stencilRef == b.stencilRef &&
+		a.stencilFrontFunc == b.stencilFrontFunc &&
+		a.stencilFrontSFail == b.stencilFrontSFail &&
+		a.stencilFrontDPFail == b.stencilFrontDPFail &&
+		a.stencilFrontDPPass == b.stencilFrontDPPass &&
+		a.stencilBackFunc == b.stencilBackFunc &&
+		a.stencilBackSFail == b.stencilBackSFail &&
+		a.stencilBackDPFail == b.stencilBackDPFail &&
+		a.stencilBackDPPass == b.stencilBackDPPass &&
+		a.depthBoundsTest == b.depthBoundsTest &&
+		a.depthBoundsMin == b.depthBoundsMin &&
+		a.depthBoundsMax == b.depthBoundsMax &&
+		memcmp(a.texComb0RGB, b.texComb0RGB, sizeof(a.texComb0RGB)) == 0 &&
+		memcmp(a.texComb0Alpha, b.texComb0Alpha, sizeof(a.texComb0Alpha)) == 0 &&
+		memcmp(a.texComb0Operand, b.texComb0Operand, sizeof(a.texComb0Operand)) == 0 &&
+		memcmp(a.texEnvColor0, b.texEnvColor0, sizeof(a.texEnvColor0)) == 0 &&
+		memcmp(a.texComb1RGB, b.texComb1RGB, sizeof(a.texComb1RGB)) == 0 &&
+		memcmp(a.texComb1Alpha, b.texComb1Alpha, sizeof(a.texComb1Alpha)) == 0 &&
+		memcmp(a.texComb1Operand, b.texComb1Operand, sizeof(a.texComb1Operand)) == 0 &&
+		memcmp(a.texEnvColor1, b.texEnvColor1, sizeof(a.texEnvColor1)) == 0 &&
 		a.blendSrc == b.blendSrc &&
 		a.blendDst == b.blendDst &&
 		a.depthTest == b.depthTest &&
@@ -396,6 +502,15 @@ static bool BatchKeyEquals(const BatchKey& a, const BatchKey& b)
 		a.roughness == b.roughness &&
 		a.materialType == b.materialType &&
 		a.motionObjectId == b.motionObjectId &&
+		TextureSrvArrayEquals(a.textureSrvIndex, b.textureSrvIndex) &&
+		a.useARBPrograms == b.useARBPrograms &&
+		a.arbVertexProgram == b.arbVertexProgram &&
+		a.arbFragmentProgram == b.arbFragmentProgram &&
+		a.arbVertexRevision == b.arbVertexRevision &&
+		a.arbFragmentRevision == b.arbFragmentRevision &&
+		a.arbVertexBlob == b.arbVertexBlob &&
+		a.arbFragmentBlob == b.arbFragmentBlob &&
+		(!a.useARBPrograms || memcmp(&a.arbConstants, &b.arbConstants, sizeof(a.arbConstants)) == 0) &&
 		memcmp(a.mvp.m, b.mvp.m, sizeof(a.mvp.m)) == 0 &&
 		memcmp(a.prevMvp.m, b.prevMvp.m, sizeof(a.prevMvp.m)) == 0 &&
 		memcmp(a.modelMatrix.m, b.modelMatrix.m, sizeof(a.modelMatrix.m)) == 0;
@@ -415,6 +530,8 @@ struct QD3D12Window
 {
 	HWND hwnd = nullptr;
 	HDC  hdc = nullptr;
+	bool ownsHdc = false;
+	bool isPbuffer = false;
 
 	UINT width = 640;          // display/output size
 	UINT height = 480;
@@ -486,7 +603,12 @@ struct QD3D12Window* AllocD3D12Window() {
 
 void FreeD3D12Window(struct QD3D12Window* wnd) {
 	if (wnd)
+	{
 		QD3D12_DestroyUploadRingForWindow(*wnd);
+		QD3D12_UnregisterWindowDC(wnd->hdc);
+		if (wnd->ownsHdc && wnd->hwnd && wnd->hdc)
+			ReleaseDC(wnd->hwnd, wnd->hdc);
+	}
 	delete wnd;
 }
 
@@ -613,7 +735,9 @@ struct GLState
 	};
 
 	ClientArrayState vertexArray;
-	ClientArrayState normalArray;   // <-- add this
+	ClientArrayState normalArray;
+	ClientArrayState tangentArray;
+	ClientArrayState bitangentArray;
 	ClientArrayState colorArray;
 	ClientArrayState texCoordArray[QD3D12_MaxTextureUnits];
 	GLuint clientActiveTextureUnit = 0;
@@ -628,12 +752,32 @@ struct GLState
 
 	GLuint stencilMask = ~0u;
 	GLint clearStencilValue = 0;
+	bool stencilTest = false;
+	bool stencilTwoSide = false;
+	GLenum activeStencilFace = GL_FRONT;
 	GLenum stencilFunc = GL_ALWAYS;
 	GLint stencilRef = 0;
 	GLuint stencilFuncMask = ~0u;
 	GLenum stencilSFail = GL_KEEP;
 	GLenum stencilDPFail = GL_KEEP;
 	GLenum stencilDPPass = GL_KEEP;
+	GLuint stencilFrontMask = ~0u;
+	GLenum stencilFrontFunc = GL_ALWAYS;
+	GLint stencilFrontRef = 0;
+	GLuint stencilFrontFuncMask = ~0u;
+	GLenum stencilFrontSFail = GL_KEEP;
+	GLenum stencilFrontDPFail = GL_KEEP;
+	GLenum stencilFrontDPPass = GL_KEEP;
+	GLuint stencilBackMask = ~0u;
+	GLenum stencilBackFunc = GL_ALWAYS;
+	GLint stencilBackRef = 0;
+	GLuint stencilBackFuncMask = ~0u;
+	GLenum stencilBackSFail = GL_KEEP;
+	GLenum stencilBackDPFail = GL_KEEP;
+	GLenum stencilBackDPPass = GL_KEEP;
+	bool depthBoundsTest = false;
+	GLclampd depthBoundsMin = 0.0;
+	GLclampd depthBoundsMax = 1.0;
 
 	GLdouble clipPlane0[4] = { 0.0, 0.0, 0.0, 0.0 };
 	bool clipPlane0Enabled = false;
@@ -658,12 +802,26 @@ struct GLState
 	GLenum blendDst = GL_ONE_MINUS_SRC_ALPHA;
 	GLenum alphaFunc = GL_GREATER;
 	float alphaRef = 0.666f;
-	GLenum cullMode = GL_FRONT;
+	GLenum cullMode = GL_BACK;
+	GLenum frontFace = GL_CCW;
 	GLenum shadeModel = GL_FLAT;
 	GLenum drawBuffer = GL_BACK;
 	GLenum readBuffer = GL_BACK;
 
-	GLenum texEnvMode[QD3D12_MaxTextureUnits] = { GL_MODULATE, GL_MODULATE };
+	GLenum texEnvMode[QD3D12_MaxTextureUnits] = {};
+	GLenum texCombineRGB[QD3D12_MaxTextureUnits] = {};
+	GLenum texCombineAlpha[QD3D12_MaxTextureUnits] = {};
+	GLenum texSource0RGB[QD3D12_MaxTextureUnits] = {};
+	GLenum texSource1RGB[QD3D12_MaxTextureUnits] = {};
+	GLenum texSource0Alpha[QD3D12_MaxTextureUnits] = {};
+	GLenum texSource1Alpha[QD3D12_MaxTextureUnits] = {};
+	GLenum texOperand0RGB[QD3D12_MaxTextureUnits] = {};
+	GLenum texOperand1RGB[QD3D12_MaxTextureUnits] = {};
+	GLenum texOperand0Alpha[QD3D12_MaxTextureUnits] = {};
+	GLenum texOperand1Alpha[QD3D12_MaxTextureUnits] = {};
+	GLfloat texRGBScale[QD3D12_MaxTextureUnits] = {};
+	GLfloat texAlphaScale[QD3D12_MaxTextureUnits] = {};
+	GLfloat texEnvColor[QD3D12_MaxTextureUnits][4] = {};
 
 	GLint viewportX = 0;
 	GLint viewportY = 0;
@@ -725,6 +883,33 @@ struct GLState
 	GLenum defaultMagFilter = GL_LINEAR;
 	GLenum defaultWrapS = GL_REPEAT;
 	GLenum defaultWrapT = GL_REPEAT;
+
+	GLState()
+	{
+		for (UINT i = 0; i < QD3D12_MaxTextureUnits; ++i)
+		{
+			texture2D[i] = (i == 0);
+			if (texStack[i].empty())
+				texStack[i].push_back(Mat4::Identity());
+			texEnvMode[i] = GL_MODULATE;
+			texCombineRGB[i] = GL_MODULATE;
+			texCombineAlpha[i] = GL_MODULATE;
+			texSource0RGB[i] = GL_TEXTURE;
+			texSource1RGB[i] = GL_PREVIOUS_ARB;
+			texSource0Alpha[i] = GL_TEXTURE;
+			texSource1Alpha[i] = GL_PREVIOUS_ARB;
+			texOperand0RGB[i] = GL_SRC_COLOR;
+			texOperand1RGB[i] = GL_SRC_COLOR;
+			texOperand0Alpha[i] = GL_SRC_ALPHA;
+			texOperand1Alpha[i] = GL_SRC_ALPHA;
+			texRGBScale[i] = 1.0f;
+			texAlphaScale[i] = 1.0f;
+			texEnvColor[i][0] = 0.0f;
+			texEnvColor[i][1] = 0.0f;
+			texEnvColor[i][2] = 0.0f;
+			texEnvColor[i][3] = 0.0f;
+		}
+	}
 };
 
 static GLState g_gl;
@@ -741,6 +926,8 @@ void QD3D12_SetCurrentWindow(struct QD3D12Window* window) {
 	}
 
 	g_currentWindow = window;
+	if (window && window->hdc)
+		g_qd3d12CurrentDC = window->hdc;
 }
 
 static GLuint g_lightingTextureId = 0;
@@ -1006,6 +1193,15 @@ cbuffer DrawCB : register(b0)
     float2 gJitterPixels;
     float2 gPrevJitterPixels;
     float4 gMotionPad;
+
+    float4 gTexComb0RGB;
+    float4 gTexComb0Alpha;
+    float4 gTexComb0Operand;
+    float4 gTexEnvColor0;
+    float4 gTexComb1RGB;
+    float4 gTexComb1Alpha;
+    float4 gTexComb1Operand;
+    float4 gTexEnvColor1;
 };
 
 Texture2D gTex0 : register(t0);
@@ -1045,30 +1241,93 @@ struct PSOut
     float4 velocity : SV_Target3;
 };
 
-float4 ApplyTexEnv(float4 currentColor, float4 texel, float mode)
+float4 QD3D12_GetTexEnvSource(float source, float4 texel, float4 primary, float4 previous, float4 constantColor)
 {
-    if (mode < 0.5)
+    if (source < 0.5)       return texel;
+    else if (source < 1.5)  return primary;
+    else if (source < 2.5)  return previous;
+    else                    return constantColor;
+}
+
+float3 QD3D12_ApplyRgbOperand(float4 v, float operand)
+{
+    if (operand < 0.5)       return v.rgb;          // SRC_COLOR
+    else if (operand < 1.5)  return float3(1.0, 1.0, 1.0) - v.rgb; // ONE_MINUS_SRC_COLOR
+    else if (operand < 2.5)  return v.aaa;          // SRC_ALPHA
+    else                     return float3(1.0, 1.0, 1.0) - v.aaa; // ONE_MINUS_SRC_ALPHA
+}
+
+float QD3D12_ApplyAlphaOperand(float4 v, float operand)
+{
+    if (operand < 0.5)       return v.a;      // SRC_ALPHA
+    else if (operand < 1.5)  return 1.0 - v.a; // ONE_MINUS_SRC_ALPHA
+    else if (operand < 2.5)  return v.r;      // SRC_COLOR fallback
+    else                     return 1.0 - v.r;
+}
+
+float4 ApplyTexCombine(
+    float4 previous,
+    float4 texel,
+    float4 primary,
+    float mode,
+    float4 rgbDesc,
+    float4 alphaDesc,
+    float4 operandDesc,
+    float4 constantColor)
+{
+    // Packed C++ descriptors:
+    // rgbDesc   = { combineRGB, source0RGB, source1RGB, rgbScale }
+    // alphaDesc = { combineAlpha, source0Alpha, source1Alpha, alphaScale }
+    // operand   = { operand0RGB, operand1RGB, operand0Alpha, operand1Alpha }
+    if (mode < 4.5)
     {
-        return currentColor * texel;
+        if (mode < 0.5)
+            return previous * texel;
+        else if (mode < 1.5)
+            return texel;
+        else if (mode < 2.5)
+        {
+            float3 rgb = lerp(previous.rgb, texel.rgb, texel.a);
+            return float4(rgb, previous.a);
+        }
+        else if (mode < 3.5)
+        {
+            float3 rgb = lerp(previous.rgb, texel.rgb, texel.rgb);
+            return float4(rgb, previous.a * texel.a);
+        }
+        else
+        {
+            return float4(previous.rgb + texel.rgb, previous.a * texel.a);
+        }
     }
-    else if (mode < 1.5)
-    {
-        return texel;
-    }
-    else if (mode < 2.5)
-    {
-        float3 rgb = lerp(currentColor.rgb, texel.rgb, texel.a);
-        return float4(rgb, currentColor.a);
-    }
-    else if (mode < 3.5)
-    {
-        float3 rgb = lerp(currentColor.rgb, texel.rgb, texel.rgb);
-        return float4(rgb, currentColor.a * texel.a);
-    }
-    else
-    {
-        return float4(currentColor.rgb + texel.rgb, currentColor.a * texel.a);
-    }
+
+    float4 s0rgb = QD3D12_GetTexEnvSource(rgbDesc.y, texel, primary, previous, constantColor);
+    float4 s1rgb = QD3D12_GetTexEnvSource(rgbDesc.z, texel, primary, previous, constantColor);
+    float3 a0rgb = QD3D12_ApplyRgbOperand(s0rgb, operandDesc.x);
+    float3 a1rgb = QD3D12_ApplyRgbOperand(s1rgb, operandDesc.y);
+
+    float3 outRgb;
+    if (rgbDesc.x < 1.5)         outRgb = a0rgb;          // REPLACE
+    else if (rgbDesc.x < 2.5)    outRgb = a0rgb * a1rgb;  // MODULATE
+    else if (rgbDesc.x < 3.5)    outRgb = a0rgb + a1rgb;  // ADD
+    else if (rgbDesc.x < 4.5)    outRgb = a0rgb + a1rgb - float3(0.5, 0.5, 0.5); // ADD_SIGNED
+    else                         outRgb = a0rgb * a1rgb;  // fallback
+    outRgb *= max(rgbDesc.w, 1.0);
+
+    float4 s0a = QD3D12_GetTexEnvSource(alphaDesc.y, texel, primary, previous, constantColor);
+    float4 s1a = QD3D12_GetTexEnvSource(alphaDesc.z, texel, primary, previous, constantColor);
+    float a0 = QD3D12_ApplyAlphaOperand(s0a, operandDesc.z);
+    float a1 = QD3D12_ApplyAlphaOperand(s1a, operandDesc.w);
+
+    float outA;
+    if (alphaDesc.x < 1.5)       outA = a0;          // REPLACE
+    else if (alphaDesc.x < 2.5)  outA = a0 * a1;     // MODULATE
+    else if (alphaDesc.x < 3.5)  outA = a0 + a1;     // ADD
+    else if (alphaDesc.x < 4.5)  outA = a0 + a1 - 0.5; // ADD_SIGNED
+    else                         outA = a0 * a1;
+    outA *= max(alphaDesc.w, 1.0);
+
+    return saturate(float4(outRgb, outA));
 }
 
 float TinyNoise(int2 p)
@@ -1130,7 +1389,8 @@ float4 ApplyFog(float4 color, float fogCoord)
 
 float4 BuildTexturedColor(VSOut i)
 {
-    float4 outColor = i.col;
+    float4 primary = i.col;
+    float4 outColor = primary;
 
     float2 uv0 = i.uv0;
     float2 uv1 = i.uv1;
@@ -1142,13 +1402,15 @@ float4 BuildTexturedColor(VSOut i)
     if (gUseTex0 > 0.5)
     {
         float4 tex0 = gTex0.Sample(gSamp0, uv0);
-        outColor = ApplyTexEnv(outColor, tex0, gTexEnvMode0);
+        outColor = ApplyTexCombine(outColor, tex0, primary, gTexEnvMode0,
+                                   gTexComb0RGB, gTexComb0Alpha, gTexComb0Operand, gTexEnvColor0);
     }
 
     if (gUseTex1 > 0.5)
     {
         float4 tex1 = gTex1.Sample(gSamp1, uv1);
-        outColor = outColor * tex1;
+        outColor = ApplyTexCombine(outColor, tex1, primary, gTexEnvMode1,
+                                   gTexComb1RGB, gTexComb1Alpha, gTexComb1Operand, gTexEnvColor1);
     }
 
     outColor.xyz = ApplySoftwareRendererLook(outColor.xyz);
@@ -1297,9 +1559,6 @@ float PSDepthCopy(VSOut i) : SV_Depth
 }
 )HLSL";
 
-static HDC g_qd3d12CurrentDC = nullptr;
-static QD3D12_HGLRC g_qd3d12CurrentRC = nullptr;
-
 static size_t QD3D12_TypeSize(GLenum type) {
 	switch (type) {
 	case GL_BYTE: return sizeof(GLbyte);
@@ -1338,6 +1597,8 @@ static void QD3D12_FetchArrayVertex(GLint idx, GLVertex& out)
 	out.r = 1.0f; out.g = 1.0f; out.b = 1.0f; out.a = 1.0f;
 	out.u0 = 0.0f; out.v0 = 0.0f;
 	out.u1 = 0.0f; out.v1 = 0.0f;
+	out.tx = 1.0f; out.ty = 0.0f; out.tz = 0.0f;
+	out.bx = 0.0f; out.by = 1.0f; out.bz = 0.0f;
 
 	//
 	// Position
@@ -1408,6 +1669,78 @@ static void QD3D12_FetchArrayVertex(GLint idx, GLVertex& out)
 			out.nx = QD3D12_ReadScalarFast(p + 0 * typeSize, na.type);
 			out.ny = QD3D12_ReadScalarFast(p + 1 * typeSize, na.type);
 			out.nz = QD3D12_ReadScalarFast(p + 2 * typeSize, na.type);
+			break;
+		}
+	}
+
+	//
+	// Tangent
+	//
+	const auto& ta = g_gl.tangentArray;
+	if (ta.enabled && ta.ptr)
+	{
+		const size_t typeSize = (size_t)QD3D12_TypeSize(ta.type);
+		const size_t stride = ta.stride ? (size_t)ta.stride : (3 * typeSize);
+		const uint8_t* p = ta.ptr + stride * (size_t)idx;
+
+		switch (ta.type)
+		{
+		case GL_FLOAT:
+		{
+			const float* f = (const float*)p;
+			out.tx = f[0];
+			out.ty = f[1];
+			out.tz = f[2];
+			break;
+		}
+		case GL_DOUBLE:
+		{
+			const double* f = (const double*)p;
+			out.tx = (float)f[0];
+			out.ty = (float)f[1];
+			out.tz = (float)f[2];
+			break;
+		}
+		default:
+			out.tx = QD3D12_ReadScalarFast(p + 0 * typeSize, ta.type);
+			out.ty = QD3D12_ReadScalarFast(p + 1 * typeSize, ta.type);
+			out.tz = QD3D12_ReadScalarFast(p + 2 * typeSize, ta.type);
+			break;
+		}
+	}
+
+	//
+	// Bitangent
+	//
+	const auto& ba = g_gl.bitangentArray;
+	if (ba.enabled && ba.ptr)
+	{
+		const size_t typeSize = (size_t)QD3D12_TypeSize(ba.type);
+		const size_t stride = ba.stride ? (size_t)ba.stride : (3 * typeSize);
+		const uint8_t* p = ba.ptr + stride * (size_t)idx;
+
+		switch (ba.type)
+		{
+		case GL_FLOAT:
+		{
+			const float* f = (const float*)p;
+			out.bx = f[0];
+			out.by = f[1];
+			out.bz = f[2];
+			break;
+		}
+		case GL_DOUBLE:
+		{
+			const double* f = (const double*)p;
+			out.bx = (float)f[0];
+			out.by = (float)f[1];
+			out.bz = (float)f[2];
+			break;
+		}
+		default:
+			out.bx = QD3D12_ReadScalarFast(p + 0 * typeSize, ba.type);
+			out.by = QD3D12_ReadScalarFast(p + 1 * typeSize, ba.type);
+			out.bz = QD3D12_ReadScalarFast(p + 2 * typeSize, ba.type);
 			break;
 		}
 	}
@@ -1554,10 +1887,64 @@ static D3D12_PRIMITIVE_TOPOLOGY GetDrawTopology(GLenum originalMode)
 
 static Mat4 QD3D12_GetPreviousMVPForObject(GLuint objectId, const Mat4& currentMvp);
 
+
+static float MapTexCombineMode(GLenum mode);
+static float MapTexCombineSource(GLenum source);
+static float MapTexCombineOperandRGB(GLenum operand);
+static float MapTexCombineOperandAlpha(GLenum operand);
+
+static UINT8 QD3D12_CurrentColorWriteMask()
+{
+	UINT8 mask = 0;
+	if (g_gl.colorMaskR) mask |= D3D12_COLOR_WRITE_ENABLE_RED;
+	if (g_gl.colorMaskG) mask |= D3D12_COLOR_WRITE_ENABLE_GREEN;
+	if (g_gl.colorMaskB) mask |= D3D12_COLOR_WRITE_ENABLE_BLUE;
+	if (g_gl.colorMaskA) mask |= D3D12_COLOR_WRITE_ENABLE_ALPHA;
+	return mask;
+}
+
+static UINT8 QD3D12_ClampStencilMask(GLuint mask)
+{
+	return (UINT8)(mask & 0xFFu);
+}
+
+static UINT8 QD3D12_ClampStencilRef(GLint ref)
+{
+	return (UINT8)(ClampValue<GLint>(ref, 0, 255) & 0xFF);
+}
+
+static void QD3D12_FillTexCombineKey(BatchKey& key, UINT unit)
+{
+	float* rgb = (unit == 0) ? key.texComb0RGB : key.texComb1RGB;
+	float* alpha = (unit == 0) ? key.texComb0Alpha : key.texComb1Alpha;
+	float* operand = (unit == 0) ? key.texComb0Operand : key.texComb1Operand;
+	float* color = (unit == 0) ? key.texEnvColor0 : key.texEnvColor1;
+
+	rgb[0] = MapTexCombineMode(g_gl.texCombineRGB[unit]);
+	rgb[1] = MapTexCombineSource(g_gl.texSource0RGB[unit]);
+	rgb[2] = MapTexCombineSource(g_gl.texSource1RGB[unit]);
+	rgb[3] = g_gl.texRGBScale[unit];
+
+	alpha[0] = MapTexCombineMode(g_gl.texCombineAlpha[unit]);
+	alpha[1] = MapTexCombineSource(g_gl.texSource0Alpha[unit]);
+	alpha[2] = MapTexCombineSource(g_gl.texSource1Alpha[unit]);
+	alpha[3] = g_gl.texAlphaScale[unit];
+
+	operand[0] = MapTexCombineOperandRGB(g_gl.texOperand0RGB[unit]);
+	operand[1] = MapTexCombineOperandRGB(g_gl.texOperand1RGB[unit]);
+	operand[2] = MapTexCombineOperandAlpha(g_gl.texOperand0Alpha[unit]);
+	operand[3] = MapTexCombineOperandAlpha(g_gl.texOperand1Alpha[unit]);
+
+	color[0] = g_gl.texEnvColor[unit][0];
+	color[1] = g_gl.texEnvColor[unit][1];
+	color[2] = g_gl.texEnvColor[unit][2];
+	color[3] = g_gl.texEnvColor[unit][3];
+}
+
 #ifdef _DEBUG
 #pragma optimize off
 #endif
-static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource* tex0, const TextureResource* tex1)
+static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource* tex0, const TextureResource* tex1, TextureResource* const* allTextures)
 {
 	const bool useTex0 = g_gl.texture2D[0];
 	const bool useTex1 = g_gl.texture2D[1];
@@ -1567,6 +1954,23 @@ static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource*
 	key.topology = GetDrawTopology(originalMode);
 	key.tex0SrvIndex = tex0 ? tex0->srvIndex : 0;
 	key.tex1SrvIndex = tex1 ? tex1->srvIndex : 0;
+	for (UINT i = 0; i < QD3D12_MaxTextureUnits; ++i)
+		key.textureSrvIndex[i] = (allTextures && allTextures[i]) ? allTextures[i]->srvIndex : 0;
+
+	key.useARBPrograms = QD3D12ARB_IsActive();
+	if (key.useARBPrograms)
+	{
+		key.arbVertexProgram = QD3D12ARB_GetBoundVertexProgram();
+		key.arbFragmentProgram = QD3D12ARB_GetBoundFragmentProgram();
+		key.arbVertexRevision = QD3D12ARB_GetBoundVertexRevision();
+		key.arbFragmentRevision = QD3D12ARB_GetBoundFragmentRevision();
+		key.arbVertexBlob = QD3D12ARB_GetVertexShaderBlob();
+		key.arbFragmentBlob = QD3D12ARB_GetFragmentShaderBlob();
+		QD3D12ARB_FillDrawConstantArrays(&key.arbConstants);
+		if (!key.arbVertexBlob || !key.arbFragmentBlob)
+			key.useARBPrograms = false;
+	}
+
 	key.alphaRef = g_gl.alphaRef;
 	key.useTex0 = useTex0 ? 1.0f : 0.0f;
 	key.useTex1 = useTex1 ? 1.0f : 0.0f;
@@ -1575,6 +1979,27 @@ static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource*
 	key.tex1IsLightmap = useTex1 ? 1.0f : 0.0f;
 	key.texEnvMode0 = MapTexEnvMode(g_gl.texEnvMode[0]);
 	key.texEnvMode1 = MapTexEnvMode(g_gl.texEnvMode[1]);
+	QD3D12_FillTexCombineKey(key, 0);
+	QD3D12_FillTexCombineKey(key, 1);
+	key.colorWriteMask = QD3D12_CurrentColorWriteMask();
+	key.cullFaceEnabled = g_gl.cullFace;
+	key.cullMode = g_gl.cullMode;
+	key.frontFace = g_gl.frontFace;
+	key.stencilTest = g_gl.stencilTest;
+	key.stencilReadMask = QD3D12_ClampStencilMask(g_gl.stencilFrontFuncMask & g_gl.stencilBackFuncMask);
+	key.stencilWriteMask = QD3D12_ClampStencilMask(g_gl.stencilFrontMask | g_gl.stencilBackMask);
+	key.stencilRef = QD3D12_ClampStencilRef(g_gl.stencilFrontRef);
+	key.stencilFrontFunc = g_gl.stencilFrontFunc;
+	key.stencilFrontSFail = g_gl.stencilFrontSFail;
+	key.stencilFrontDPFail = g_gl.stencilFrontDPFail;
+	key.stencilFrontDPPass = g_gl.stencilFrontDPPass;
+	key.stencilBackFunc = g_gl.stencilBackFunc;
+	key.stencilBackSFail = g_gl.stencilBackSFail;
+	key.stencilBackDPFail = g_gl.stencilBackDPFail;
+	key.stencilBackDPPass = g_gl.stencilBackDPPass;
+	key.depthBoundsTest = g_gl.depthBoundsTest;
+	key.depthBoundsMin = (float)g_gl.depthBoundsMin;
+	key.depthBoundsMax = (float)g_gl.depthBoundsMax;
 	key.blendSrc = g_gl.blendSrc;
 	key.blendDst = g_gl.blendDst;
 	key.depthTest = g_gl.depthTest;
@@ -1714,6 +2139,65 @@ static DXGI_FORMAT MapTextureFormat(GLenum format)
 	}
 }
 
+
+static float MapTexCombineMode(GLenum mode)
+{
+	switch (mode)
+	{
+	case GL_REPLACE: return 1.0f;
+	case GL_MODULATE: return 2.0f;
+#ifdef GL_ADD
+	case GL_ADD: return 3.0f;
+#endif
+#ifdef GL_ADD_SIGNED_ARB
+	case GL_ADD_SIGNED_ARB: return 4.0f;
+#endif
+	default: return 2.0f;
+	}
+}
+
+static float MapTexCombineSource(GLenum source)
+{
+	switch (source)
+	{
+	case GL_TEXTURE: return 0.0f;
+#ifdef GL_PRIMARY_COLOR_ARB
+	case GL_PRIMARY_COLOR_ARB: return 1.0f;
+#endif
+#ifdef GL_PREVIOUS_ARB
+	case GL_PREVIOUS_ARB: return 2.0f;
+#endif
+#ifdef GL_CONSTANT_ARB
+	case GL_CONSTANT_ARB: return 3.0f;
+#endif
+	default: return 0.0f;
+	}
+}
+
+static float MapTexCombineOperandRGB(GLenum operand)
+{
+	switch (operand)
+	{
+	case GL_SRC_COLOR: return 0.0f;
+	case GL_ONE_MINUS_SRC_COLOR: return 1.0f;
+	case GL_SRC_ALPHA: return 2.0f;
+	case GL_ONE_MINUS_SRC_ALPHA: return 3.0f;
+	default: return 0.0f;
+	}
+}
+
+static float MapTexCombineOperandAlpha(GLenum operand)
+{
+	switch (operand)
+	{
+	case GL_SRC_ALPHA: return 0.0f;
+	case GL_ONE_MINUS_SRC_ALPHA: return 1.0f;
+	case GL_SRC_COLOR: return 2.0f;
+	case GL_ONE_MINUS_SRC_COLOR: return 3.0f;
+	default: return 0.0f;
+	}
+}
+
 static D3D12_BLEND MapBlendAlpha(GLenum v) {
 	switch (v) {
 	case GL_ZERO:                  return D3D12_BLEND_ZERO;
@@ -1770,6 +2254,54 @@ static D3D12_COMPARISON_FUNC MapCompare(GLenum f)
 	case GL_ALWAYS: return D3D12_COMPARISON_FUNC_ALWAYS;
 	default: return D3D12_COMPARISON_FUNC_ALWAYS;
 	}
+}
+
+
+static D3D12_CULL_MODE MapCull(GLenum m);
+
+static D3D12_STENCIL_OP MapStencilOp(GLenum op)
+{
+	switch (op)
+	{
+	case GL_KEEP: return D3D12_STENCIL_OP_KEEP;
+	case GL_ZERO: return D3D12_STENCIL_OP_ZERO;
+	case GL_REPLACE: return D3D12_STENCIL_OP_REPLACE;
+	case GL_INCR: return D3D12_STENCIL_OP_INCR_SAT;
+	case GL_DECR: return D3D12_STENCIL_OP_DECR_SAT;
+#ifdef GL_INCR_WRAP
+	case GL_INCR_WRAP: return D3D12_STENCIL_OP_INCR;
+#endif
+#ifdef GL_DECR_WRAP
+	case GL_DECR_WRAP: return D3D12_STENCIL_OP_DECR;
+#endif
+	case GL_INVERT: return D3D12_STENCIL_OP_INVERT;
+	default: return D3D12_STENCIL_OP_KEEP;
+	}
+}
+
+static D3D12_DEPTH_STENCILOP_DESC BuildStencilFaceDesc(GLenum func, GLenum sfail, GLenum dpfail, GLenum dppass)
+{
+	D3D12_DEPTH_STENCILOP_DESC d{};
+	d.StencilFailOp = MapStencilOp(sfail);
+	d.StencilDepthFailOp = MapStencilOp(dpfail);
+	d.StencilPassOp = MapStencilOp(dppass);
+	d.StencilFunc = MapCompare(func);
+	return d;
+}
+
+static void ApplyRasterDepthStencilState(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, const BatchKey& key)
+{
+	d.RasterizerState.CullMode = key.cullFaceEnabled ? MapCull(key.cullMode) : D3D12_CULL_MODE_NONE;
+	d.RasterizerState.FrontCounterClockwise = (key.frontFace == GL_CCW) ? TRUE : FALSE;
+
+	d.DepthStencilState.DepthEnable = key.depthTest ? TRUE : FALSE;
+	d.DepthStencilState.DepthWriteMask = key.depthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+	d.DepthStencilState.DepthFunc = MapCompare(key.depthFunc);
+	d.DepthStencilState.StencilEnable = key.stencilTest ? TRUE : FALSE;
+	d.DepthStencilState.StencilReadMask = key.stencilReadMask;
+	d.DepthStencilState.StencilWriteMask = key.stencilWriteMask;
+	d.DepthStencilState.FrontFace = BuildStencilFaceDesc(key.stencilFrontFunc, key.stencilFrontSFail, key.stencilFrontDPFail, key.stencilFrontDPPass);
+	d.DepthStencilState.BackFace = BuildStencilFaceDesc(key.stencilBackFunc, key.stencilBackSFail, key.stencilBackDPFail, key.stencilBackDPPass);
 }
 
 static D3D12_CULL_MODE MapCull(GLenum m)
@@ -2259,8 +2791,8 @@ static void QD3D12_RunUpscalerOrBlit(QD3D12Window& w)
 	if (!cl)
 		return;
 
-	const bool haveTemporalCameraInputs = g_gl.cameraState.valid;
-	const bool useLightingUpscaleInput = QD3D12_UseLightingTextureAsUpscaleInput(w);
+	const bool haveTemporalCameraInputs = (!w.isPbuffer) && g_gl.cameraState.valid;
+	const bool useLightingUpscaleInput = (!w.isPbuffer) && QD3D12_UseLightingTextureAsUpscaleInput(w);
 
 	ID3D12Resource* upscaleInputResource = w.sceneColorBuffers[w.frameIndex].Get();
 	D3D12_GPU_DESCRIPTOR_HANDLE upscaleInputSrv = w.sceneColorSrvGpu[w.frameIndex];
@@ -2558,12 +3090,14 @@ static void QD3D12_CreateRTVsForWindow(QD3D12Window& w)
 		D3D12_RESOURCE_STATES& outState,
 		DXGI_FORMAT format,
 		const float clearColor[4],
-		bool useOptimizedClear)
+		bool useOptimizedClear,
+		UINT texWidth,
+		UINT texHeight)
 		{
 			D3D12_RESOURCE_DESC rd{};
 			rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-			rd.Width = w.renderWidth;
-			rd.Height = w.renderHeight;
+			rd.Width = texWidth;
+			rd.Height = texHeight;
 			rd.DepthOrArraySize = 1;
 			rd.MipLevels = 1;
 			rd.Format = format;
@@ -2605,23 +3139,33 @@ static void QD3D12_CreateRTVsForWindow(QD3D12Window& w)
 	const float velocityClear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-		CreateRenderTexture(w.sceneColorBuffers[i], w.sceneColorState[i], QD3D12_SceneColorFormat, colorClear, false);
+		CreateRenderTexture(w.sceneColorBuffers[i], w.sceneColorState[i], QD3D12_SceneColorFormat, colorClear, false, w.renderWidth, w.renderHeight);
 
 	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-		CreateRenderTexture(w.normalBuffers[i], w.normalBufferState[i], DXGI_FORMAT_R16G16B16A16_FLOAT, normalClear, true);
+		CreateRenderTexture(w.normalBuffers[i], w.normalBufferState[i], DXGI_FORMAT_R16G16B16A16_FLOAT, normalClear, true, w.renderWidth, w.renderHeight);
 
 	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-		CreateRenderTexture(w.positionBuffers[i], w.positionBufferState[i], DXGI_FORMAT_R16G16B16A16_FLOAT, positionClear, true);
+		CreateRenderTexture(w.positionBuffers[i], w.positionBufferState[i], DXGI_FORMAT_R16G16B16A16_FLOAT, positionClear, true, w.renderWidth, w.renderHeight);
 
 	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
-		CreateRenderTexture(w.velocityBuffers[i], w.velocityBufferState[i], QD3D12_VelocityFormat, velocityClear, true);
+		CreateRenderTexture(w.velocityBuffers[i], w.velocityBufferState[i], QD3D12_VelocityFormat, velocityClear, true, w.renderWidth, w.renderHeight);
 
 	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
 	{
-		QD3D12_CHECK(w.swapChain->GetBuffer(i, IID_PPV_ARGS(&w.backBuffers[i])));
-		g_gl.device->CreateRenderTargetView(w.backBuffers[i].Get(), nullptr, h);
-		w.backBufferState[i] = D3D12_RESOURCE_STATE_PRESENT;
-		h.ptr += w.rtvStride;
+		if (w.swapChain)
+		{
+			QD3D12_CHECK(w.swapChain->GetBuffer(i, IID_PPV_ARGS(&w.backBuffers[i])));
+			g_gl.device->CreateRenderTargetView(w.backBuffers[i].Get(), nullptr, h);
+			w.backBufferState[i] = D3D12_RESOURCE_STATE_PRESENT;
+			h.ptr += w.rtvStride;
+		}
+		else
+		{
+			// Offscreen pbuffer backbuffers are ordinary render-target textures.
+			// CreateRenderTexture leaves the tracked state as RENDER_TARGET; EndFrame
+			// will transition them to PRESENT/COMMON after the resolve/blit.
+			CreateRenderTexture(w.backBuffers[i], w.backBufferState[i], QD3D12_SceneColorFormat, colorClear, false, w.width, w.height);
+		}
 	}
 
 	auto CreateTextureSrv = [&](ID3D12Resource* res, DXGI_FORMAT format, UINT& srvIndex,
@@ -2683,6 +3227,7 @@ void QD3D12_CreateDSVForWindow(QD3D12Window& w)
 			D3D12_CLEAR_VALUE clear{};
 			clear.Format = QD3D12_DepthDsvFormat;
 			clear.DepthStencil.Depth = 1.0f;
+			clear.DepthStencil.Stencil = 0;
 
 			D3D12_HEAP_PROPERTIES hp{};
 			hp.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -2870,55 +3415,45 @@ static void QD3D12_CreatePostRootSignature()
 
 static void QD3D12_CreateRootSignature()
 {
-	D3D12_DESCRIPTOR_RANGE range0{};
-	range0.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-	range0.NumDescriptors = 1;
-	range0.BaseShaderRegister = 0;
-	range0.RegisterSpace = 0;
-	range0.OffsetInDescriptorsFromTableStart = 0;
+	D3D12_DESCRIPTOR_RANGE ranges[QD3D12_MaxTextureUnits] = {};
+	D3D12_ROOT_PARAMETER params[1 + QD3D12_MaxTextureUnits] = {};
 
-	D3D12_DESCRIPTOR_RANGE range1{};
-	range1.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-	range1.NumDescriptors = 1;
-	range1.BaseShaderRegister = 1;
-	range1.RegisterSpace = 0;
-	range1.OffsetInDescriptorsFromTableStart = 0;
-
-	D3D12_ROOT_PARAMETER params[3] = {};
 	params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	params[0].Descriptor.ShaderRegister = 0;
 	params[0].Descriptor.RegisterSpace = 0;
 	params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-	params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-	params[1].DescriptorTable.NumDescriptorRanges = 1;
-	params[1].DescriptorTable.pDescriptorRanges = &range0;
-	params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	for (UINT i = 0; i < QD3D12_MaxTextureUnits; ++i)
+	{
+		ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		ranges[i].NumDescriptors = 1;
+		ranges[i].BaseShaderRegister = i;
+		ranges[i].RegisterSpace = 0;
+		ranges[i].OffsetInDescriptorsFromTableStart = 0;
 
-	params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-	params[2].DescriptorTable.NumDescriptorRanges = 1;
-	params[2].DescriptorTable.pDescriptorRanges = &range1;
-	params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		params[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		params[1 + i].DescriptorTable.NumDescriptorRanges = 1;
+		params[1 + i].DescriptorTable.pDescriptorRanges = &ranges[i];
+		params[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	}
 
-	D3D12_STATIC_SAMPLER_DESC samps[2] = {};
-
-	samps[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-	samps[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-	samps[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-	samps[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-	samps[0].ShaderRegister = 0;
-	samps[0].RegisterSpace = 0;
-	samps[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	samps[0].MaxLOD = D3D12_FLOAT32_MAX;
-
-	samps[1] = samps[0];
-	samps[1].ShaderRegister = 1;
-	samps[1].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	D3D12_STATIC_SAMPLER_DESC samps[QD3D12_MaxTextureUnits] = {};
+	for (UINT i = 0; i < QD3D12_MaxTextureUnits; ++i)
+	{
+		samps[i].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+		samps[i].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+		samps[i].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+		samps[i].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+		samps[i].ShaderRegister = i;
+		samps[i].RegisterSpace = 0;
+		samps[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		samps[i].MaxLOD = D3D12_FLOAT32_MAX;
+	}
 
 	D3D12_ROOT_SIGNATURE_DESC rsd{};
-	rsd.NumParameters = 3;
+	rsd.NumParameters = _countof(params);
 	rsd.pParameters = params;
-	rsd.NumStaticSamplers = 2;
+	rsd.NumStaticSamplers = _countof(samps);
 	rsd.pStaticSamplers = samps;
 	rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -2954,6 +3489,17 @@ static const D3D12_INPUT_ELEMENT_DESC kGLVertexInputLayout[] =
 	{ "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)offsetof(GLVertex, r),  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 };
 
+static const D3D12_INPUT_ELEMENT_DESC kGLVertexInputLayoutARB[] =
+{
+	{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, (UINT)offsetof(GLVertex, px), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, (UINT)offsetof(GLVertex, nx), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, (UINT)offsetof(GLVertex, u0), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, (UINT)offsetof(GLVertex, u1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)offsetof(GLVertex, r),  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "TANGENT",  0, DXGI_FORMAT_R32G32B32_FLOAT,    0, (UINT)offsetof(GLVertex, tx), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	{ "BINORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, (UINT)offsetof(GLVertex, bx), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+};
+
 static UINT8 BuildColorWriteMask()
 {
 	UINT8 mask = 0;
@@ -2976,11 +3522,7 @@ static D3D12_GRAPHICS_PIPELINE_STATE_DESC BuildPSODesc(
 	PipelineMode mode,
 	ID3DBlob* vs,
 	ID3DBlob* ps,
-	GLenum srcBlendGL,
-	GLenum dstBlendGL,
-	bool depthTest,
-	bool depthWrite,
-	GLenum depthFuncGL,
+	const BatchKey& key,
 	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType,
 	bool nativeColorOnly)
 {
@@ -3008,16 +3550,14 @@ static D3D12_GRAPHICS_PIPELINE_STATE_DESC BuildPSODesc(
 	d.SampleMask = UINT_MAX;
 
 	d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-	d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-	d.RasterizerState.FrontCounterClockwise = FALSE;
 	d.RasterizerState.DepthClipEnable = TRUE;
 
-	d.BlendState.RenderTarget[0].RenderTargetWriteMask = BuildColorWriteMask();
+	d.BlendState.RenderTarget[0].RenderTargetWriteMask = key.colorWriteMask;
 	if (!nativeColorOnly)
 	{
-		d.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-		d.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-		d.BlendState.RenderTarget[3].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		d.BlendState.RenderTarget[1].RenderTargetWriteMask = key.colorWriteMask ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+		d.BlendState.RenderTarget[2].RenderTargetWriteMask = key.colorWriteMask ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+		d.BlendState.RenderTarget[3].RenderTargetWriteMask = key.colorWriteMask ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
 	}
 
 	d.BlendState.AlphaToCoverageEnable = FALSE;
@@ -3041,11 +3581,11 @@ static D3D12_GRAPHICS_PIPELINE_STATE_DESC BuildPSODesc(
 	{
 		auto& rt = d.BlendState.RenderTarget[0];
 		rt.BlendEnable = TRUE;
-		rt.SrcBlend = MapBlend(srcBlendGL);
-		rt.DestBlend = MapBlend(dstBlendGL);
+		rt.SrcBlend = MapBlend(key.blendSrc);
+		rt.DestBlend = MapBlend(key.blendDst);
 		rt.BlendOp = D3D12_BLEND_OP_ADD;
-		rt.SrcBlendAlpha = MapBlendAlpha(srcBlendGL);
-		rt.DestBlendAlpha = MapBlendAlpha(dstBlendGL);
+		rt.SrcBlendAlpha = MapBlendAlpha(key.blendSrc);
+		rt.DestBlendAlpha = MapBlendAlpha(key.blendDst);
 		rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
 
 		if (!nativeColorOnly)
@@ -3059,10 +3599,7 @@ static D3D12_GRAPHICS_PIPELINE_STATE_DESC BuildPSODesc(
 		}
 	}
 
-	d.DepthStencilState.DepthEnable = depthTest ? TRUE : FALSE;
-	d.DepthStencilState.DepthWriteMask = depthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-	d.DepthStencilState.DepthFunc = MapCompare(depthFuncGL);
-	d.DepthStencilState.StencilEnable = FALSE;
+	ApplyRasterDepthStencilState(d, key);
 
 	return d;
 }
@@ -3126,47 +3663,58 @@ static void QD3D12_CreatePSOs()
 }
 
 static uint64_t MakePSOKey(
-	PipelineMode mode,
-	GLenum src,
-	GLenum dst,
-	bool depthTest,
-	bool depthWrite,
-	GLenum depthFunc,
+	const BatchKey& key,
 	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType,
 	bool nativeColorOnly)
 {
-	return
-		(uint64_t(uint32_t(mode)) << 56ull) |
-		(uint64_t(uint32_t(src) & 0xFF) << 48ull) |
-		(uint64_t(uint32_t(dst) & 0xFF) << 40ull) |
-		(uint64_t(depthTest ? 1 : 0) << 39ull) |
-		(uint64_t(depthWrite ? 1 : 0) << 38ull) |
-		(uint64_t(uint32_t(topoType) & 0x3) << 36ull) |
-		(uint64_t(nativeColorOnly ? 1 : 0) << 35ull) |
-		(uint64_t(uint32_t(depthFunc) & 0xFFFF) << 16ull);
+	uint64_t h = 1469598103934665603ull;
+	auto mix = [&](uint64_t v)
+		{
+			h ^= v;
+			h *= 1099511628211ull;
+		};
+
+	mix(uint32_t(key.pipeline));
+	mix(uint32_t(key.blendSrc));
+	mix(uint32_t(key.blendDst));
+	mix(key.depthTest ? 1ull : 0ull);
+	mix(key.depthWrite ? 1ull : 0ull);
+	mix(uint32_t(key.depthFunc));
+	mix(uint32_t(topoType));
+	mix(nativeColorOnly ? 1ull : 0ull);
+	mix(uint32_t(key.colorWriteMask));
+	mix(key.cullFaceEnabled ? 1ull : 0ull);
+	mix(uint32_t(key.cullMode));
+	mix(uint32_t(key.frontFace));
+	mix(key.stencilTest ? 1ull : 0ull);
+	mix(uint32_t(key.stencilReadMask));
+	mix(uint32_t(key.stencilWriteMask));
+	mix(uint32_t(key.stencilFrontFunc));
+	mix(uint32_t(key.stencilFrontSFail));
+	mix(uint32_t(key.stencilFrontDPFail));
+	mix(uint32_t(key.stencilFrontDPPass));
+	mix(uint32_t(key.stencilBackFunc));
+	mix(uint32_t(key.stencilBackSFail));
+	mix(uint32_t(key.stencilBackDPFail));
+	mix(uint32_t(key.stencilBackDPPass));
+	return h;
 }
 
 static std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> g_psoCache;
 
 static ID3D12PipelineState* QD3D12_GetPSO(
-	PipelineMode mode,
-	GLenum srcBlendGL,
-	GLenum dstBlendGL,
-	bool depthTest,
-	bool depthWrite,
-	GLenum depthFuncGL,
+	const BatchKey& key,
 	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType,
 	bool nativeColorOnly)
 {
-	const uint64_t key = MakePSOKey(
-		mode, srcBlendGL, dstBlendGL, depthTest, depthWrite, depthFuncGL, topoType, nativeColorOnly);
+	const uint64_t psoKey = MakePSOKey(key, topoType, nativeColorOnly);
 
-	auto it = g_psoCache.find(key);
+	auto it = g_psoCache.find(psoKey);
 	if (it != g_psoCache.end())
 		return it->second.Get();
 
 	ID3DBlob* psBlob = nullptr;
-	switch (mode)
+	switch (key.pipeline)
 	{
 	case PIPE_ALPHA_TEST_TEX:
 		psBlob = nativeColorOnly ? g_gl.psAlphaColorOnlyBlob.Get() : g_gl.psAlphaBlob.Get();
@@ -3183,14 +3731,10 @@ static ID3D12PipelineState* QD3D12_GetPSO(
 	}
 
 	auto desc = BuildPSODesc(
-		mode,
+		key.pipeline,
 		g_gl.vsMainBlob.Get(),
 		psBlob,
-		srcBlendGL,
-		dstBlendGL,
-		depthTest,
-		depthWrite,
-		depthFuncGL,
+		key,
 		topoType,
 		nativeColorOnly);
 
@@ -3198,9 +3742,155 @@ static ID3D12PipelineState* QD3D12_GetPSO(
 	QD3D12_CHECK(g_gl.device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&newPSO)));
 
 	ID3D12PipelineState* out = newPSO.Get();
-	g_psoCache.emplace(key, std::move(newPSO));
+	g_psoCache.emplace(psoKey, std::move(newPSO));
 	return out;
 }
+
+static D3D12_GRAPHICS_PIPELINE_STATE_DESC BuildARBPSODesc(
+	ID3DBlob* vs,
+	ID3DBlob* ps,
+	const BatchKey& key,
+	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType,
+	bool nativeColorOnly)
+{
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+	d.pRootSignature = g_gl.rootSig.Get();
+	d.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+	d.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+
+	d.InputLayout.pInputElementDescs = kGLVertexInputLayoutARB;
+	d.InputLayout.NumElements = _countof(kGLVertexInputLayoutARB);
+	d.PrimitiveTopologyType = topoType;
+
+	d.NumRenderTargets = nativeColorOnly ? 1u : 4u;
+	d.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	if (!nativeColorOnly)
+	{
+		d.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		d.RTVFormats[2] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		d.RTVFormats[3] = QD3D12_VelocityFormat;
+	}
+
+	d.DSVFormat = QD3D12_DepthDsvFormat;
+	d.SampleDesc.Count = 1;
+	d.SampleMask = UINT_MAX;
+
+	d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+	d.RasterizerState.DepthClipEnable = TRUE;
+
+	d.BlendState.AlphaToCoverageEnable = FALSE;
+	d.BlendState.IndependentBlendEnable = nativeColorOnly ? FALSE : TRUE;
+
+	for (int i = 0; i < 4; ++i)
+	{
+		auto& rt = d.BlendState.RenderTarget[i];
+		rt.BlendEnable = FALSE;
+		rt.LogicOpEnable = FALSE;
+		rt.SrcBlend = D3D12_BLEND_ONE;
+		rt.DestBlend = D3D12_BLEND_ZERO;
+		rt.BlendOp = D3D12_BLEND_OP_ADD;
+		rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+		rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+		rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+		rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+		rt.RenderTargetWriteMask = (i == 0) ? key.colorWriteMask : 0;
+	}
+
+	if (key.pipeline == PIPE_BLEND_TEX || key.pipeline == PIPE_BLEND_UNTEX)
+	{
+		auto& rt = d.BlendState.RenderTarget[0];
+		rt.BlendEnable = TRUE;
+		rt.SrcBlend = MapBlend(key.blendSrc);
+		rt.DestBlend = MapBlend(key.blendDst);
+		rt.BlendOp = D3D12_BLEND_OP_ADD;
+		rt.SrcBlendAlpha = MapBlendAlpha(key.blendSrc);
+		rt.DestBlendAlpha = MapBlendAlpha(key.blendDst);
+		rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+	}
+
+	ApplyRasterDepthStencilState(d, key);
+
+	return d;
+}
+
+static uint64_t MakeARBPSOKey(
+	uint64_t programKey,
+	const BatchKey& key,
+	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType,
+	bool nativeColorOnly)
+{
+	uint64_t h = programKey ? programKey : 1469598103934665603ull;
+	auto mix = [&](uint64_t v)
+		{
+			h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+		};
+
+	mix(uint32_t(key.blendSrc));
+	mix(uint32_t(key.blendDst));
+	mix(key.depthTest ? 1ull : 0ull);
+	mix(key.depthWrite ? 1ull : 0ull);
+	mix(uint32_t(key.depthFunc));
+	mix(uint32_t(topoType));
+	mix(nativeColorOnly ? 1ull : 0ull);
+	mix(uint32_t(key.colorWriteMask));
+	mix(key.cullFaceEnabled ? 1ull : 0ull);
+	mix(uint32_t(key.cullMode));
+	mix(uint32_t(key.frontFace));
+	mix(key.stencilTest ? 1ull : 0ull);
+	mix(uint32_t(key.stencilReadMask));
+	mix(uint32_t(key.stencilWriteMask));
+	mix(uint32_t(key.stencilFrontFunc));
+	mix(uint32_t(key.stencilFrontSFail));
+	mix(uint32_t(key.stencilFrontDPFail));
+	mix(uint32_t(key.stencilFrontDPPass));
+	mix(uint32_t(key.stencilBackFunc));
+	mix(uint32_t(key.stencilBackSFail));
+	mix(uint32_t(key.stencilBackDPFail));
+	mix(uint32_t(key.stencilBackDPPass));
+	return h;
+}
+
+static std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> g_arbPsoCache;
+
+static ID3D12PipelineState* QD3D12_GetARBPSO(
+	const BatchKey& key,
+	D3D12_PRIMITIVE_TOPOLOGY_TYPE topoType,
+	bool nativeColorOnly)
+{
+	if (!key.arbVertexBlob || !key.arbFragmentBlob)
+		return nullptr;
+
+	const uint64_t programKey =
+		(uint64_t(key.arbVertexProgram) << 48ull) ^
+		(uint64_t(key.arbFragmentProgram) << 32ull) ^
+		(uint64_t(key.arbVertexRevision) << 16ull) ^
+		uint64_t(key.arbFragmentRevision);
+
+	const uint64_t psoKey = MakeARBPSOKey(
+		programKey,
+		key,
+		topoType,
+		nativeColorOnly);
+
+	auto it = g_arbPsoCache.find(psoKey);
+	if (it != g_arbPsoCache.end())
+		return it->second.Get();
+
+	auto desc = BuildARBPSODesc(
+		key.arbVertexBlob,
+		key.arbFragmentBlob,
+		key,
+		topoType,
+		nativeColorOnly);
+
+	ComPtr<ID3D12PipelineState> newPSO;
+	QD3D12_CHECK(g_gl.device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&newPSO)));
+
+	ID3D12PipelineState* out = newPSO.Get();
+	g_arbPsoCache.emplace(psoKey, std::move(newPSO));
+	return out;
+}
+
 
 static void QD3D12_CreateWhiteTexture()
 {
@@ -3329,6 +4019,16 @@ static void QD3D12_CreateSurfaceFrameResources(QD3D12Window& surf)
 bool QD3D12_InitForQuakeWindow(struct QD3D12Window* window, HWND hwnd, int width, int height, bool fastPath)
 {
 	window->hwnd = hwnd;
+	window->isPbuffer = false;
+	if (!window->hdc && hwnd)
+	{
+		window->hdc = GetDC(hwnd);
+		window->ownsHdc = (window->hdc != nullptr);
+	}
+	QD3D12_RegisterWindowDC(window);
+	if (!g_qd3d12CurrentRC && window->hdc)
+		g_qd3d12CurrentRC = QD3D12_CreateGLContextHandle(window->hdc, window);
+	g_qd3d12CurrentDC = window->hdc;
 	window->width = (UINT)width;
 	window->height = (UINT)height;
 	QD3D12_SelectRenderResolution(*window, window->width, window->height);
@@ -3372,6 +4072,7 @@ bool QD3D12_InitForQuakeWindow(struct QD3D12Window* window, HWND hwnd, int width
 		QD3D12_UpdateViewportState();
 		QD3D12_CreateWhiteTexture();
 		QD3D12_CreateOcclusionQueryObjects();
+		QD3D12ARB_Init();
 	}
 
 	g_gl.motionHistoryReset = true;
@@ -3401,6 +4102,9 @@ void QD3D12_ShutdownForQuake()
 	if (g_gl.fenceEvent)
 		CloseHandle(g_gl.fenceEvent);
 
+	QD3D12ARB_Shutdown();
+	g_arbPsoCache.clear();
+
 	g_gl = GLState{};
 }
 
@@ -3428,7 +4132,7 @@ void QD3D12_BeginFrame()
 		QD3D12_SubmitOpenFrameNoPresentAndWait();
 	}
 
-	w.frameIndex = w.swapChain->GetCurrentBackBufferIndex();
+	w.frameIndex = w.swapChain ? w.swapChain->GetCurrentBackBufferIndex() : 0;
 	QD3D12_WaitForFrame(w.frameIndex);
 	QD3D12_ResetUploadRing();
 
@@ -3493,7 +4197,8 @@ void QD3D12_EndFrame()
 
 	g_gl.frameOpen = false;
 	g_gl.frameOwner = nullptr;
-	QD3D12_CommitMotionHistoryForFrame();
+	if (!w.isPbuffer)
+		QD3D12_CommitMotionHistoryForFrame();
 
 	g_gl.framePhase = QD3D12_FRAME_LOW_RES;
 	g_gl.sceneResolvedThisFrame = false;
@@ -3504,7 +4209,9 @@ void QD3D12_EndFrame()
 void QD3D12_Present()
 {
 	QD3D12Window& w = *g_currentWindow;
-	QD3D12_CHECK(w.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
+
+	if (w.swapChain)
+		QD3D12_CHECK(w.swapChain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
 
 	FrameResources& fr = w.frames[w.frameIndex];
 	const UINT64 signalValue = g_gl.nextFenceValue++;
@@ -4473,39 +5180,39 @@ static void FlushImmediate(GLenum mode, const GLVertex* src, size_t n)
 
 	QD3D12_EnsureFrameOpen();
 
-	const bool useTex0 = g_gl.texture2D[0];
-	const bool useTex1 = g_gl.texture2D[1];
+	const bool arbProgramsActive = QD3D12ARB_IsActive();
+	const bool useTex0 = arbProgramsActive ? (g_gl.boundTexture[0] != 0) : g_gl.texture2D[0];
+	const bool useTex1 = arbProgramsActive ? (g_gl.boundTexture[1] != 0) : g_gl.texture2D[1];
 
-	TextureResource* tex0 = &g_gl.whiteTexture;
-	TextureResource* tex1 = &g_gl.whiteTexture;
+	TextureResource* boundTextures[QD3D12_MaxTextureUnits] = {};
+	for (UINT unit = 0; unit < QD3D12_MaxTextureUnits; ++unit)
+		boundTextures[unit] = &g_gl.whiteTexture;
 
-	if (useTex0)
+	for (UINT unit = 0; unit < QD3D12_MaxTextureUnits; ++unit)
 	{
-		auto it0 = g_gl.textures.find(g_gl.boundTexture[0]);
-		if (it0 != g_gl.textures.end())
-			tex0 = &it0->second;
+		const bool wantsUnit = arbProgramsActive ? (g_gl.boundTexture[unit] != 0) : (g_gl.texture2D[unit] && unit < 2);
+		if (!wantsUnit)
+			continue;
+
+		auto it = g_gl.textures.find(g_gl.boundTexture[unit]);
+		if (it != g_gl.textures.end())
+			boundTextures[unit] = &it->second;
 	}
 
-	if (useTex1)
+	for (UINT unit = 0; unit < QD3D12_MaxTextureUnits; ++unit)
 	{
-		auto it1 = g_gl.textures.find(g_gl.boundTexture[1]);
-		if (it1 != g_gl.textures.end())
-			tex1 = &it1->second;
+		TextureResource* tex = boundTextures[unit];
+		if (tex && tex != &g_gl.whiteTexture && !tex->gpuValid)
+		{
+			EnsureTextureResource(*tex);
+			UploadTexture(*tex);
+		}
 	}
 
-	if (!tex0->gpuValid && tex0 != &g_gl.whiteTexture)
-	{
-		EnsureTextureResource(*tex0);
-		UploadTexture(*tex0);
-	}
+	TextureResource* tex0 = boundTextures[0];
+	TextureResource* tex1 = boundTextures[1];
 
-	if (!tex1->gpuValid && tex1 != &g_gl.whiteTexture)
-	{
-		EnsureTextureResource(*tex1);
-		UploadTexture(*tex1);
-	}
-
-	BatchKey key = BuildCurrentBatchKey(mode, tex0, tex1);
+	BatchKey key = BuildCurrentBatchKey(mode, tex0, tex1, boundTextures);
 	const size_t markerCursor = g_gl.queryMarkers.size();
 
 	QueuedBatch* batch = nullptr;
@@ -4841,6 +5548,14 @@ static void QD3D12_FlushQueuedBatches()
 		dc->tex1IsLightmap = batch.key.tex1IsLightmap;
 		dc->texEnvMode0 = batch.key.texEnvMode0;
 		dc->texEnvMode1 = batch.key.texEnvMode1;
+		memcpy(dc->texComb0RGB, batch.key.texComb0RGB, sizeof(dc->texComb0RGB));
+		memcpy(dc->texComb0Alpha, batch.key.texComb0Alpha, sizeof(dc->texComb0Alpha));
+		memcpy(dc->texComb0Operand, batch.key.texComb0Operand, sizeof(dc->texComb0Operand));
+		memcpy(dc->texEnvColor0, batch.key.texEnvColor0, sizeof(dc->texEnvColor0));
+		memcpy(dc->texComb1RGB, batch.key.texComb1RGB, sizeof(dc->texComb1RGB));
+		memcpy(dc->texComb1Alpha, batch.key.texComb1Alpha, sizeof(dc->texComb1Alpha));
+		memcpy(dc->texComb1Operand, batch.key.texComb1Operand, sizeof(dc->texComb1Operand));
+		memcpy(dc->texEnvColor1, batch.key.texEnvColor1, sizeof(dc->texEnvColor1));
 
 		dc->fogEnabled = g_gl.fog ? 1.0f : 0.0f;
 
@@ -4870,6 +5585,13 @@ static void QD3D12_FlushQueuedBatches()
 		dc->prevJitterPixels[0] = g_gl.prevJitterX;
 		dc->prevJitterPixels[1] = g_gl.prevJitterY;
 
+		if (batch.key.useARBPrograms)
+		{
+			memcpy(dc->arbEnv, batch.key.arbConstants.env, sizeof(dc->arbEnv));
+			memcpy(dc->arbLocalVP, batch.key.arbConstants.vertexLocal, sizeof(dc->arbLocalVP));
+			memcpy(dc->arbLocalFP, batch.key.arbConstants.fragmentLocal, sizeof(dc->arbLocalFP));
+		}
+
 		D3D12_VERTEX_BUFFER_VIEW vbv{};
 		vbv.BufferLocation = vbAlloc.gpu;
 		vbv.SizeInBytes = (UINT)(count * sizeof(GLVertex));
@@ -4886,35 +5608,15 @@ static void QD3D12_FlushQueuedBatches()
 			dc->PointSize = 1.0f;
 		}
 
-		switch (batch.key.pipeline)
+		if (batch.key.useARBPrograms)
 		{
-		case PIPE_BLEND_TEX:
-		case PIPE_BLEND_UNTEX:
-			pso = QD3D12_GetPSO(
-				batch.key.pipeline,
-				batch.key.blendSrc,
-				batch.key.blendDst,
-				batch.key.depthTest,
-				batch.key.depthWrite,
-				batch.key.depthFunc,
-				topoType,
-				nativeColorOnly);
-			break;
-
-		case PIPE_ALPHA_TEST_TEX:
-		case PIPE_OPAQUE_UNTEX:
-		case PIPE_OPAQUE_TEX:
-		default:
-			pso = QD3D12_GetPSO(
-				batch.key.pipeline,
-				batch.key.blendSrc,
-				batch.key.blendDst,
-				batch.key.depthTest,
-				batch.key.depthWrite,
-				batch.key.depthFunc,
-				topoType,
-				nativeColorOnly);
-			break;
+			pso = QD3D12_GetARBPSO(batch.key, topoType, nativeColorOnly);
+			if (!pso)
+				continue;
+		}
+		else
+		{
+			pso = QD3D12_GetPSO(batch.key, topoType, nativeColorOnly);
 		}
 
 		if (pso != lastPSO)
@@ -4923,29 +5625,47 @@ static void QD3D12_FlushQueuedBatches()
 			lastPSO = pso;
 		}
 
-		D3D12_GPU_DESCRIPTOR_HANDLE tex0Gpu = QD3D12_SrvGpu(batch.key.tex0SrvIndex);
-		D3D12_GPU_DESCRIPTOR_HANDLE tex1Gpu = QD3D12_SrvGpu(batch.key.tex1SrvIndex);
-
-		if (!haveLastTex0 || tex0Gpu.ptr != lastTex0.ptr)
+		if (batch.key.useARBPrograms)
 		{
-			// Don't know if this should be here or not could burry bugs, but rather then crash set to white.
-			if (batch.key.tex0SrvIndex == UINT_MAX)
+			for (UINT unit = 0; unit < QD3D12_MaxTextureUnits; ++unit)
 			{
-				tex0Gpu = QD3D12_SrvGpu(g_gl.whiteTexture.srvIndex);
-			}
-			g_gl.cmdList->SetGraphicsRootDescriptorTable(1, tex0Gpu);
-			lastTex0 = tex0Gpu;
-			haveLastTex0 = true;
-		}
+				UINT srvIndex = batch.key.textureSrvIndex[unit];
+				if (srvIndex == UINT_MAX)
+					srvIndex = g_gl.whiteTexture.srvIndex;
 
-		if (!haveLastTex1 || tex1Gpu.ptr != lastTex1.ptr)
+				g_gl.cmdList->SetGraphicsRootDescriptorTable(1 + unit, QD3D12_SrvGpu(srvIndex));
+			}
+
+			haveLastTex0 = false;
+			haveLastTex1 = false;
+		}
+		else
 		{
-			g_gl.cmdList->SetGraphicsRootDescriptorTable(2, tex1Gpu);
-			lastTex1 = tex1Gpu;
-			haveLastTex1 = true;
+			D3D12_GPU_DESCRIPTOR_HANDLE tex0Gpu = QD3D12_SrvGpu(batch.key.tex0SrvIndex);
+			D3D12_GPU_DESCRIPTOR_HANDLE tex1Gpu = QD3D12_SrvGpu(batch.key.tex1SrvIndex);
+
+			if (!haveLastTex0 || tex0Gpu.ptr != lastTex0.ptr)
+			{
+				// Don't know if this should be here or not could burry bugs, but rather then crash set to white.
+				if (batch.key.tex0SrvIndex == UINT_MAX)
+				{
+					tex0Gpu = QD3D12_SrvGpu(g_gl.whiteTexture.srvIndex);
+				}
+				g_gl.cmdList->SetGraphicsRootDescriptorTable(1, tex0Gpu);
+				lastTex0 = tex0Gpu;
+				haveLastTex0 = true;
+			}
+
+			if (!haveLastTex1 || tex1Gpu.ptr != lastTex1.ptr)
+			{
+				g_gl.cmdList->SetGraphicsRootDescriptorTable(2, tex1Gpu);
+				lastTex1 = tex1Gpu;
+				haveLastTex1 = true;
+			}
 		}
 
 		g_gl.cmdList->SetGraphicsRootConstantBufferView(0, cbAlloc.gpu);
+		g_gl.cmdList->OMSetStencilRef(batch.key.stencilRef);
 
 		if (batch.key.topology != lastTopo)
 		{
@@ -4972,6 +5692,7 @@ const GLubyte* APIENTRY glGetString(GLenum name)
 	case GL_RENDERER: return (const GLubyte*)renderer;
 	case GL_VERSION: return (const GLubyte*)version;
 	case GL_EXTENSIONS: return (const GLubyte*)extensions;
+	case GL_PROGRAM_ERROR_STRING_ARB: return (const GLubyte*)QD3D12ARB_GetProgramErrorString();
 	default: return (const GLubyte*)"";
 	}
 }
@@ -5120,7 +5841,27 @@ void APIENTRY glEnable(GLenum cap)
 	case GL_ALPHA_TEST: g_gl.alphaTest = true; break;
 	case GL_DEPTH_TEST: g_gl.depthTest = true; break;
 	case GL_CULL_FACE: g_gl.cullFace = true; break;
-	case GL_TEXTURE_2D: g_gl.texture2D[g_gl.activeTextureUnit] = true; break;
+	case GL_SCISSOR_TEST: g_gl.scissorTest = true; break;
+	case GL_STENCIL_TEST: g_gl.stencilTest = true; break;
+#ifdef GL_STENCIL_TEST_TWO_SIDE_EXT
+	case GL_STENCIL_TEST_TWO_SIDE_EXT: g_gl.stencilTwoSide = true; g_gl.stencilTest = true; break;
+#endif
+#ifdef GL_DEPTH_BOUNDS_TEST_EXT
+	case GL_DEPTH_BOUNDS_TEST_EXT: g_gl.depthBoundsTest = true; break;
+#endif
+	case GL_VERTEX_PROGRAM_ARB:
+	case GL_FRAGMENT_PROGRAM_ARB:
+		QD3D12ARB_SetEnabled(cap, true);
+		break;
+	case GL_TEXTURE_2D:
+#ifdef GL_TEXTURE_RECTANGLE_ARB
+	case GL_TEXTURE_RECTANGLE_ARB:
+#endif
+#ifdef GL_TEXTURE_CUBE_MAP_EXT
+	case GL_TEXTURE_CUBE_MAP_EXT:
+#endif
+		g_gl.texture2D[g_gl.activeTextureUnit] = true;
+		break;
 	case GL_FOG: g_gl.fog = true; break;
 	default: break;
 	}
@@ -5134,7 +5875,27 @@ void APIENTRY glDisable(GLenum cap)
 	case GL_ALPHA_TEST: g_gl.alphaTest = false; break;
 	case GL_DEPTH_TEST: g_gl.depthTest = false; break;
 	case GL_CULL_FACE: g_gl.cullFace = false; break;
-	case GL_TEXTURE_2D: g_gl.texture2D[g_gl.activeTextureUnit] = false; break;
+	case GL_SCISSOR_TEST: g_gl.scissorTest = false; break;
+	case GL_STENCIL_TEST: g_gl.stencilTest = false; break;
+#ifdef GL_STENCIL_TEST_TWO_SIDE_EXT
+	case GL_STENCIL_TEST_TWO_SIDE_EXT: g_gl.stencilTwoSide = false; break;
+#endif
+#ifdef GL_DEPTH_BOUNDS_TEST_EXT
+	case GL_DEPTH_BOUNDS_TEST_EXT: g_gl.depthBoundsTest = false; break;
+#endif
+	case GL_VERTEX_PROGRAM_ARB:
+	case GL_FRAGMENT_PROGRAM_ARB:
+		QD3D12ARB_SetEnabled(cap, false);
+		break;
+	case GL_TEXTURE_2D:
+#ifdef GL_TEXTURE_RECTANGLE_ARB
+	case GL_TEXTURE_RECTANGLE_ARB:
+#endif
+#ifdef GL_TEXTURE_CUBE_MAP_EXT
+	case GL_TEXTURE_CUBE_MAP_EXT:
+#endif
+		g_gl.texture2D[g_gl.activeTextureUnit] = false;
+		break;
 	case GL_FOG: g_gl.fog = false; break;
 	default: break;
 	}
@@ -5299,6 +6060,16 @@ void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z)
 	v.py = y;
 	v.pz = z;
 
+	v.nx = 0.0f;
+	v.ny = 0.0f;
+	v.nz = 1.0f;
+	v.tx = 1.0f;
+	v.ty = 0.0f;
+	v.tz = 0.0f;
+	v.bx = 0.0f;
+	v.by = 1.0f;
+	v.bz = 0.0f;
+
 	v.u0 = g_gl.curU[0];
 	v.v0 = g_gl.curV[0];
 	v.u1 = g_gl.curU[1];
@@ -5423,7 +6194,57 @@ void APIENTRY glGetIntegerv(GLenum pname, GLint* params)
 	{
 	case GL_MAX_TEXTURES_SGIS:
 	case GL_MAX_ACTIVE_TEXTURES_ARB:
+	case GL_MAX_TEXTURE_IMAGE_UNITS_ARB:
+	case GL_MAX_TEXTURE_COORDS_ARB:
 		*params = (GLint)QD3D12_MaxTextureUnits;
+		break;
+
+	case GL_MAX_PROGRAM_ENV_PARAMETERS_ARB:
+	case GL_MAX_PROGRAM_LOCAL_PARAMETERS_ARB:
+	case GL_MAX_PROGRAM_PARAMETERS_ARB:
+	case GL_MAX_PROGRAM_NATIVE_PARAMETERS_ARB:
+		*params = (GLint)QD3D12_ARB_MAX_PROGRAM_PARAMETERS;
+		break;
+
+	case GL_MAX_VERTEX_ATTRIBS_ARB:
+	case GL_MAX_PROGRAM_ATTRIBS_ARB:
+	case GL_MAX_PROGRAM_NATIVE_ATTRIBS_ARB:
+		*params = (GLint)QD3D12_ARB_MAX_VERTEX_ATTRIBS;
+		break;
+
+	case GL_MAX_PROGRAM_INSTRUCTIONS_ARB:
+	case GL_MAX_PROGRAM_NATIVE_INSTRUCTIONS_ARB:
+		*params = 1024;
+		break;
+
+	case GL_MAX_PROGRAM_TEMPORARIES_ARB:
+	case GL_MAX_PROGRAM_NATIVE_TEMPORARIES_ARB:
+		*params = 64;
+		break;
+
+	case GL_MAX_PROGRAM_ADDRESS_REGISTERS_ARB:
+	case GL_MAX_PROGRAM_NATIVE_ADDRESS_REGISTERS_ARB:
+		*params = 1;
+		break;
+
+	case GL_MAX_PROGRAM_MATRICES_ARB:
+		*params = 8;
+		break;
+
+	case GL_MAX_PROGRAM_MATRIX_STACK_DEPTH_ARB:
+		*params = 4;
+		break;
+
+	case GL_VERTEX_PROGRAM_BINDING_ARB:
+		*params = (GLint)QD3D12ARB_GetBoundVertexProgram();
+		break;
+
+	case GL_FRAGMENT_PROGRAM_BINDING_ARB:
+		*params = (GLint)QD3D12ARB_GetBoundFragmentProgram();
+		break;
+
+	case GL_PROGRAM_ERROR_POSITION_ARB:
+		*params = QD3D12ARB_GetProgramErrorPosition();
 		break;
 
 	case GL_VIEWPORT:
@@ -5431,6 +6252,14 @@ void APIENTRY glGetIntegerv(GLenum pname, GLint* params)
 		params[1] = g_gl.viewportY;
 		params[2] = (GLint)g_gl.viewportW;
 		params[3] = (GLint)g_gl.viewportH;
+		break;
+
+	case GL_DRAW_BUFFER:
+		*params = (GLint)g_gl.drawBuffer;
+		break;
+
+	case GL_READ_BUFFER:
+		*params = (GLint)g_gl.readBuffer;
 		break;
 
 	case GL_FOG_MODE:
@@ -5451,6 +6280,12 @@ void APIENTRY glGetIntegerv(GLenum pname, GLint* params)
 	case GL_CLIENT_ACTIVE_TEXTURE_ARB:
 		*params = (GLint)(GL_TEXTURE0_ARB + g_gl.clientActiveTextureUnit);
 		break;
+
+#ifdef GL_ACTIVE_STENCIL_FACE_EXT
+	case GL_ACTIVE_STENCIL_FACE_EXT:
+		*params = (GLint)g_gl.activeStencilFace;
+		break;
+#endif
 
 	case GL_MAX_TEXTURE_SIZE:
 		*params = 4096;
@@ -5491,6 +6326,12 @@ void APIENTRY glGetFloatv(GLenum pname, GLfloat* params)
 		params[2] = g_gl.fogColor[2];
 		params[3] = g_gl.fogColor[3];
 		break;
+#ifdef GL_DEPTH_BOUNDS_EXT
+	case GL_DEPTH_BOUNDS_EXT:
+		params[0] = (GLfloat)g_gl.depthBoundsMin;
+		params[1] = (GLfloat)g_gl.depthBoundsMax;
+		break;
+#endif
 	case GL_MODELVIEW_MATRIX:
 		memcpy(params, g_gl.modelStack.back().m, sizeof(GLfloat) * 16);
 		break;
@@ -5660,15 +6501,8 @@ void APIENTRY glTexParameteriv(GLenum target, GLenum pname, const GLint* params)
 	glTexParameteri(target, pname, params[0]);
 }
 
-void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param)
+static bool QD3D12_IsValidTexEnvMode(GLenum mode)
 {
-	if (target != GL_TEXTURE_ENV)
-		return;
-
-	if (pname != GL_TEXTURE_ENV_MODE)
-		return;
-
-	GLenum mode = (GLenum)param;
 	switch (mode)
 	{
 	case GL_MODULATE:
@@ -5677,11 +6511,209 @@ void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param)
 #ifdef GL_ADD
 	case GL_ADD:
 #endif
-		g_gl.texEnvMode[g_gl.activeTextureUnit] = mode;
+#ifdef GL_COMBINE_ARB
+	case GL_COMBINE_ARB:
+#endif
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool QD3D12_IsValidTexCombineMode(GLenum mode)
+{
+	switch (mode)
+	{
+	case GL_REPLACE:
+	case GL_MODULATE:
+#ifdef GL_ADD
+	case GL_ADD:
+#endif
+#ifdef GL_ADD_SIGNED_ARB
+	case GL_ADD_SIGNED_ARB:
+#endif
+#ifdef GL_INTERPOLATE_ARB
+	case GL_INTERPOLATE_ARB:
+#endif
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool QD3D12_IsValidTexCombineSource(GLenum source)
+{
+	switch (source)
+	{
+	case GL_TEXTURE:
+#ifdef GL_PRIMARY_COLOR_ARB
+	case GL_PRIMARY_COLOR_ARB:
+#endif
+#ifdef GL_PREVIOUS_ARB
+	case GL_PREVIOUS_ARB:
+#endif
+#ifdef GL_CONSTANT_ARB
+	case GL_CONSTANT_ARB:
+#endif
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool QD3D12_IsValidTexCombineOperand(GLenum operand)
+{
+	switch (operand)
+	{
+	case GL_SRC_COLOR:
+	case GL_ONE_MINUS_SRC_COLOR:
+	case GL_SRC_ALPHA:
+	case GL_ONE_MINUS_SRC_ALPHA:
+		return true;
+	default:
+		return false;
+	}
+}
+
+void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param)
+{
+	if (target != GL_TEXTURE_ENV)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	const UINT unit = ClampValue<UINT>(g_gl.activeTextureUnit, 0, QD3D12_MaxTextureUnits - 1);
+
+	switch (pname)
+	{
+	case GL_TEXTURE_ENV_MODE:
+	{
+		GLenum mode = (GLenum)param;
+		if (!QD3D12_IsValidTexEnvMode(mode))
+			mode = GL_MODULATE;
+		g_gl.texEnvMode[unit] = mode;
 		break;
+	}
+
+#ifdef GL_COMBINE_RGB_ARB
+	case GL_COMBINE_RGB_ARB:
+	{
+		GLenum mode = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineMode(mode))
+			mode = GL_MODULATE;
+		g_gl.texCombineRGB[unit] = mode;
+		break;
+	}
+#endif
+
+#ifdef GL_COMBINE_ALPHA_ARB
+	case GL_COMBINE_ALPHA_ARB:
+	{
+		GLenum mode = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineMode(mode))
+			mode = GL_MODULATE;
+		g_gl.texCombineAlpha[unit] = mode;
+		break;
+	}
+#endif
+
+#ifdef GL_SOURCE0_RGB_ARB
+	case GL_SOURCE0_RGB_ARB:
+	{
+		GLenum source = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineSource(source))
+			source = GL_TEXTURE;
+		g_gl.texSource0RGB[unit] = source;
+		break;
+	}
+#endif
+#ifdef GL_SOURCE1_RGB_ARB
+	case GL_SOURCE1_RGB_ARB:
+	{
+		GLenum source = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineSource(source))
+			source = GL_PREVIOUS_ARB;
+		g_gl.texSource1RGB[unit] = source;
+		break;
+	}
+#endif
+#ifdef GL_SOURCE0_ALPHA_ARB
+	case GL_SOURCE0_ALPHA_ARB:
+	{
+		GLenum source = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineSource(source))
+			source = GL_TEXTURE;
+		g_gl.texSource0Alpha[unit] = source;
+		break;
+	}
+#endif
+#ifdef GL_SOURCE1_ALPHA_ARB
+	case GL_SOURCE1_ALPHA_ARB:
+	{
+		GLenum source = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineSource(source))
+			source = GL_PREVIOUS_ARB;
+		g_gl.texSource1Alpha[unit] = source;
+		break;
+	}
+#endif
+
+#ifdef GL_OPERAND0_RGB_ARB
+	case GL_OPERAND0_RGB_ARB:
+	{
+		GLenum operand = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineOperand(operand))
+			operand = GL_SRC_COLOR;
+		g_gl.texOperand0RGB[unit] = operand;
+		break;
+	}
+#endif
+#ifdef GL_OPERAND1_RGB_ARB
+	case GL_OPERAND1_RGB_ARB:
+	{
+		GLenum operand = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineOperand(operand))
+			operand = GL_SRC_COLOR;
+		g_gl.texOperand1RGB[unit] = operand;
+		break;
+	}
+#endif
+#ifdef GL_OPERAND0_ALPHA_ARB
+	case GL_OPERAND0_ALPHA_ARB:
+	{
+		GLenum operand = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineOperand(operand))
+			operand = GL_SRC_ALPHA;
+		g_gl.texOperand0Alpha[unit] = operand;
+		break;
+	}
+#endif
+#ifdef GL_OPERAND1_ALPHA_ARB
+	case GL_OPERAND1_ALPHA_ARB:
+	{
+		GLenum operand = (GLenum)param;
+		if (!QD3D12_IsValidTexCombineOperand(operand))
+			operand = GL_SRC_ALPHA;
+		g_gl.texOperand1Alpha[unit] = operand;
+		break;
+	}
+#endif
+
+#ifdef GL_RGB_SCALE_ARB
+	case GL_RGB_SCALE_ARB:
+		g_gl.texRGBScale[unit] = ClampValue<GLfloat>(param, 1.0f, 4.0f);
+		break;
+#endif
+
+#ifdef GL_ALPHA_SCALE
+	case GL_ALPHA_SCALE:
+		g_gl.texAlphaScale[unit] = ClampValue<GLfloat>(param, 1.0f, 4.0f);
+		break;
+#endif
 
 	default:
-		g_gl.texEnvMode[g_gl.activeTextureUnit] = GL_MODULATE;
+		g_gl.lastError = GL_INVALID_ENUM;
 		break;
 	}
 }
@@ -5696,6 +6728,22 @@ void APIENTRY glTexEnvfv(GLenum target, GLenum pname, const GLfloat* params)
 	if (!params)
 		return;
 
+	if (target != GL_TEXTURE_ENV)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	const UINT unit = ClampValue<UINT>(g_gl.activeTextureUnit, 0, QD3D12_MaxTextureUnits - 1);
+	if (pname == GL_TEXTURE_ENV_COLOR)
+	{
+		g_gl.texEnvColor[unit][0] = params[0];
+		g_gl.texEnvColor[unit][1] = params[1];
+		g_gl.texEnvColor[unit][2] = params[2];
+		g_gl.texEnvColor[unit][3] = params[3];
+		return;
+	}
+
 	glTexEnvf(target, pname, params[0]);
 }
 
@@ -5704,14 +6752,24 @@ void APIENTRY glTexEnviv(GLenum target, GLenum pname, const GLint* params)
 	if (!params)
 		return;
 
+	if (target == GL_TEXTURE_ENV && pname == GL_TEXTURE_ENV_COLOR)
+	{
+		GLfloat c[4] = { (GLfloat)params[0], (GLfloat)params[1], (GLfloat)params[2], (GLfloat)params[3] };
+		glTexEnvfv(target, pname, c);
+		return;
+	}
+
 	glTexEnvi(target, pname, params[0]);
 }
 
-void APIENTRY glTexImage2D(GLenum, GLint, GLint internalFormat,
+void APIENTRY glTexImage2D(GLenum, GLint level, GLint internalFormat,
 	GLsizei width, GLsizei height, GLint, GLenum format, GLenum type, const GLvoid* pixels)
 {
 	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
 	if (it == g_gl.textures.end())
+		return;
+
+	if (level > 0)
 		return;
 
 	TextureResource& tex = it->second;
@@ -5731,11 +6789,14 @@ void APIENTRY glTexImage2D(GLenum, GLint, GLint internalFormat,
 	tex.gpuValid = false;
 }
 
-void APIENTRY glTexSubImage2D(GLenum, GLint, GLint xoffset, GLint yoffset,
+void APIENTRY glTexSubImage2D(GLenum, GLint level, GLint xoffset, GLint yoffset,
 	GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* pixels)
 {
 	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
 	if (it == g_gl.textures.end() || !pixels)
+		return;
+
+	if (level > 0)
 		return;
 
 	TextureResource& tex = it->second;
@@ -5930,6 +6991,7 @@ void QD3D12_Resize()
 	QD3D12_CreateRTVsForWindow(*g_currentWindow);
 	QD3D12_CreateDSVForWindow(*g_currentWindow);
 	g_psoCache.clear();
+	g_arbPsoCache.clear();
 	g_gl.framePhase = QD3D12_FRAME_LOW_RES;
 	g_gl.sceneResolvedThisFrame = false;
 	g_gl.raytracedLightingReadyThisFrame = false;
@@ -5978,6 +7040,7 @@ static void QD3D12_ReconfigureCurrentWindowForUpscalerChange()
 	QD3D12_CreateRTVsForWindow(*g_currentWindow);
 	QD3D12_CreateDSVForWindow(*g_currentWindow);
 	g_psoCache.clear();
+	g_arbPsoCache.clear();
 	g_gl.framePhase = QD3D12_FRAME_LOW_RES;
 	g_gl.sceneResolvedThisFrame = false;
 	g_gl.raytracedLightingReadyThisFrame = false;
@@ -5986,8 +7049,13 @@ static void QD3D12_ReconfigureCurrentWindowForUpscalerChange()
 
 GLenum APIENTRY glGetError(void) {
 	GLenum e = g_gl.lastError;
-	g_gl.lastError = GL_NO_ERROR;
-	return e;
+	if (e != GL_NO_ERROR)
+	{
+		g_gl.lastError = GL_NO_ERROR;
+		return e;
+	}
+
+	return QD3D12ARB_ConsumeError();
 }
 
 void APIENTRY glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
@@ -6030,24 +7098,122 @@ void APIENTRY glTexParameterfv(GLenum target, GLenum pname, const GLfloat* param
 	glTexParameterf(target, pname, params[0]);
 }
 
-void APIENTRY glStencilMask(GLuint mask) {
-	g_gl.stencilMask = mask;
+static bool QD3D12_IsValidStencilFace(GLenum face)
+{
+	return face == GL_FRONT || face == GL_BACK || face == GL_FRONT_AND_BACK;
 }
 
-void APIENTRY glClearStencil(GLint s) {
+static void QD3D12_SetStencilMaskForFace(GLenum face, GLuint mask)
+{
+	if (face == GL_FRONT || face == GL_FRONT_AND_BACK)
+		g_gl.stencilFrontMask = mask;
+	if (face == GL_BACK || face == GL_FRONT_AND_BACK)
+		g_gl.stencilBackMask = mask;
+}
+
+static void QD3D12_SetStencilFuncForFace(GLenum face, GLenum func, GLint ref, GLuint mask)
+{
+	if (face == GL_FRONT || face == GL_FRONT_AND_BACK)
+	{
+		g_gl.stencilFrontFunc = func;
+		g_gl.stencilFrontRef = ref;
+		g_gl.stencilFrontFuncMask = mask;
+	}
+	if (face == GL_BACK || face == GL_FRONT_AND_BACK)
+	{
+		g_gl.stencilBackFunc = func;
+		g_gl.stencilBackRef = ref;
+		g_gl.stencilBackFuncMask = mask;
+	}
+}
+
+static void QD3D12_SetStencilOpForFace(GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass)
+{
+	if (face == GL_FRONT || face == GL_FRONT_AND_BACK)
+	{
+		g_gl.stencilFrontSFail = sfail;
+		g_gl.stencilFrontDPFail = dpfail;
+		g_gl.stencilFrontDPPass = dppass;
+	}
+	if (face == GL_BACK || face == GL_FRONT_AND_BACK)
+	{
+		g_gl.stencilBackSFail = sfail;
+		g_gl.stencilBackDPFail = dpfail;
+		g_gl.stencilBackDPPass = dppass;
+	}
+}
+
+void APIENTRY glStencilMask(GLuint mask)
+{
+	g_gl.stencilMask = mask;
+	QD3D12_SetStencilMaskForFace(GL_FRONT_AND_BACK, mask);
+}
+
+void APIENTRY glStencilMaskSeparate(GLenum face, GLuint mask)
+{
+	if (!QD3D12_IsValidStencilFace(face))
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+	QD3D12_SetStencilMaskForFace(face, mask);
+}
+
+void APIENTRY glClearStencil(GLint s)
+{
 	g_gl.clearStencilValue = s;
 }
 
-void APIENTRY glStencilFunc(GLenum func, GLint ref, GLuint mask) {
+void APIENTRY glStencilFunc(GLenum func, GLint ref, GLuint mask)
+{
 	g_gl.stencilFunc = func;
 	g_gl.stencilRef = ref;
 	g_gl.stencilFuncMask = mask;
+	QD3D12_SetStencilFuncForFace(GL_FRONT_AND_BACK, func, ref, mask);
 }
 
-void APIENTRY glStencilOp(GLenum sfail, GLenum dpfail, GLenum dppass) {
+void APIENTRY glStencilFuncSeparateATI(GLenum frontfunc, GLenum backfunc, GLint ref, GLuint mask)
+{
+	QD3D12_SetStencilFuncForFace(GL_FRONT, frontfunc, ref, mask);
+	QD3D12_SetStencilFuncForFace(GL_BACK, backfunc, ref, mask);
+}
+
+void APIENTRY glStencilOp(GLenum sfail, GLenum dpfail, GLenum dppass)
+{
 	g_gl.stencilSFail = sfail;
 	g_gl.stencilDPFail = dpfail;
 	g_gl.stencilDPPass = dppass;
+
+	const GLenum face = g_gl.stencilTwoSide ? g_gl.activeStencilFace : GL_FRONT_AND_BACK;
+	QD3D12_SetStencilOpForFace(face, sfail, dpfail, dppass);
+}
+
+void APIENTRY glStencilOpSeparateATI(GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass)
+{
+	if (!QD3D12_IsValidStencilFace(face))
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+	QD3D12_SetStencilOpForFace(face, sfail, dpfail, dppass);
+}
+
+void APIENTRY glActiveStencilFaceEXT(GLenum face)
+{
+	if (face != GL_FRONT && face != GL_BACK)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+	g_gl.activeStencilFace = face;
+}
+
+void APIENTRY glDepthBoundsEXT(GLclampd zmin, GLclampd zmax)
+{
+	g_gl.depthBoundsMin = ClampValue<GLclampd>(zmin, 0.0, 1.0);
+	g_gl.depthBoundsMax = ClampValue<GLclampd>(zmax, 0.0, 1.0);
+	if (g_gl.depthBoundsMax < g_gl.depthBoundsMin)
+		std::swap(g_gl.depthBoundsMin, g_gl.depthBoundsMax);
 }
 
 void APIENTRY glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
@@ -6216,15 +7382,24 @@ static inline int QD3D12_CompatAttribTexUnit(GLuint index)
 {
 	switch (index)
 	{
-	case 8:  return 0; // conventional primary texcoord slot in many ARB-program era paths
-	case 9:  return 1; // best-effort secondary slot; tangent/binormal data is otherwise unused here
+	case 8:  return 0; // Doom 3 base texture coordinate
 	default: return -1;
 	}
 }
 
 static inline bool QD3D12_CompatAttribIsNormal(GLuint index)
 {
-	return (index == 2 || index == 11);
+	return (index == 2 || index == 9);
+}
+
+static inline bool QD3D12_CompatAttribIsTangent(GLuint index)
+{
+	return index == 10;
+}
+
+static inline bool QD3D12_CompatAttribIsBitangent(GLuint index)
+{
+	return index == 11;
 }
 
 void APIENTRY glVertexAttribPointerARB(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid* pointer)
@@ -6246,6 +7421,24 @@ void APIENTRY glVertexAttribPointerARB(GLuint index, GLint size, GLenum type, GL
 	if (QD3D12_CompatAttribIsNormal(index))
 	{
 		glNormalPointer(type, stride, pointer);
+		return;
+	}
+
+	if (QD3D12_CompatAttribIsTangent(index))
+	{
+		g_gl.tangentArray.size = size;
+		g_gl.tangentArray.type = type;
+		g_gl.tangentArray.stride = stride;
+		g_gl.tangentArray.ptr = QD3D12_ResolveArrayPointer(pointer);
+		return;
+	}
+
+	if (QD3D12_CompatAttribIsBitangent(index))
+	{
+		g_gl.bitangentArray.size = size;
+		g_gl.bitangentArray.type = type;
+		g_gl.bitangentArray.stride = stride;
+		g_gl.bitangentArray.ptr = QD3D12_ResolveArrayPointer(pointer);
 		return;
 	}
 
@@ -6282,6 +7475,18 @@ void APIENTRY glEnableVertexAttribArrayARB(GLuint index)
 		return;
 	}
 
+	if (QD3D12_CompatAttribIsTangent(index))
+	{
+		g_gl.tangentArray.enabled = true;
+		return;
+	}
+
+	if (QD3D12_CompatAttribIsBitangent(index))
+	{
+		g_gl.bitangentArray.enabled = true;
+		return;
+	}
+
 	const int texUnit = QD3D12_CompatAttribTexUnit(index);
 	if (texUnit >= 0 && texUnit < (int)QD3D12_MaxTextureUnits)
 	{
@@ -6310,6 +7515,18 @@ void APIENTRY glDisableVertexAttribArrayARB(GLuint index)
 	if (QD3D12_CompatAttribIsNormal(index))
 	{
 		glDisableClientState(GL_NORMAL_ARRAY);
+		return;
+	}
+
+	if (QD3D12_CompatAttribIsTangent(index))
+	{
+		g_gl.tangentArray.enabled = false;
+		return;
+	}
+
+	if (QD3D12_CompatAttribIsBitangent(index))
+	{
+		g_gl.bitangentArray.enabled = false;
 		return;
 	}
 
@@ -6353,6 +7570,600 @@ static inline GLenum QD3D12_MapCompatTextureTarget(GLenum target)
 	}
 }
 
+
+// ============================================================
+// Minimal WGL pbuffer compatibility
+// Supports the rvTexRenderTarget flow:
+// choose pixel format -> create pbuffer/DC/context -> make current -> render -> bind tex image.
+// ============================================================
+
+#ifndef WGL_ARB_pbuffer
+DECLARE_HANDLE(HPBUFFERARB);
+#endif
+
+#ifndef WGL_DRAW_TO_PBUFFER_ARB
+#define WGL_DRAW_TO_PBUFFER_ARB 0x202D
+#endif
+#ifndef WGL_PBUFFER_WIDTH_ARB
+#define WGL_PBUFFER_WIDTH_ARB 0x2034
+#endif
+#ifndef WGL_PBUFFER_HEIGHT_ARB
+#define WGL_PBUFFER_HEIGHT_ARB 0x2035
+#endif
+#ifndef WGL_PBUFFER_LOST_ARB
+#define WGL_PBUFFER_LOST_ARB 0x2036
+#endif
+#ifndef WGL_BIND_TO_TEXTURE_RGB_ARB
+#define WGL_BIND_TO_TEXTURE_RGB_ARB 0x2070
+#endif
+#ifndef WGL_BIND_TO_TEXTURE_RGBA_ARB
+#define WGL_BIND_TO_TEXTURE_RGBA_ARB 0x2071
+#endif
+#ifndef WGL_TEXTURE_FORMAT_ARB
+#define WGL_TEXTURE_FORMAT_ARB 0x2072
+#endif
+#ifndef WGL_TEXTURE_TARGET_ARB
+#define WGL_TEXTURE_TARGET_ARB 0x2073
+#endif
+#ifndef WGL_MIPMAP_TEXTURE_ARB
+#define WGL_MIPMAP_TEXTURE_ARB 0x2074
+#endif
+#ifndef WGL_TEXTURE_RGB_ARB
+#define WGL_TEXTURE_RGB_ARB 0x2075
+#endif
+#ifndef WGL_TEXTURE_RGBA_ARB
+#define WGL_TEXTURE_RGBA_ARB 0x2076
+#endif
+#ifndef WGL_TEXTURE_CUBE_MAP_ARB
+#define WGL_TEXTURE_CUBE_MAP_ARB 0x2078
+#endif
+#ifndef WGL_TEXTURE_2D_ARB
+#define WGL_TEXTURE_2D_ARB 0x207A
+#endif
+#ifndef WGL_MIPMAP_LEVEL_ARB
+#define WGL_MIPMAP_LEVEL_ARB 0x207B
+#endif
+#ifndef WGL_CUBE_MAP_FACE_ARB
+#define WGL_CUBE_MAP_FACE_ARB 0x207C
+#endif
+#ifndef WGL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB
+#define WGL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB 0x207D
+#endif
+#ifndef WGL_FRONT_LEFT_ARB
+#define WGL_FRONT_LEFT_ARB 0x2083
+#endif
+#ifndef WGL_BIND_TO_TEXTURE_RECTANGLE_RGB_NV
+#define WGL_BIND_TO_TEXTURE_RECTANGLE_RGB_NV 0x20A0
+#endif
+#ifndef WGL_BIND_TO_TEXTURE_RECTANGLE_RGBA_NV
+#define WGL_BIND_TO_TEXTURE_RECTANGLE_RGBA_NV 0x20A1
+#endif
+#ifndef WGL_TEXTURE_RECTANGLE_NV
+#define WGL_TEXTURE_RECTANGLE_NV 0x20A2
+#endif
+#ifndef WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_R_NV
+#define WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_R_NV 0x20B1
+#endif
+#ifndef WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RG_NV
+#define WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RG_NV 0x20B2
+#endif
+#ifndef WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RGB_NV
+#define WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RGB_NV 0x20B3
+#endif
+#ifndef WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RGBA_NV
+#define WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RGBA_NV 0x20B4
+#endif
+#ifndef WGL_FLOAT_COMPONENTS_NV
+#define WGL_FLOAT_COMPONENTS_NV 0x20B0
+#endif
+
+struct QD3D12GLContext
+{
+	HDC dc = nullptr;
+	QD3D12Window* window = nullptr;
+};
+
+struct QD3D12Pbuffer
+{
+	QD3D12Window window;
+	HDC dc = nullptr;
+	int width = 0;
+	int height = 0;
+	int textureTarget = WGL_TEXTURE_2D_ARB;
+	int textureFormat = WGL_TEXTURE_RGBA_ARB;
+	int cubeFace = WGL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB;
+	GLuint boundTexture = 0;
+};
+
+static std::unordered_map<HDC, QD3D12Window*> g_qd3d12DcToWindow;
+static std::unordered_map<HGLRC, QD3D12GLContext*> g_qd3d12Contexts;
+static std::unordered_map<HPBUFFERARB, QD3D12Pbuffer*> g_qd3d12Pbuffers;
+
+static void QD3D12_RegisterWindowDC(QD3D12Window* w)
+{
+	if (w && w->hdc)
+		g_qd3d12DcToWindow[w->hdc] = w;
+}
+
+static void QD3D12_UnregisterWindowDC(HDC dc)
+{
+	if (dc)
+		g_qd3d12DcToWindow.erase(dc);
+}
+
+static QD3D12Window* QD3D12_FindWindowForDC(HDC dc)
+{
+	if (!dc)
+		return nullptr;
+
+	auto it = g_qd3d12DcToWindow.find(dc);
+	if (it != g_qd3d12DcToWindow.end())
+		return it->second;
+
+	for (auto& kv : g_windows)
+	{
+		if (kv.second.hdc == dc)
+		{
+			g_qd3d12DcToWindow[dc] = &kv.second;
+			return &kv.second;
+		}
+	}
+
+	return nullptr;
+}
+
+static HGLRC QD3D12_CreateGLContextHandle(HDC dc, QD3D12Window* window)
+{
+	QD3D12GLContext* ctx = new QD3D12GLContext();
+	ctx->dc = dc;
+	ctx->window = window ? window : QD3D12_FindWindowForDC(dc);
+
+	HGLRC handle = reinterpret_cast<HGLRC>(ctx);
+	g_qd3d12Contexts[handle] = ctx;
+	return handle;
+}
+
+static QD3D12GLContext* QD3D12_GetGLContext(HGLRC rc)
+{
+	auto it = g_qd3d12Contexts.find(rc);
+	if (it == g_qd3d12Contexts.end())
+		return nullptr;
+	return it->second;
+}
+
+static QD3D12Pbuffer* QD3D12_GetPbuffer(HPBUFFERARB handle)
+{
+	auto it = g_qd3d12Pbuffers.find(handle);
+	if (it == g_qd3d12Pbuffers.end())
+		return nullptr;
+	return it->second;
+}
+
+static int QD3D12_FindAttribInt(const int* attribs, int attrib, int defaultValue)
+{
+	if (!attribs)
+		return defaultValue;
+
+	for (const int* p = attribs; p[0] != 0; p += 2)
+	{
+		if (p[0] == attrib)
+			return p[1];
+	}
+
+	return defaultValue;
+}
+
+static bool QD3D12_InitPbufferWindow(QD3D12Pbuffer& pb, int width, int height)
+{
+	if (!g_gl.device || !g_gl.srvHeap || !g_gl.cmdList || !g_gl.fence)
+		return false;
+
+	QD3D12Window& w = pb.window;
+	w = QD3D12Window{};
+	w.isPbuffer = true;
+	w.hwnd = nullptr;
+	w.hdc = pb.dc;
+	w.ownsHdc = false;
+	w.width = (UINT)max(1, width);
+	w.height = (UINT)max(1, height);
+	w.renderWidth = w.width;
+	w.renderHeight = w.height;
+	w.frameIndex = 0;
+
+	QD3D12_CreateSurfaceFrameResources(w);
+	QD3D12_CreateRTVsForWindow(w);
+	QD3D12_CreateDSVForWindow(w);
+	QD3D12_CreateUploadRingForWindow(w);
+
+	w.viewport.TopLeftX = 0.0f;
+	w.viewport.TopLeftY = 0.0f;
+	w.viewport.Width = (float)w.width;
+	w.viewport.Height = (float)w.height;
+	w.viewport.MinDepth = 0.0f;
+	w.viewport.MaxDepth = 1.0f;
+	w.scissor.left = 0;
+	w.scissor.top = 0;
+	w.scissor.right = (LONG)w.width;
+	w.scissor.bottom = (LONG)w.height;
+
+	QD3D12_RegisterWindowDC(&w);
+	return true;
+}
+
+static void QD3D12_DestroyPbufferWindow(QD3D12Pbuffer& pb)
+{
+	QD3D12Window& w = pb.window;
+
+	if ((g_gl.frameOpen && g_gl.frameOwner == &w) || g_currentWindow == &w)
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+
+	if (g_currentWindow == &w)
+		g_currentWindow = nullptr;
+
+	QD3D12_WaitForGPU();
+	QD3D12_UnregisterWindowDC(w.hdc);
+	QD3D12_DestroyUploadRingForWindow(w);
+	QD3D12_ReleaseWindowSizeResources(w);
+	for (UINT i = 0; i < QD3D12_FrameCount; ++i)
+		w.frames[i].cmdAlloc.Reset();
+}
+
+static bool QD3D12_CopyPbufferToBoundTexture(QD3D12Pbuffer& pb)
+{
+	GLuint textureName = g_gl.boundTexture[g_gl.activeTextureUnit];
+	if (textureName == 0)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return false;
+	}
+
+	auto it = g_gl.textures.find(textureName);
+	if (it == g_gl.textures.end())
+	{
+		TextureResource tex{};
+		tex.glId = textureName;
+		tex.srvIndex = UINT_MAX;
+		tex.minFilter = g_gl.defaultMinFilter;
+		tex.magFilter = g_gl.defaultMagFilter;
+		tex.wrapS = g_gl.defaultWrapS;
+		tex.wrapT = g_gl.defaultWrapT;
+		it = g_gl.textures.emplace(textureName, std::move(tex)).first;
+	}
+
+	TextureResource& tex = it->second;
+	tex.width = pb.width;
+	tex.height = pb.height;
+	tex.format = GL_RGBA;
+	tex.dxgiFormat = QD3D12_SceneColorFormat;
+	tex.sysmem.clear();
+
+	QD3D12Window* savedWindow = g_currentWindow;
+	HDC savedDC = g_qd3d12CurrentDC;
+	HGLRC savedRC = g_qd3d12CurrentRC;
+
+	g_currentWindow = &pb.window;
+	g_qd3d12CurrentDC = pb.dc;
+
+	if (g_gl.frameOpen || !g_gl.queuedBatches.empty())
+		QD3D12_SubmitOpenFrameNoPresentAndWait();
+
+	QD3D12Window& w = pb.window;
+	w.frameIndex = 0;
+	QD3D12_WaitForFrame(w.frameIndex);
+	QD3D12_CHECK(w.frames[w.frameIndex].cmdAlloc->Reset());
+	QD3D12_CHECK(g_gl.cmdList->Reset(w.frames[w.frameIndex].cmdAlloc.Get(), nullptr));
+
+	EnsureTextureResource(tex);
+	if (!tex.texture)
+	{
+		g_currentWindow = savedWindow;
+		g_qd3d12CurrentDC = savedDC;
+		g_qd3d12CurrentRC = savedRC;
+		return false;
+	}
+
+	ID3D12Resource* src = w.backBuffers[w.frameIndex].Get();
+	ID3D12Resource* dst = tex.texture.Get();
+	if (!src || !dst)
+	{
+		g_currentWindow = savedWindow;
+		g_qd3d12CurrentDC = savedDC;
+		g_qd3d12CurrentRC = savedRC;
+		return false;
+	}
+
+	QD3D12_TransitionResource(g_gl.cmdList.Get(), src, w.backBufferState[w.frameIndex], D3D12_RESOURCE_STATE_COPY_SOURCE);
+	QD3D12_TransitionResource(g_gl.cmdList.Get(), dst, tex.state, D3D12_RESOURCE_STATE_COPY_DEST);
+
+	D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+	srcLoc.pResource = src;
+	srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	srcLoc.SubresourceIndex = 0;
+
+	D3D12_TEXTURE_COPY_LOCATION dstLoc{};
+	dstLoc.pResource = dst;
+	dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	dstLoc.SubresourceIndex = 0;
+
+	g_gl.cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+	QD3D12_TransitionResource(g_gl.cmdList.Get(), dst, tex.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	QD3D12_TransitionResource(g_gl.cmdList.Get(), src, w.backBufferState[w.frameIndex], D3D12_RESOURCE_STATE_PRESENT);
+
+	QD3D12_CHECK(g_gl.cmdList->Close());
+	ID3D12CommandList* lists[] = { g_gl.cmdList.Get() };
+	g_gl.queue->ExecuteCommandLists(1, lists);
+
+	const UINT64 signalValue = g_gl.nextFenceValue++;
+	QD3D12_CHECK(g_gl.queue->Signal(g_gl.fence.Get(), signalValue));
+	w.frames[w.frameIndex].fenceValue = signalValue;
+
+	if (g_gl.fence->GetCompletedValue() < signalValue)
+	{
+		QD3D12_CHECK(g_gl.fence->SetEventOnCompletion(signalValue, g_gl.fenceEvent));
+		WaitForSingleObject(g_gl.fenceEvent, INFINITE);
+	}
+
+	tex.gpuValid = true;
+	pb.boundTexture = textureName;
+
+	g_currentWindow = savedWindow;
+	g_qd3d12CurrentDC = savedDC;
+	g_qd3d12CurrentRC = savedRC;
+	return true;
+}
+
+//HDC WINAPI wglGetCurrentDC(void)
+//{
+//	return g_qd3d12CurrentDC;
+//}
+
+BOOL WINAPI wglDeleteContext(HGLRC hglrc)
+{
+	if (!hglrc)
+		return TRUE;
+
+	if (g_qd3d12CurrentRC == hglrc)
+		g_qd3d12CurrentRC = nullptr;
+
+	auto it = g_qd3d12Contexts.find(hglrc);
+	if (it != g_qd3d12Contexts.end())
+	{
+		delete it->second;
+		g_qd3d12Contexts.erase(it);
+	}
+
+	return TRUE;
+}
+
+BOOL WINAPI wglShareLists(HGLRC, HGLRC)
+{
+	// The shim keeps GL objects in global CPU/D3D12 state, so contexts already share resources.
+	return TRUE;
+}
+
+const char* WINAPI wglGetExtensionsStringARB(HDC)
+{
+	return "WGL_ARB_pixel_format WGL_ARB_pbuffer WGL_ARB_render_texture WGL_NV_render_texture_rectangle WGL_NV_float_buffer";
+}
+
+const char* WINAPI wglGetExtensionsStringEXT(void)
+{
+	return wglGetExtensionsStringARB(g_qd3d12CurrentDC);
+}
+
+BOOL WINAPI wglMakeCurrent(HDC hdc, HGLRC hglrc)
+{
+	if (!hdc && !hglrc)
+	{
+		if (g_gl.frameOpen || !g_gl.queuedBatches.empty())
+			QD3D12_SubmitOpenFrameNoPresentAndWait();
+		g_qd3d12CurrentDC = nullptr;
+		g_qd3d12CurrentRC = nullptr;
+		g_currentWindow = nullptr;
+		return TRUE;
+	}
+
+	QD3D12Window* window = nullptr;
+	if (QD3D12GLContext* ctx = QD3D12_GetGLContext(hglrc))
+		window = ctx->window;
+
+	if (!window)
+		window = QD3D12_FindWindowForDC(hdc);
+
+	if (!window)
+		return FALSE;
+
+	g_qd3d12CurrentDC = hdc;
+	g_qd3d12CurrentRC = hglrc;
+	QD3D12_SetCurrentWindow(window);
+	return TRUE;
+}
+
+BOOL WINAPI wglChoosePixelFormatARB(HDC, const int*, const FLOAT*, UINT nMaxFormats, int* piFormats, UINT* nNumFormats)
+{
+	if (nNumFormats)
+		*nNumFormats = (nMaxFormats > 0 && piFormats) ? 1u : 0u;
+
+	if (piFormats && nMaxFormats > 0)
+		piFormats[0] = 1;
+
+	return TRUE;
+}
+
+BOOL WINAPI wglGetPixelFormatAttribivARB(HDC, int, int, UINT nAttributes, const int* piAttributes, int* piValues)
+{
+	if (!piAttributes || !piValues)
+		return FALSE;
+
+	for (UINT i = 0; i < nAttributes; ++i)
+	{
+		switch (piAttributes[i])
+		{
+		case WGL_DRAW_TO_PBUFFER_ARB:
+		case WGL_BIND_TO_TEXTURE_RGB_ARB:
+		case WGL_BIND_TO_TEXTURE_RGBA_ARB:
+		case WGL_BIND_TO_TEXTURE_RECTANGLE_RGB_NV:
+		case WGL_BIND_TO_TEXTURE_RECTANGLE_RGBA_NV:
+		case WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_R_NV:
+		case WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RG_NV:
+		case WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RGB_NV:
+		case WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RGBA_NV:
+		case WGL_FLOAT_COMPONENTS_NV:
+			piValues[i] = 1;
+			break;
+		default:
+			piValues[i] = 0;
+			break;
+		}
+	}
+
+	return TRUE;
+}
+
+HPBUFFERARB WINAPI wglCreatePbufferARB(HDC, int, int iWidth, int iHeight, const int* piAttribList)
+{
+	if (iWidth <= 0 || iHeight <= 0)
+		return nullptr;
+
+	QD3D12Pbuffer* pb = new QD3D12Pbuffer();
+	pb->width = iWidth;
+	pb->height = iHeight;
+	pb->textureTarget = QD3D12_FindAttribInt(piAttribList, WGL_TEXTURE_TARGET_ARB, WGL_TEXTURE_2D_ARB);
+	pb->textureFormat = QD3D12_FindAttribInt(piAttribList, WGL_TEXTURE_FORMAT_ARB, WGL_TEXTURE_RGBA_ARB);
+	pb->cubeFace = WGL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB;
+	pb->dc = reinterpret_cast<HDC>(pb);
+
+	if (!QD3D12_InitPbufferWindow(*pb, iWidth, iHeight))
+	{
+		delete pb;
+		return nullptr;
+	}
+
+	HPBUFFERARB handle = reinterpret_cast<HPBUFFERARB>(pb);
+	g_qd3d12Pbuffers[handle] = pb;
+	return handle;
+}
+
+HDC WINAPI wglGetPbufferDCARB(HPBUFFERARB hPbuffer)
+{
+	QD3D12Pbuffer* pb = QD3D12_GetPbuffer(hPbuffer);
+	return pb ? pb->dc : nullptr;
+}
+
+int WINAPI wglReleasePbufferDCARB(HPBUFFERARB hPbuffer, HDC hdc)
+{
+	QD3D12Pbuffer* pb = QD3D12_GetPbuffer(hPbuffer);
+	return (pb && pb->dc == hdc) ? 1 : 0;
+}
+
+BOOL WINAPI wglDestroyPbufferARB(HPBUFFERARB hPbuffer)
+{
+	QD3D12Pbuffer* pb = QD3D12_GetPbuffer(hPbuffer);
+	if (!pb)
+		return FALSE;
+
+	for (auto it = g_qd3d12Contexts.begin(); it != g_qd3d12Contexts.end(); )
+	{
+		if (it->second && it->second->window == &pb->window)
+		{
+			if (g_qd3d12CurrentRC == it->first)
+				g_qd3d12CurrentRC = nullptr;
+			delete it->second;
+			it = g_qd3d12Contexts.erase(it);
+		}
+		else
+		{
+			++it;
+		}
+	}
+
+	QD3D12_DestroyPbufferWindow(*pb);
+	g_qd3d12Pbuffers.erase(hPbuffer);
+	delete pb;
+	return TRUE;
+}
+
+BOOL WINAPI wglQueryPbufferARB(HPBUFFERARB hPbuffer, int iAttribute, int* piValue)
+{
+	if (!piValue)
+		return FALSE;
+
+	QD3D12Pbuffer* pb = QD3D12_GetPbuffer(hPbuffer);
+	if (!pb)
+		return FALSE;
+
+	switch (iAttribute)
+	{
+	case WGL_PBUFFER_WIDTH_ARB:
+		*piValue = pb->width;
+		return TRUE;
+	case WGL_PBUFFER_HEIGHT_ARB:
+		*piValue = pb->height;
+		return TRUE;
+	case WGL_PBUFFER_LOST_ARB:
+		*piValue = 0;
+		return TRUE;
+	case WGL_TEXTURE_TARGET_ARB:
+		*piValue = pb->textureTarget;
+		return TRUE;
+	case WGL_TEXTURE_FORMAT_ARB:
+		*piValue = pb->textureFormat;
+		return TRUE;
+	case WGL_CUBE_MAP_FACE_ARB:
+		*piValue = pb->cubeFace;
+		return TRUE;
+	default:
+		*piValue = 0;
+		return TRUE;
+	}
+}
+
+BOOL WINAPI wglSetPbufferAttribARB(HPBUFFERARB hPbuffer, const int* piAttribList)
+{
+	QD3D12Pbuffer* pb = QD3D12_GetPbuffer(hPbuffer);
+	if (!pb)
+		return FALSE;
+
+	if (!piAttribList)
+		return TRUE;
+
+	for (const int* p = piAttribList; p[0] != 0; p += 2)
+	{
+		if (p[0] == WGL_CUBE_MAP_FACE_ARB)
+			pb->cubeFace = p[1];
+		else if (p[0] == WGL_MIPMAP_LEVEL_ARB)
+			; // ignored; this shim only backs level 0
+	}
+
+	return TRUE;
+}
+
+BOOL WINAPI wglBindTexImageARB(HPBUFFERARB hPbuffer, int iBuffer)
+{
+	if (iBuffer != WGL_FRONT_LEFT_ARB)
+		return FALSE;
+
+	QD3D12Pbuffer* pb = QD3D12_GetPbuffer(hPbuffer);
+	if (!pb)
+		return FALSE;
+
+	return QD3D12_CopyPbufferToBoundTexture(*pb) ? TRUE : FALSE;
+}
+
+BOOL WINAPI wglReleaseTexImageARB(HPBUFFERARB hPbuffer, int iBuffer)
+{
+	if (iBuffer != WGL_FRONT_LEFT_ARB)
+		return FALSE;
+
+	QD3D12Pbuffer* pb = QD3D12_GetPbuffer(hPbuffer);
+	if (!pb)
+		return FALSE;
+
+	pb->boundTexture = 0;
+	return TRUE;
+}
+
 BOOL WINAPI wglSwapBuffers(HDC hdc)
 {
 	QD3D12_SwapBuffers(hdc);
@@ -6366,7 +8177,12 @@ void APIENTRY glFlush(void)
 
 void APIENTRY glFrontFace(GLenum mode)
 {
-	(void)mode;
+	if (mode != GL_CW && mode != GL_CCW)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+	g_gl.frontFace = mode;
 }
 
 void APIENTRY glMaterialfv(GLenum face, GLenum pname, const GLfloat* params)
@@ -6539,10 +8355,43 @@ PROC WINAPI qd3d12_wglGetProcAddress(LPCSTR name) {
 		{ "glMTexCoord2fSGIS",          (PROC)glMTexCoord2fSGIS },
 		{ "glLockArraysEXT",            (PROC)glLockArraysEXT },
 		{ "glUnlockArraysEXT",          (PROC)glUnlockArraysEXT },
+		{ "glVertexAttribPointerARB",   (PROC)glVertexAttribPointerARB },
+		{ "glEnableVertexAttribArrayARB", (PROC)glEnableVertexAttribArrayARB },
+		{ "glDisableVertexAttribArrayARB", (PROC)glDisableVertexAttribArrayARB },
+		{ "glGenProgramsARB",           (PROC)glGenProgramsARB },
+		{ "glDeleteProgramsARB",        (PROC)glDeleteProgramsARB },
+		{ "glBindProgramARB",           (PROC)glBindProgramARB },
+		{ "glProgramStringARB",         (PROC)glProgramStringARB },
+		{ "glProgramEnvParameter4fARB", (PROC)glProgramEnvParameter4fARB },
+		{ "glProgramEnvParameter4fvARB", (PROC)glProgramEnvParameter4fvARB },
+		{ "glProgramLocalParameter4fARB", (PROC)glProgramLocalParameter4fARB },
+		{ "glProgramLocalParameter4fvARB", (PROC)glProgramLocalParameter4fvARB },
+		{ "glGetProgramEnvParameterfvARB", (PROC)glGetProgramEnvParameterfvARB },
+		{ "glGetProgramLocalParameterfvARB", (PROC)glGetProgramLocalParameterfvARB },
+		{ "glGetProgramivARB",          (PROC)glGetProgramivARB },
+		{ "glGetProgramStringARB",      (PROC)glGetProgramStringARB },
+		{ "glIsProgramARB",             (PROC)glIsProgramARB },
+		{ "glDepthBoundsEXT",           (PROC)glDepthBoundsEXT },
+		{ "glActiveStencilFaceEXT",     (PROC)glActiveStencilFaceEXT },
+		{ "glStencilOpSeparateATI",     (PROC)glStencilOpSeparateATI },
+		{ "glStencilFuncSeparateATI",   (PROC)glStencilFuncSeparateATI },
+		{ "glStencilMaskSeparate",      (PROC)glStencilMaskSeparate },
 		{ "wglSwapIntervalEXT",         (PROC)qd3d12_wglSwapIntervalEXT },
 		{ "wglGetDeviceGammaRamp3DFX",  (PROC)qd3d12_wglGetDeviceGammaRamp3DFX },
 		{ "wglSetDeviceGammaRamp3DFX",  (PROC)qd3d12_wglSetDeviceGammaRamp3DFX },
 		{ "glBindTextureEXT",           (PROC)glBindTextureEXT },
+		{ "wglGetExtensionsStringARB",  (PROC)wglGetExtensionsStringARB },
+		{ "wglGetExtensionsStringEXT",  (PROC)wglGetExtensionsStringEXT },
+		{ "wglChoosePixelFormatARB",    (PROC)wglChoosePixelFormatARB },
+		{ "wglGetPixelFormatAttribivARB", (PROC)wglGetPixelFormatAttribivARB },
+		{ "wglCreatePbufferARB",        (PROC)wglCreatePbufferARB },
+		{ "wglGetPbufferDCARB",         (PROC)wglGetPbufferDCARB },
+		{ "wglReleasePbufferDCARB",     (PROC)wglReleasePbufferDCARB },
+		{ "wglDestroyPbufferARB",       (PROC)wglDestroyPbufferARB },
+		{ "wglQueryPbufferARB",         (PROC)wglQueryPbufferARB },
+		{ "wglSetPbufferAttribARB",     (PROC)wglSetPbufferAttribARB },
+		{ "wglBindTexImageARB",         (PROC)wglBindTexImageARB },
+		{ "wglReleaseTexImageARB",      (PROC)wglReleaseTexImageARB },
 	};
 
 	for (size_t i = 0; i < _countof(table); ++i) {
@@ -8138,6 +9987,27 @@ GLboolean APIENTRY glIsEnabled(GLenum cap)
 {
 	switch (cap)
 	{
+	case GL_VERTEX_PROGRAM_ARB:
+		return QD3D12ARB_IsVertexEnabled() ? GL_TRUE : GL_FALSE;
+
+	case GL_FRAGMENT_PROGRAM_ARB:
+		return QD3D12ARB_IsFragmentEnabled() ? GL_TRUE : GL_FALSE;
+
+	case GL_BLEND: return g_gl.blend ? GL_TRUE : GL_FALSE;
+	case GL_ALPHA_TEST: return g_gl.alphaTest ? GL_TRUE : GL_FALSE;
+	case GL_DEPTH_TEST: return g_gl.depthTest ? GL_TRUE : GL_FALSE;
+	case GL_CULL_FACE: return g_gl.cullFace ? GL_TRUE : GL_FALSE;
+	case GL_SCISSOR_TEST: return g_gl.scissorTest ? GL_TRUE : GL_FALSE;
+	case GL_STENCIL_TEST: return g_gl.stencilTest ? GL_TRUE : GL_FALSE;
+	case GL_FOG: return g_gl.fog ? GL_TRUE : GL_FALSE;
+#ifdef GL_DEPTH_BOUNDS_TEST_EXT
+	case GL_DEPTH_BOUNDS_TEST_EXT: return g_gl.depthBoundsTest ? GL_TRUE : GL_FALSE;
+#endif
+#ifdef GL_STENCIL_TEST_TWO_SIDE_EXT
+	case GL_STENCIL_TEST_TWO_SIDE_EXT: return g_gl.stencilTwoSide ? GL_TRUE : GL_FALSE;
+#endif
+	case GL_TEXTURE_2D: return g_gl.texture2D[g_gl.activeTextureUnit] ? GL_TRUE : GL_FALSE;
+
 	case GL_LIGHTING:
 		return g_glState.lightingEnabled;
 
