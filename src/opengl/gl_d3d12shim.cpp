@@ -46,6 +46,75 @@ using Microsoft::WRL::ComPtr;
 #include "opengl.h"
 #include "gl_d3d12arb.h"
 
+
+#ifndef GL_COMPRESSED_RGB_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGB_S3TC_DXT1_EXT 0x83F0
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83F1
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT3_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT3_EXT 0x83F2
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
+#endif
+#ifndef GL_COMPRESSED_ALPHA_ARB
+#define GL_COMPRESSED_ALPHA_ARB 0x84E9
+#endif
+#ifndef GL_COMPRESSED_LUMINANCE_ARB
+#define GL_COMPRESSED_LUMINANCE_ARB 0x84EA
+#endif
+#ifndef GL_COMPRESSED_LUMINANCE_ALPHA_ARB
+#define GL_COMPRESSED_LUMINANCE_ALPHA_ARB 0x84EB
+#endif
+#ifndef GL_COMPRESSED_INTENSITY_ARB
+#define GL_COMPRESSED_INTENSITY_ARB 0x84EC
+#endif
+#ifndef GL_COMPRESSED_RGB_ARB
+#define GL_COMPRESSED_RGB_ARB 0x84ED
+#endif
+#ifndef GL_COMPRESSED_RGBA_ARB
+#define GL_COMPRESSED_RGBA_ARB 0x84EE
+#endif
+#ifndef GL_TEXTURE_COMPRESSION_HINT_ARB
+#define GL_TEXTURE_COMPRESSION_HINT_ARB 0x84EF
+#endif
+#ifndef GL_TEXTURE_COMPRESSED_IMAGE_SIZE_ARB
+#define GL_TEXTURE_COMPRESSED_IMAGE_SIZE_ARB 0x86A0
+#endif
+#ifndef GL_TEXTURE_COMPRESSED_ARB
+#define GL_TEXTURE_COMPRESSED_ARB 0x86A1
+#endif
+#ifndef GL_NUM_COMPRESSED_TEXTURE_FORMATS_ARB
+#define GL_NUM_COMPRESSED_TEXTURE_FORMATS_ARB 0x86A2
+#endif
+#ifndef GL_COMPRESSED_TEXTURE_FORMATS_ARB
+#define GL_COMPRESSED_TEXTURE_FORMATS_ARB 0x86A3
+#endif
+#ifndef GL_TEXTURE_WIDTH
+#define GL_TEXTURE_WIDTH 0x1000
+#endif
+#ifndef GL_TEXTURE_HEIGHT
+#define GL_TEXTURE_HEIGHT 0x1001
+#endif
+#ifndef GL_TEXTURE_INTERNAL_FORMAT
+#define GL_TEXTURE_INTERNAL_FORMAT 0x1003
+#endif
+
+#ifndef GL_RGB_S3TC
+#define GL_RGB_S3TC 0x83A0
+#endif
+#ifndef GL_RGB4_S3TC
+#define GL_RGB4_S3TC 0x83A1
+#endif
+#ifndef GL_RGBA_S3TC
+#define GL_RGBA_S3TC 0x83A2
+#endif
+#ifndef GL_RGBA4_S3TC
+#define GL_RGBA4_S3TC 0x83A3
+#endif
+
 static constexpr size_t GL_FRAME_VERTEX_CAPACITY = 2000000; // we make retro games, this comes out to about 100mb or so. 
 
 struct QD3D12Window;
@@ -58,11 +127,13 @@ static HGLRC g_qd3d12CurrentRC = nullptr;
 static D3D12_GPU_DESCRIPTOR_HANDLE QD3D12_SrvGpu(UINT index);
 static D3D12_CPU_DESCRIPTOR_HANDLE QD3D12_SrvCpu(UINT index);
 static Mat4 CurrentModelMatrix();
+static inline GLenum QD3D12_MapCompatTextureTarget(GLenum target);
 static void QD3D12_CreateUploadRingForWindow(struct QD3D12Window& w);
 static void QD3D12_DestroyUploadRingForWindow(struct QD3D12Window& w);
 static void QD3D12_SubmitOpenFrameNoPresentAndWait();
 static void QD3D12_EnsureFrameOpen();
 static void QD3D12_RunUpscalerOrBlit(QD3D12Window& w);
+static void QD3D12_ExecuteMainCommandListAndWait(QD3D12Window& w);
 static void QD3D12_RunRayAIDenoiseIfEnabled(ID3D12GraphicsCommandList* cl, QD3D12Window& w, ID3D12Resource* lightingResource);
 static void QD3D12_TransitionResource(ID3D12GraphicsCommandList* cl, ID3D12Resource* res, D3D12_RESOURCE_STATES& trackedState, D3D12_RESOURCE_STATES newState);
 static UINT QD3D12_ActiveRasterWidth(const QD3D12Window& w);
@@ -141,7 +212,7 @@ static const UINT QD3D12_MaxQueries = 2048;
 static const UINT QD3D12_MaxTextureUnits = 8;
 static const UINT QD3D12_FrameCount = 2;
 static const UINT QD3D12_MaxTextures = 4096;
-static const UINT QD3D12_UploadBufferSize = 64 * 1024 * 1024;
+static const UINT QD3D12_UploadBufferSize = 128 * 1024 * 1024;
 
 static const DXGI_FORMAT QD3D12_SceneColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 static const DXGI_FORMAT QD3D12_VelocityFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -239,6 +310,12 @@ struct TextureResource
 
 	std::vector<uint8_t> sysmem;
 
+	bool compressed = false;
+	GLenum compressedInternalFormat = 0;
+	UINT compressedBlockBytes = 0;
+	UINT compressedImageSize = 0;
+	bool forceOpaqueAlpha = false;
+
 	DXGI_FORMAT dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 	ComPtr<ID3D12Resource> texture;
@@ -274,7 +351,7 @@ struct DrawConstants
 	float fogEnd;
 	float PointSize;
 	float materialType;
-	float _fogPad2;
+	float alphaFunc;
 
 	float fogColor[4];
 
@@ -316,7 +393,7 @@ struct GLBufferObject
 const char* vendor = "Justin Marshall";
 const char* renderer = "Quake D3D12 Wrapper";
 const char* version = "1.1-quake-d3d12";
-const char* extensions = "GL_SGIS_multitexture GL_ARB_multitexture GL_EXT_texture_env_add GL_ARB_texture_env_combine GL_ARB_vertex_program GL_ARB_fragment_program GL_EXT_texture_cube_map GL_EXT_depth_bounds_test GL_EXT_stencil_two_side GL_ATI_separate_stencil";
+const char* extensions = "GL_SGIS_multitexture GL_ARB_multitexture GL_EXT_texture_env_add GL_ARB_texture_env_combine GL_ARB_texture_compression GL_EXT_texture_compression_s3tc GL_ARB_vertex_program GL_ARB_fragment_program GL_EXT_texture_cube_map GL_EXT_depth_bounds_test GL_EXT_stencil_two_side GL_ATI_separate_stencil";
 
 enum TexEnvModeShader
 {
@@ -399,6 +476,7 @@ struct BatchKey
 	float depthBoundsMax = 1.0f;
 
 	float alphaRef = 0.0f;
+	float alphaFunc = 4.0f;
 	float useTex0 = 0.0f;
 	float useTex1 = 0.0f;
 	float tex1IsLightmap = 0.0f;
@@ -461,6 +539,7 @@ static bool BatchKeyEquals(const BatchKey& a, const BatchKey& b)
 		a.tex0SrvIndex == b.tex0SrvIndex &&
 		a.tex1SrvIndex == b.tex1SrvIndex &&
 		a.alphaRef == b.alphaRef &&
+		a.alphaFunc == b.alphaFunc &&
 		a.useTex0 == b.useTex0 &&
 		a.useTex1 == b.useTex1 &&
 		a.tex1IsLightmap == b.tex1IsLightmap &&
@@ -1184,7 +1263,7 @@ cbuffer DrawCB : register(b0)
     float gFogEnd;
     float gPointSize;
     float gMaterialType;
-    float gFogPad2;
+    float gAlphaFunc;
 
     float4 gFogColor;
 
@@ -1292,7 +1371,10 @@ float4 ApplyTexCombine(
         }
         else if (mode < 3.5)
         {
-            float3 rgb = lerp(previous.rgb, texel.rgb, texel.rgb);
+            // GL_BLEND texture-env:
+            // RGB = previous * (1 - texel.rgb) + envColor * texel.rgb
+            // A   = previous.a * texel.a
+            float3 rgb = lerp(previous.rgb, constantColor.rgb, texel.rgb);
             return float4(rgb, previous.a * texel.a);
         }
         else
@@ -1387,6 +1469,29 @@ float4 ApplyFog(float4 color, float fogCoord)
     return color;
 }
 
+void QD3D12_AlphaTest(float alpha)
+{
+    // Encoded by MapAlphaFunc() in C++:
+    // 0 NEVER, 1 LESS, 2 EQUAL, 3 LEQUAL, 4 GREATER, 5 NOTEQUAL, 6 GEQUAL, 7 ALWAYS.
+    const float eps = 0.00001;
+
+    if (gAlphaFunc < 0.5)
+        clip(-1.0);                              // GL_NEVER
+    else if (gAlphaFunc < 1.5)
+        clip(gAlphaRef - alpha - eps);           // GL_LESS
+    else if (gAlphaFunc < 2.5)
+        clip(eps - abs(alpha - gAlphaRef));      // GL_EQUAL
+    else if (gAlphaFunc < 3.5)
+        clip(gAlphaRef - alpha + eps);           // GL_LEQUAL
+    else if (gAlphaFunc < 4.5)
+        clip(alpha - gAlphaRef - eps);           // GL_GREATER
+    else if (gAlphaFunc < 5.5)
+        clip(abs(alpha - gAlphaRef) - eps);      // GL_NOTEQUAL
+    else if (gAlphaFunc < 6.5)
+        clip(alpha - gAlphaRef + eps);           // GL_GEQUAL
+    // else GL_ALWAYS: no clipping.
+}
+
 float4 BuildTexturedColor(VSOut i)
 {
     float4 primary = i.col;
@@ -1449,6 +1554,8 @@ VSOut VSMain(VSIn i)
     float4 prevClip = mul(gPrevMVP, float4(i.pos, 1.0));
     float3 worldNormal = mul((float3x3)gModelMatrix, i.normal);
 
+	currClip.z = 0.5 * (currClip.z + currClip.w);
+
     o.pos = currClip;
     o.currClip = currClip;
     o.prevClip = prevClip;
@@ -1477,7 +1584,7 @@ PSOut PSMainAlphaTest(VSOut i)
 {
     PSOut o;
     o.color = BuildTexturedColor(i);
-    clip(o.color.a - gAlphaRef);
+    QD3D12_AlphaTest(o.color.a);
     o.normal = float4(i.normal, i.attr.y);
     o.position = float4(i.worldPos, i.attr.x);
     o.velocity = BuildVelocity(i);
@@ -1502,7 +1609,7 @@ float4 PSMainColorOnly(VSOut i) : SV_Target0
 float4 PSMainAlphaTestColorOnly(VSOut i) : SV_Target0
 {
     float4 c = BuildTexturedColor(i);
-    clip(c.a - gAlphaRef);
+    QD3D12_AlphaTest(c.a);
     return c;
 }
 
@@ -1888,6 +1995,7 @@ static D3D12_PRIMITIVE_TOPOLOGY GetDrawTopology(GLenum originalMode)
 static Mat4 QD3D12_GetPreviousMVPForObject(GLuint objectId, const Mat4& currentMvp);
 
 
+static float MapAlphaFunc(GLenum func);
 static float MapTexCombineMode(GLenum mode);
 static float MapTexCombineSource(GLenum source);
 static float MapTexCombineOperandRGB(GLenum operand);
@@ -1972,6 +2080,7 @@ static BatchKey BuildCurrentBatchKey(GLenum originalMode, const TextureResource*
 	}
 
 	key.alphaRef = g_gl.alphaRef;
+	key.alphaFunc = MapAlphaFunc(g_gl.alphaFunc);
 	key.useTex0 = useTex0 ? 1.0f : 0.0f;
 	key.useTex1 = useTex1 ? 1.0f : 0.0f;
 	key.viewport = g_currentWindow->viewport;
@@ -2127,16 +2236,91 @@ static int BytesPerPixel(GLenum format, GLenum type)
 
 static DXGI_FORMAT MapTextureFormat(GLenum format)
 {
-	switch (format)
+	(void)format;
+
+	// The fixed-function shader path samples RGBA for all legacy uncompressed
+	// texture formats. Alpha, luminance, and intensity are expanded to RGBA8
+	// in UploadTexture(), so the D3D12 resource must also be RGBA8.
+	return DXGI_FORMAT_R8G8B8A8_UNORM;
+}
+
+static bool QD3D12_IsCompressedTextureFormat(GLenum internalFormat)
+{
+	switch (internalFormat)
 	{
-	case GL_ALPHA:
-	case GL_LUMINANCE:
-		return DXGI_FORMAT_R8_UNORM;
-	case GL_RGB:
-	case GL_RGBA:
+	case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+	case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+	case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+	case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+		return true;
 	default:
-		return DXGI_FORMAT_R8G8B8A8_UNORM;
+		return false;
 	}
+}
+
+static DXGI_FORMAT QD3D12_MapCompressedTextureFormat(GLenum internalFormat)
+{
+	switch (internalFormat)
+	{
+	case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+	case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+		return DXGI_FORMAT_BC1_UNORM;
+	case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+		return DXGI_FORMAT_BC2_UNORM;
+	case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+		return DXGI_FORMAT_BC3_UNORM;
+	default:
+		return DXGI_FORMAT_UNKNOWN;
+	}
+}
+
+static UINT QD3D12_CompressedTextureBlockBytes(GLenum internalFormat)
+{
+	switch (internalFormat)
+	{
+	case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+	case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+		return 8;
+	case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+	case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+		return 16;
+	default:
+		return 0;
+	}
+}
+
+static UINT QD3D12_CompressedTextureBlocksWide(GLsizei width)
+{
+	return std::max<UINT>(1u, ((UINT)width + 3u) / 4u);
+}
+
+static UINT QD3D12_CompressedTextureBlocksHigh(GLsizei height)
+{
+	return std::max<UINT>(1u, ((UINT)height + 3u) / 4u);
+}
+
+static UINT QD3D12_CompressedTextureImageSize(GLsizei width, GLsizei height, GLenum internalFormat)
+{
+	const UINT blockBytes = QD3D12_CompressedTextureBlockBytes(internalFormat);
+	if (width <= 0 || height <= 0 || blockBytes == 0)
+		return 0;
+
+	const UINT blocksWide = QD3D12_CompressedTextureBlocksWide(width);
+	const UINT blocksHigh = QD3D12_CompressedTextureBlocksHigh(height);
+	return blocksWide * blocksHigh * blockBytes;
+}
+
+
+static UINT QD3D12_TextureShaderComponentMapping(const TextureResource& tex)
+{
+	if (!tex.forceOpaqueAlpha)
+		return D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+
+	return D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(
+		D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0,
+		D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1,
+		D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2,
+		D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1);
 }
 
 
@@ -2237,6 +2421,22 @@ static D3D12_BLEND MapBlend(GLenum v)
 	case GL_ONE_MINUS_DST_ALPHA:   return D3D12_BLEND_INV_DEST_ALPHA;
 	case GL_SRC_ALPHA_SATURATE:    return D3D12_BLEND_SRC_ALPHA_SAT;
 	default:                       return D3D12_BLEND_ONE;
+	}
+}
+
+static float MapAlphaFunc(GLenum func)
+{
+	switch (func)
+	{
+	case GL_NEVER:    return 0.0f;
+	case GL_LESS:     return 1.0f;
+	case GL_EQUAL:    return 2.0f;
+	case GL_LEQUAL:   return 3.0f;
+	case GL_GREATER:  return 4.0f;
+	case GL_NOTEQUAL: return 5.0f;
+	case GL_GEQUAL:   return 6.0f;
+	case GL_ALWAYS:   return 7.0f;
+	default:          return 4.0f; // Match legacy default: GL_GREATER.
 	}
 }
 
@@ -2410,19 +2610,158 @@ struct UploadAlloc
 	UINT offset = 0;
 };
 
+static inline UINT QD3D12_AlignUpUINT(UINT value, UINT alignment)
+{
+	if (alignment == 0)
+		alignment = 1;
+
+	return (value + (alignment - 1)) & ~(alignment - 1);
+}
+
+static inline UINT64 QD3D12_AlignUpUINT64(UINT64 value, UINT64 alignment)
+{
+	if (alignment == 0)
+		alignment = 1;
+
+	return (value + (alignment - 1)) & ~(alignment - 1);
+}
+
+static bool QD3D12_DrainUploadRingAndContinue()
+{
+	if (!g_currentWindow || !g_gl.cmdList || !g_gl.queue || !g_gl.fence)
+		return false;
+
+	QD3D12Window& w = *g_currentWindow;
+
+	// Submit the work recorded so far, wait for it, then reuse this frame's
+	// upload resource from offset 0. This keeps texture streaming / huge UI
+	// uploads from hard-failing when a frame exceeds the ring size.
+	QD3D12_ExecuteMainCommandListAndWait(w);
+	QD3D12_ResetUploadRing();
+
+	// Command-list state is reset by ExecuteMainCommandListAndWait().
+	// Re-bind the current phase targets so subsequent copies/draws continue.
+	QD3D12_BindTargetsForCurrentPhase(w);
+	return true;
+}
+
+static bool QD3D12_EnsureUploadSpace(UINT bytes, UINT alignment)
+{
+	if (!g_currentWindow)
+		return false;
+
+	UploadRing& upload = g_currentWindow->upload;
+
+	if (bytes > upload.size)
+	{
+		QD3D12_Fatal(
+			"Single upload allocation too large: need %u bytes, upload ring size %u",
+			bytes,
+			upload.size);
+		return false;
+	}
+
+	const UINT alignedOffset = QD3D12_AlignUpUINT(upload.offset, alignment);
+	if ((UINT64)alignedOffset + (UINT64)bytes <= (UINT64)upload.size)
+		return false;
+
+	if (!QD3D12_DrainUploadRingAndContinue())
+	{
+		QD3D12_Fatal(
+			"Per-frame upload buffer overflow: need %u bytes, aligned offset %u, size %u",
+			bytes,
+			alignedOffset,
+			upload.size);
+		return false;
+	}
+
+	const UINT retryOffset = QD3D12_AlignUpUINT(upload.offset, alignment);
+	if ((UINT64)retryOffset + (UINT64)bytes > (UINT64)upload.size)
+	{
+		QD3D12_Fatal(
+			"Upload allocation still does not fit after drain: need %u bytes, aligned offset %u, size %u",
+			bytes,
+			retryOffset,
+			upload.size);
+	}
+
+	return true;
+}
+
+static bool QD3D12_EnsureUploadSpaceForDraw(UINT vbBytes, UINT cbBytes)
+{
+	if (!g_currentWindow)
+		return false;
+
+	UploadRing& upload = g_currentWindow->upload;
+
+	if (vbBytes > upload.size || cbBytes > upload.size)
+	{
+		QD3D12_Fatal(
+			"Single draw upload too large: vb=%u cb=%u upload ring size=%u",
+			vbBytes,
+			cbBytes,
+			upload.size);
+		return false;
+	}
+
+	UINT64 cursor = upload.offset;
+	const UINT64 vbOffset = QD3D12_AlignUpUINT64(cursor, 256);
+	cursor = vbOffset + (UINT64)vbBytes;
+
+	const UINT64 cbOffset = QD3D12_AlignUpUINT64(cursor, 256);
+	cursor = cbOffset + (UINT64)cbBytes;
+
+	if (cursor <= (UINT64)upload.size)
+		return false;
+
+	if (!QD3D12_DrainUploadRingAndContinue())
+	{
+		QD3D12_Fatal(
+			"Per-frame upload buffer overflow during draw upload: vb=%u cb=%u offset=%u size=%u",
+			vbBytes,
+			cbBytes,
+			upload.offset,
+			upload.size);
+		return false;
+	}
+
+	cursor = upload.offset;
+	const UINT64 retryVbOffset = QD3D12_AlignUpUINT64(cursor, 256);
+	cursor = retryVbOffset + (UINT64)vbBytes;
+
+	const UINT64 retryCbOffset = QD3D12_AlignUpUINT64(cursor, 256);
+	cursor = retryCbOffset + (UINT64)cbBytes;
+
+	if (cursor > (UINT64)upload.size)
+	{
+		QD3D12_Fatal(
+			"Draw upload still does not fit after drain: vb=%u cb=%u upload ring size=%u",
+			vbBytes,
+			cbBytes,
+			upload.size);
+	}
+
+	return true;
+}
+
 static UploadAlloc QD3D12_AllocUpload(UINT bytes, UINT alignment)
 {
 	if (alignment == 0)
 		alignment = 1;
 
-	UploadRing& upload = g_currentWindow->upload;
-	UINT alignedOffset = (upload.offset + (alignment - 1)) & ~(alignment - 1);
+	QD3D12_EnsureUploadSpace(bytes, alignment);
 
-	if (alignedOffset + bytes > upload.size)
+	UploadRing& upload = g_currentWindow->upload;
+	UINT alignedOffset = QD3D12_AlignUpUINT(upload.offset, alignment);
+
+	if ((UINT64)alignedOffset + (UINT64)bytes > (UINT64)upload.size)
 	{
 		QD3D12_Fatal(
 			"Per-frame upload buffer overflow: need %u bytes, aligned offset %u, size %u",
-			bytes, alignedOffset, upload.size);
+			bytes,
+			alignedOffset,
+			upload.size);
 	}
 
 	UploadAlloc out;
@@ -3825,6 +4164,7 @@ static uint64_t MakeARBPSOKey(
 			h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
 		};
 
+	mix(uint32_t(key.pipeline));
 	mix(uint32_t(key.blendSrc));
 	mix(uint32_t(key.blendDst));
 	mix(key.depthTest ? 1ull : 0ull);
@@ -4272,6 +4612,29 @@ static void EnsureTextureResource(TextureResource& tex)
 {
 	const DXGI_FORMAT dxgiFormat = tex.dxgiFormat;
 
+	if (tex.width <= 0 || tex.height <= 0 || dxgiFormat == DXGI_FORMAT_UNKNOWN)
+		return;
+
+	auto EnsureSrvDescriptor = [&]()
+		{
+			if (!tex.texture)
+				return;
+
+			if (tex.srvIndex == UINT_MAX)
+			{
+				tex.srvIndex = g_gl.nextSrvIndex++;
+				tex.srvCpu = QD3D12_SrvCpu(tex.srvIndex);
+				tex.srvGpu = QD3D12_SrvGpu(tex.srvIndex);
+			}
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+			sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			sd.Format = dxgiFormat;
+			sd.Shader4ComponentMapping = QD3D12_TextureShaderComponentMapping(tex);
+			sd.Texture2D.MipLevels = 1;
+			g_gl.device->CreateShaderResourceView(tex.texture.Get(), &sd, tex.srvCpu);
+		};
+
 	bool needsRecreate = false;
 
 	if (!tex.texture)
@@ -4292,11 +4655,13 @@ static void EnsureTextureResource(TextureResource& tex)
 		}
 	}
 
-	if (tex.width <= 0 || tex.height <= 0)
-		return;
-
 	if (!needsRecreate)
+	{
+		// Re-write the SRV descriptor so same-resource changes like RGB DXT1
+		// alpha-forcing are reflected without having to recreate the texture.
+		EnsureSrvDescriptor();
 		return;
+	}
 
 	D3D12_RESOURCE_DESC rd{};
 	rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -4320,21 +4685,7 @@ static void EnsureTextureResource(TextureResource& tex)
 		IID_PPV_ARGS(&tex.texture)));
 
 	tex.state = D3D12_RESOURCE_STATE_COPY_DEST;
-
-	if (tex.srvIndex == UINT_MAX)
-	{
-		tex.srvIndex = g_gl.nextSrvIndex++;
-		tex.srvCpu = QD3D12_SrvCpu(tex.srvIndex);
-		tex.srvGpu = QD3D12_SrvGpu(tex.srvIndex);
-	}
-
-	D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-	sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-	sd.Format = dxgiFormat;
-	sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	sd.Texture2D.MipLevels = 1;
-	g_gl.device->CreateShaderResourceView(tex.texture.Get(), &sd, tex.srvCpu);
-
+	EnsureSrvDescriptor();
 	tex.gpuValid = false;
 }
 
@@ -4351,6 +4702,11 @@ static TextureResource* QD3D12_EnsureLightingTexture(int width, int height)
 		tex.width = (int)width;
 		tex.height = (int)height;
 		tex.format = GL_RGBA;
+		tex.compressed = false;
+		tex.compressedInternalFormat = 0;
+		tex.compressedBlockBytes = 0;
+		tex.compressedImageSize = 0;
+		tex.forceOpaqueAlpha = false;
 		tex.dxgiFormat = desiredFormat;
 		tex.minFilter = GL_LINEAR;
 		tex.magFilter = GL_LINEAR;
@@ -4392,6 +4748,11 @@ static TextureResource* QD3D12_EnsureLightingTexture(int width, int height)
 
 	g_lightingTexture->width = (int)width;
 	g_lightingTexture->height = (int)height;
+	g_lightingTexture->compressed = false;
+	g_lightingTexture->compressedInternalFormat = 0;
+	g_lightingTexture->compressedBlockBytes = 0;
+	g_lightingTexture->compressedImageSize = 0;
+	g_lightingTexture->forceOpaqueAlpha = false;
 	g_lightingTexture->sysmem.clear();
 
 	D3D12_RESOURCE_DESC rd{};
@@ -4635,6 +4996,82 @@ static void UploadTexture(TextureResource& tex)
 {
 	if (!tex.texture)
 		return;
+
+	if (tex.compressed)
+	{
+		const UINT blockBytes = tex.compressedBlockBytes ? tex.compressedBlockBytes : QD3D12_CompressedTextureBlockBytes(tex.compressedInternalFormat);
+		if (blockBytes == 0 || tex.dxgiFormat == DXGI_FORMAT_UNKNOWN || tex.width <= 0 || tex.height <= 0)
+		{
+			g_gl.lastError = GL_INVALID_ENUM;
+			return;
+		}
+
+		const UINT blocksWide = QD3D12_CompressedTextureBlocksWide(tex.width);
+		const UINT blocksHigh = QD3D12_CompressedTextureBlocksHigh(tex.height);
+		const UINT srcRowBytes = blocksWide * blockBytes;
+		const UINT rowPitch = (srcRowBytes + 255u) & ~255u;
+		const UINT uploadSize = rowPitch * blocksHigh;
+
+		UploadAlloc alloc = QD3D12_AllocUpload(uploadSize, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+		uint8_t* dstBase = (uint8_t*)alloc.cpu;
+		memset(dstBase, 0, uploadSize);
+
+		if (!tex.sysmem.empty() && blockBytes != 0)
+		{
+			const uint8_t* srcBase = tex.sysmem.data();
+			const size_t available = tex.sysmem.size();
+			for (UINT row = 0; row < blocksHigh; ++row)
+			{
+				const size_t srcOff = (size_t)row * (size_t)srcRowBytes;
+				if (srcOff >= available)
+					break;
+
+				const size_t copyBytes = std::min<size_t>((size_t)srcRowBytes, available - srcOff);
+				memcpy(dstBase + (size_t)row * (size_t)rowPitch, srcBase + srcOff, copyBytes);
+			}
+		}
+
+		if (tex.state != D3D12_RESOURCE_STATE_COPY_DEST)
+		{
+			D3D12_RESOURCE_BARRIER toCopy{};
+			toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toCopy.Transition.pResource = tex.texture.Get();
+			toCopy.Transition.StateBefore = tex.state;
+			toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			g_gl.cmdList->ResourceBarrier(1, &toCopy);
+			tex.state = D3D12_RESOURCE_STATE_COPY_DEST;
+		}
+
+		D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+		srcLoc.pResource = g_currentWindow->upload.resource[g_currentWindow->frameIndex].Get();
+		srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+		srcLoc.PlacedFootprint.Offset = alloc.offset;
+		srcLoc.PlacedFootprint.Footprint.Format = tex.dxgiFormat;
+		srcLoc.PlacedFootprint.Footprint.Width = tex.width;
+		srcLoc.PlacedFootprint.Footprint.Height = tex.height;
+		srcLoc.PlacedFootprint.Footprint.Depth = 1;
+		srcLoc.PlacedFootprint.Footprint.RowPitch = rowPitch;
+
+		D3D12_TEXTURE_COPY_LOCATION dstLoc{};
+		dstLoc.pResource = tex.texture.Get();
+		dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+		dstLoc.SubresourceIndex = 0;
+
+		g_gl.cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+		D3D12_RESOURCE_BARRIER toSrv{};
+		toSrv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		toSrv.Transition.pResource = tex.texture.Get();
+		toSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		toSrv.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		toSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_gl.cmdList->ResourceBarrier(1, &toSrv);
+
+		tex.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		tex.gpuValid = true;
+		return;
+	}
 
 	const UINT srcRowBytes = (UINT)(tex.width * 4);
 	const UINT rowPitch = (srcRowBytes + 255u) & ~255u;
@@ -5083,7 +5520,19 @@ static void QD3D12_CopyRGBARegionIntoTexture(TextureResource& tex, GLint xoffset
 	if (width <= 0 || height <= 0 || !rgbaBytes)
 		return;
 
+	if (tex.compressed)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
+
 	tex.format = QD3D12_NormalizeCopyTextureFormat(tex.format);
+	tex.compressed = false;
+	tex.compressedInternalFormat = 0;
+	tex.compressedBlockBytes = 0;
+	tex.compressedImageSize = 0;
+	tex.forceOpaqueAlpha = false;
+	tex.dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 	const int bpp = BytesPerPixel(tex.format, GL_UNSIGNED_BYTE);
 	if (bpp <= 0 || tex.width <= 0 || tex.height <= 0)
 		return;
@@ -5524,15 +5973,31 @@ static void QD3D12_FlushQueuedBatches()
 		if (count <= 0)
 			continue;
 
+		const UINT vbBytes = (UINT)(count * sizeof(GLVertex));
+		const UINT cbBytes = (UINT)sizeof(DrawConstants);
+
+		if (QD3D12_EnsureUploadSpaceForDraw(vbBytes, cbBytes))
+		{
+			// The command list was closed/executed/reset, so all cached command-list
+			// state is invalid.
+			SetDynamicFixedFunctionState(g_gl.cmdList.Get());
+			QD3D12_BindTargetsForCurrentPhase(*g_currentWindow);
+
+			lastPSO = nullptr;
+			haveLastTex0 = false;
+			haveLastTex1 = false;
+			lastTopo = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		}
+
 		QD3D12_EmitQueryMarkers(batch.markerBegin, batch.markerEnd);
 
 		g_gl.cmdList->RSSetViewports(1, &batch.key.viewport);
 		g_gl.cmdList->RSSetScissorRects(1, &batch.key.scissor);
 
-		UploadAlloc vbAlloc = QD3D12_AllocUpload((UINT)(count * sizeof(GLVertex)), 256);
-		memcpy(vbAlloc.cpu, verts, count * sizeof(GLVertex));
+		UploadAlloc vbAlloc = QD3D12_AllocUpload(vbBytes, 256);
+		memcpy(vbAlloc.cpu, verts, vbBytes);
 
-		UploadAlloc cbAlloc = QD3D12_AllocUpload(sizeof(DrawConstants), 256);
+		UploadAlloc cbAlloc = QD3D12_AllocUpload(cbBytes, 256);
 		DrawConstants* dc = reinterpret_cast<DrawConstants*>(cbAlloc.cpu);
 		memset(dc, 0, sizeof(*dc));
 
@@ -5541,6 +6006,7 @@ static void QD3D12_FlushQueuedBatches()
 		dc->geometryFlag = batch.key.geometryFlag;
 		dc->roughness = batch.key.roughness;
 		dc->materialType = batch.key.materialType;
+		dc->alphaFunc = batch.key.alphaFunc;
 		dc->modelMatrix = batch.key.modelMatrix;
 		dc->alphaRef = batch.key.alphaRef;
 		dc->useTex0 = batch.key.useTex0;
@@ -6287,6 +6753,17 @@ void APIENTRY glGetIntegerv(GLenum pname, GLint* params)
 		break;
 #endif
 
+	case GL_NUM_COMPRESSED_TEXTURE_FORMATS_ARB:
+		*params = 4;
+		break;
+
+	case GL_COMPRESSED_TEXTURE_FORMATS_ARB:
+		params[0] = GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
+		params[1] = GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+		params[2] = GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
+		params[3] = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+		break;
+
 	case GL_MAX_TEXTURE_SIZE:
 		*params = 4096;
 		break;
@@ -6777,6 +7254,12 @@ void APIENTRY glTexImage2D(GLenum, GLint level, GLint internalFormat,
 	tex.width = width;
 	tex.height = height;
 	tex.format = (format != 0) ? format : (GLenum)internalFormat;
+	tex.compressed = false;
+	tex.compressedInternalFormat = 0;
+	tex.compressedBlockBytes = 0;
+	tex.compressedImageSize = 0;
+	tex.forceOpaqueAlpha = false;
+	tex.dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 	const int bpp = BytesPerPixel(tex.format, type);
 	tex.sysmem.resize((size_t)width * (size_t)height * (size_t)bpp);
@@ -6788,6 +7271,221 @@ void APIENTRY glTexImage2D(GLenum, GLint level, GLint internalFormat,
 	EnsureTextureResource(tex);
 	tex.gpuValid = false;
 }
+
+void APIENTRY glCompressedTexImage2DARB(GLenum target, GLint level, GLenum internalFormat,
+	GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid* data)
+{
+	target = QD3D12_MapCompatTextureTarget(target);
+	if (target != GL_TEXTURE_2D)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	if (level < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
+	if (it == g_gl.textures.end())
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
+
+	if (level > 0)
+		return;
+
+	if (width <= 0 || height <= 0 || border != 0 || imageSize < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	if (!QD3D12_IsCompressedTextureFormat(internalFormat))
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	const UINT expectedSize = QD3D12_CompressedTextureImageSize(width, height, internalFormat);
+	if ((UINT)imageSize < expectedSize)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	TextureResource& tex = it->second;
+	tex.width = width;
+	tex.height = height;
+	tex.format = internalFormat;
+	tex.compressed = true;
+	tex.compressedInternalFormat = internalFormat;
+	tex.compressedBlockBytes = QD3D12_CompressedTextureBlockBytes(internalFormat);
+	tex.compressedImageSize = expectedSize;
+	tex.forceOpaqueAlpha = (internalFormat == GL_COMPRESSED_RGB_S3TC_DXT1_EXT);
+	tex.dxgiFormat = QD3D12_MapCompressedTextureFormat(internalFormat);
+
+	tex.sysmem.resize(expectedSize);
+	if (data && expectedSize > 0)
+		memcpy(tex.sysmem.data(), data, expectedSize);
+	else if (expectedSize > 0)
+		memset(tex.sysmem.data(), 0, expectedSize);
+
+	EnsureTextureResource(tex);
+	tex.gpuValid = false;
+}
+
+void APIENTRY glCompressedTexImage2D(GLenum target, GLint level, GLenum internalFormat,
+	GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid* data)
+{
+	glCompressedTexImage2DARB(target, level, internalFormat, width, height, border, imageSize, data);
+}
+
+void APIENTRY glCompressedTexImage2DEXT(GLenum target, GLint level, GLenum internalFormat,
+	GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid* data)
+{
+	glCompressedTexImage2DARB(target, level, internalFormat, width, height, border, imageSize, data);
+}
+
+void APIENTRY glCompressedTexSubImage2DARB(GLenum target, GLint level,
+	GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+	GLenum format, GLsizei imageSize, const GLvoid* data)
+{
+	target = QD3D12_MapCompatTextureTarget(target);
+	if (target != GL_TEXTURE_2D)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	if (level < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
+	if (it == g_gl.textures.end())
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
+
+	if (level > 0)
+		return;
+
+	if (xoffset < 0 || yoffset < 0 || width <= 0 || height <= 0 || imageSize < 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	TextureResource& tex = it->second;
+	if (!tex.compressed || tex.width <= 0 || tex.height <= 0)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
+
+	if (format != tex.compressedInternalFormat || !QD3D12_IsCompressedTextureFormat(format))
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	if (xoffset + width > tex.width || yoffset + height > tex.height)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	const bool touchesRightEdge = (xoffset + width) == tex.width;
+	const bool touchesBottomEdge = (yoffset + height) == tex.height;
+	if ((xoffset & 3) != 0 || (yoffset & 3) != 0 ||
+		(!touchesRightEdge && (width & 3) != 0) ||
+		(!touchesBottomEdge && (height & 3) != 0))
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
+
+	const UINT blockBytes = QD3D12_CompressedTextureBlockBytes(format);
+	const UINT fullBlocksWide = QD3D12_CompressedTextureBlocksWide(tex.width);
+	const UINT subBlocksWide = QD3D12_CompressedTextureBlocksWide(width);
+	const UINT subBlocksHigh = QD3D12_CompressedTextureBlocksHigh(height);
+	const size_t srcRowBytes = (size_t)subBlocksWide * (size_t)blockBytes;
+	const size_t expectedSize = srcRowBytes * (size_t)subBlocksHigh;
+	if ((size_t)imageSize < expectedSize)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	const size_t fullSize = (size_t)QD3D12_CompressedTextureImageSize(tex.width, tex.height, tex.compressedInternalFormat);
+	if (tex.sysmem.size() != fullSize)
+		tex.sysmem.resize(fullSize, 0);
+
+	const uint8_t* src = static_cast<const uint8_t*>(data);
+	if (!src && expectedSize > 0)
+	{
+		g_gl.lastError = GL_INVALID_VALUE;
+		return;
+	}
+
+	const UINT dstBlockX = (UINT)xoffset / 4u;
+	const UINT dstBlockY = (UINT)yoffset / 4u;
+	for (UINT row = 0; row < subBlocksHigh; ++row)
+	{
+		const size_t dstOff = ((size_t)(dstBlockY + row) * (size_t)fullBlocksWide + (size_t)dstBlockX) * (size_t)blockBytes;
+		const size_t srcOff = (size_t)row * srcRowBytes;
+		memcpy(tex.sysmem.data() + dstOff, src + srcOff, srcRowBytes);
+	}
+
+	tex.compressedImageSize = (UINT)fullSize;
+	tex.gpuValid = false;
+}
+
+void APIENTRY glCompressedTexSubImage2D(GLenum target, GLint level,
+	GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+	GLenum format, GLsizei imageSize, const GLvoid* data)
+{
+	glCompressedTexSubImage2DARB(target, level, xoffset, yoffset, width, height, format, imageSize, data);
+}
+
+void APIENTRY glCompressedTexSubImage2DEXT(GLenum target, GLint level,
+	GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+	GLenum format, GLsizei imageSize, const GLvoid* data)
+{
+	glCompressedTexSubImage2DARB(target, level, xoffset, yoffset, width, height, format, imageSize, data);
+}
+
+void APIENTRY glGetCompressedTexImageARB(GLenum target, GLint level, GLvoid* img)
+{
+	target = QD3D12_MapCompatTextureTarget(target);
+	if (target != GL_TEXTURE_2D)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	if (level > 0 || !img)
+		return;
+
+	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
+	if (it == g_gl.textures.end() || !it->second.compressed)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
+
+	TextureResource& tex = it->second;
+	if (!tex.sysmem.empty())
+		memcpy(img, tex.sysmem.data(), tex.sysmem.size());
+}
+
 
 void APIENTRY glTexSubImage2D(GLenum, GLint level, GLint xoffset, GLint yoffset,
 	GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid* pixels)
@@ -6802,6 +7500,12 @@ void APIENTRY glTexSubImage2D(GLenum, GLint level, GLint xoffset, GLint yoffset,
 	TextureResource& tex = it->second;
 	if (tex.width <= 0 || tex.height <= 0)
 		return;
+
+	if (tex.compressed)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
 	const int bpp = BytesPerPixel(format, type);
 	if (tex.sysmem.empty())
@@ -6834,6 +7538,12 @@ void APIENTRY glCopyTexImage2D(GLenum, GLint, GLenum internalFormat,
 	tex.width = width;
 	tex.height = height;
 	tex.format = QD3D12_NormalizeCopyTextureFormat(internalFormat);
+	tex.compressed = false;
+	tex.compressedInternalFormat = 0;
+	tex.compressedBlockBytes = 0;
+	tex.compressedImageSize = 0;
+	tex.forceOpaqueAlpha = false;
+	tex.dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 	QD3D12_PackRGBA8ToTextureFormat(rgba.data(), width * height, tex.format, tex.sysmem);
 
@@ -6851,6 +7561,12 @@ void APIENTRY glCopyTexSubImage2D(GLenum, GLint,
 	TextureResource& tex = it->second;
 	if (tex.width <= 0 || tex.height <= 0)
 		return;
+
+	if (tex.compressed)
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
 
 	if (xoffset < 0 || yoffset < 0 || xoffset + width > tex.width || yoffset + height > tex.height)
 		return;
@@ -6904,6 +7620,65 @@ void APIENTRY glDrawBuffer(GLenum mode)
 void APIENTRY glReadBuffer(GLenum mode)
 {
 	g_gl.readBuffer = mode;
+}
+
+void APIENTRY glGetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint* params)
+{
+	if (!params)
+		return;
+
+	target = QD3D12_MapCompatTextureTarget(target);
+	if (target != GL_TEXTURE_2D)
+	{
+		g_gl.lastError = GL_INVALID_ENUM;
+		return;
+	}
+
+	if (level != 0)
+	{
+		*params = 0;
+		return;
+	}
+
+	auto it = g_gl.textures.find(g_gl.boundTexture[g_gl.activeTextureUnit]);
+	if (it == g_gl.textures.end())
+	{
+		g_gl.lastError = GL_INVALID_OPERATION;
+		return;
+	}
+
+	const TextureResource& tex = it->second;
+	switch (pname)
+	{
+	case GL_TEXTURE_WIDTH:
+		*params = tex.width;
+		break;
+	case GL_TEXTURE_HEIGHT:
+		*params = tex.height;
+		break;
+	case GL_TEXTURE_INTERNAL_FORMAT:
+		*params = (GLint)tex.format;
+		break;
+	case GL_TEXTURE_COMPRESSED_ARB:
+		*params = tex.compressed ? GL_TRUE : GL_FALSE;
+		break;
+	case GL_TEXTURE_COMPRESSED_IMAGE_SIZE_ARB:
+		*params = tex.compressed ? (GLint)tex.compressedImageSize : 0;
+		break;
+	default:
+		*params = 0;
+		break;
+	}
+}
+
+void APIENTRY glGetTexLevelParameterfv(GLenum target, GLint level, GLenum pname, GLfloat* params)
+{
+	if (!params)
+		return;
+
+	GLint value = 0;
+	glGetTexLevelParameteriv(target, level, pname, &value);
+	*params = (GLfloat)value;
 }
 
 // ============================================================
@@ -7373,6 +8148,18 @@ void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvo
 		return;
 	}
 
+	if (!g_gl.colorArray.enabled)
+	{
+		for (int i = 0; i < g_gl.immediateVerts.Size(); i++)
+		{
+			g_gl.immediateVerts.Data()[i].r = g_gl.curColor[0];
+			g_gl.immediateVerts.Data()[i].g = g_gl.curColor[1];
+			g_gl.immediateVerts.Data()[i].b = g_gl.curColor[2];
+			g_gl.immediateVerts.Data()[i].a = g_gl.curColor[3];
+		}
+	}
+	
+
 	FlushImmediate(mode, g_gl.immediateVerts.Data(), g_gl.immediateVerts.Size());
 }
 
@@ -7834,6 +8621,11 @@ static bool QD3D12_CopyPbufferToBoundTexture(QD3D12Pbuffer& pb)
 	tex.width = pb.width;
 	tex.height = pb.height;
 	tex.format = GL_RGBA;
+	tex.compressed = false;
+	tex.compressedInternalFormat = 0;
+	tex.compressedBlockBytes = 0;
+	tex.compressedImageSize = 0;
+	tex.forceOpaqueAlpha = false;
 	tex.dxgiFormat = QD3D12_SceneColorFormat;
 	tex.sysmem.clear();
 
@@ -8380,6 +9172,15 @@ PROC WINAPI qd3d12_wglGetProcAddress(LPCSTR name) {
 		{ "wglGetDeviceGammaRamp3DFX",  (PROC)qd3d12_wglGetDeviceGammaRamp3DFX },
 		{ "wglSetDeviceGammaRamp3DFX",  (PROC)qd3d12_wglSetDeviceGammaRamp3DFX },
 		{ "glBindTextureEXT",           (PROC)glBindTextureEXT },
+		{ "glCompressedTexImage2DARB", (PROC)glCompressedTexImage2DARB },
+		{ "glCompressedTexImage2DEXT", (PROC)glCompressedTexImage2DEXT },
+		{ "glCompressedTexImage2D",    (PROC)glCompressedTexImage2D },
+		{ "glCompressedTexSubImage2DARB", (PROC)glCompressedTexSubImage2DARB },
+		{ "glGetCompressedTexImageARB",   (PROC)glGetCompressedTexImageARB },
+		{ "glCompressedTexSubImage2DEXT", (PROC)glCompressedTexSubImage2DEXT },
+		{ "glCompressedTexSubImage2D",    (PROC)glCompressedTexSubImage2D },
+		{ "glGetTexLevelParameteriv", (PROC)glGetTexLevelParameteriv },
+		{ "glGetTexLevelParameterfv", (PROC)glGetTexLevelParameterfv },
 		{ "wglGetExtensionsStringARB",  (PROC)wglGetExtensionsStringARB },
 		{ "wglGetExtensionsStringEXT",  (PROC)wglGetExtensionsStringEXT },
 		{ "wglChoosePixelFormatARB",    (PROC)wglChoosePixelFormatARB },
@@ -10300,7 +11101,7 @@ void glUpdateTopLevelAceelStructure(uint32_t mesh, float* transform, uint32_t& t
 
 	if (topLevelHandle == 0)
 	{
-		topLevelHandle = glRaytracingCreateInstance(&instDesc);
+		topLevelHandle = glRaytracingCreateInstance(&instDesc); 
 	}
 	else {
 		glRaytracingUpdateInstance(topLevelHandle, &instDesc);

@@ -2096,3 +2096,6 @@ BOOL        WINAPI qd3d12_wglReleaseTexImageARB(HPBUFFERARB hPbuffer, int iBuffe
 #ifndef GL_READ_WRITE_ARB
 #define GL_READ_WRITE_ARB GL_READ_WRITE
 #endif
+
+void APIENTRY glCompressedTexImage2DARB(GLenum target, GLint level, GLenum internalFormat,
+	GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid* data);

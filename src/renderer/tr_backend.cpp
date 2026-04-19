@@ -1085,7 +1085,7 @@ void RB_UpdateDrawSurfFlags(drawSurf_t* surf, shader_t *shader)
 	glGeometryFlagf(surf->geoFlag);
 
 	// Now check to see if we will override it.
-	if (shader->stages[0]->bundle[0].light > 0) {
+	if (shader->stages[0] != NULL && shader->stages[0]->bundle != NULL && shader->stages[0]->bundle[0].light > 0) {
 		glGeometryFlagf(GEOMETRY_FLAG_UNLIT);
 	}
 }

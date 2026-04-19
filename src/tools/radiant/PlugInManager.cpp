@@ -1443,7 +1443,7 @@ int WINAPI QERApp_RequestInterface( REFGUID refGUID, LPVOID pInterface )
 		pQglTable->m_pfn_wglCreateContext = (PFN_QWGL_CREATECONTEXT) wglCreateContext;
 		pQglTable->m_pfn_wglDeleteContext = (PFN_QWGL_DELETECONTEXT) wglDeleteContext;
 		pQglTable->m_pfn_wglMakeCurrent = (PFN_QWGL_MAKECURRENT)wglMakeCurrent;
-		pQglTable->m_pfn_wglShareLists = wglShareLists;
+		//pQglTable->m_pfn_wglShareLists = wglShareLists;
 		pQglTable->m_pfn_wglSwapBuffers = SwapBuffers;
 		pQglTable->m_pfn_wglUseFontBitmaps = wglUseFontBitmaps;
 		pQglTable->m_pfnGetQeglobalsHGLRC = &QERApp_GetQeglobalsHGLRC;

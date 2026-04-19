@@ -726,8 +726,7 @@ static void Upload32(   unsigned *data,
 		if ( samples == 3 ) {
 			if ( !noCompress && glConfig.textureCompression == TC_EXT_COMP_S3TC ) {
 				// TODO: which format is best for which textures?
-				//internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
-				ri.Error(ERR_FATAL, "DXT support needs to be added\n");
+				internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 			} else if ( !noCompress && glConfig.textureCompression == TC_S3TC )   {
 				internalFormat = GL_RGB4_S3TC;
 			} else if ( r_texturebits->integer == 16 )   {
@@ -741,8 +740,7 @@ static void Upload32(   unsigned *data,
 		} else if ( samples == 4 )   {
 			if ( !noCompress && glConfig.textureCompression == TC_EXT_COMP_S3TC ) {
 				// TODO: which format is best for which textures?
-				//internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
-				ri.Error(ERR_FATAL, "DXT support needs to be added\n");
+				internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 			} else if ( r_texturebits->integer == 16 )   {
 				internalFormat = GL_RGBA4;
 			} else if ( r_texturebits->integer == 32 )   {
